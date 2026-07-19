@@ -1,3 +1,4 @@
+/** Maps internal aggregate states to sanitized conversation-state DTOs for browser clients. */
 import { deadlineForState } from "../../domain/conversation-deadlines";
 import {
   ArtifactStatus,

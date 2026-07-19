@@ -1,3 +1,4 @@
+/** Authenticates and translates lifecycle observations emitted by the separately deployed agent. */
 import { z } from "zod";
 
 import {

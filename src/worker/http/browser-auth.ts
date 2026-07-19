@@ -1,3 +1,4 @@
+/** Implements credential verification and signed browser-session handling at the HTTP boundary. */
 import { pbkdf2Sync } from "node:crypto";
 
 import { ApiError } from "./api-errors";

@@ -1,3 +1,4 @@
+/** Provisions room-scoped LiveKit access, dispatch, and recording resources for a conversation. */
 import {
   AccessToken,
   AgentDispatchClient,

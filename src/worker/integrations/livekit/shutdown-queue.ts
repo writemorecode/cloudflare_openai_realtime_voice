@@ -1,3 +1,4 @@
+/** Processes retryable queue messages that clean up provisioned LiveKit conversation resources. */
 import { ApiError } from "../../http/api-errors";
 import {
   isLiveKitShutdownMessage,

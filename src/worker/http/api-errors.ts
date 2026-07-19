@@ -1,3 +1,4 @@
+/** Normalizes API failures into sanitized RFC 7807-style HTTP problem responses. */
 export interface ProblemDetails {
   readonly type: string;
   readonly title: string;

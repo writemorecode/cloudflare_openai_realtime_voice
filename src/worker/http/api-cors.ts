@@ -1,3 +1,4 @@
+/** Validates browser origins and builds CORS headers for the public HTTP API. */
 import { ApiError } from "./api-errors";
 
 export const CORS_ALLOWED_HEADERS = "Content-Type, Idempotency-Key";

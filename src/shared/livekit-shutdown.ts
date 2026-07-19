@@ -1,3 +1,4 @@
+/** Defines the versioned internal queue payload used to tear down LiveKit resources. */
 export const LIVEKIT_SHUTDOWN_MESSAGE_VERSION = 1 as const;
 
 export interface LiveKitShutdownMessage {

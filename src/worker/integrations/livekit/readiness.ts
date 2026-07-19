@@ -1,3 +1,4 @@
+/** Reconciles provider evidence into composite, provider-neutral transport readiness transitions. */
 import { MAXIMUM_LIVE_DURATION_MS } from "../../../domain/conversation-deadlines";
 import {
   ArtifactStatus,

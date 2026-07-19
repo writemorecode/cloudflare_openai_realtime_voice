@@ -1,3 +1,4 @@
+/** Enforces HTTP authentication, idempotency, and request-integrity safeguards. */
 import { ApiError } from "./api-errors";
 
 const encoder = new TextEncoder();
