@@ -9,15 +9,14 @@ import { DurableObject } from "cloudflare:workers";
 
 import {
   ConversationEventType,
-  value,
   type ConversationSessionId,
   type ConversationState,
   type UnixMillis,
 } from "../domain/conversation-state-machine";
 import { ConversationAggregateStore } from "./conversation-aggregate-store";
-import { emitAlarmTelemetry, emitTransitionTelemetry } from "./conversation-telemetry";
+import { ConversationAlarmRunner } from "./conversation-alarm-runner";
+import { emitTransitionTelemetry } from "./conversation-telemetry";
 import type {
-  AlarmExecution,
   ApplyEventCommand,
   ApplyEventResult,
   BeginLiveKitProvisioningCommand,
@@ -32,10 +31,8 @@ import type {
   RecordAgentObservationCommand,
   RecordLiveKitMediaObservationCommand,
 } from "./conversation-session-contract";
-import { LIVEKIT_SHUTDOWN_OUTBOX_KEY } from "./conversation-session-storage";
 import { LiveKitCoordinationStore } from "./livekit-coordination-store";
 import { ConversationSocketGateway } from "./conversation-socket-gateway";
-import type { LiveKitShutdownMessage } from "../shared/livekit-shutdown";
 
 export type {
   AgentObservationKind,
@@ -55,6 +52,12 @@ export { UnsupportedSnapshotVersionError } from "./conversation-session-storage"
 export class ConversationSession extends DurableObject<Env> {
   private readonly aggregate = new ConversationAggregateStore(this.ctx.storage);
   private readonly liveKit = new LiveKitCoordinationStore(this.ctx.storage);
+  private readonly alarms = new ConversationAlarmRunner(
+    this.ctx.storage,
+    this.env.LIVEKIT_SHUTDOWN_QUEUE,
+    this.aggregate,
+    this.ctx.id.name ?? null,
+  );
   private readonly sockets = new ConversationSocketGateway(this.ctx, {
     getState: () => this.getState(),
     applyEvent: (command) => this.applyEvent(command),
@@ -142,7 +145,7 @@ export class ConversationSession extends DurableObject<Env> {
       result.outcome !== "rejected" &&
       command.event.type === ConversationEventType.TimeLimitReached
     ) {
-      await this.flushLiveKitShutdownOutbox();
+      await this.alarms.flushShutdownOutbox();
     }
     return result;
   }
@@ -157,49 +160,6 @@ export class ConversationSession extends DurableObject<Env> {
   }
 
   override async alarm(alarmInfo?: AlarmInvocationInfo): Promise<void> {
-    const now = value.unixMillis(Date.now());
-    let context: Pick<AlarmExecution, "state" | "deadline" | "event"> = {
-      state: null,
-      deadline: null,
-      event: null,
-    };
-    try {
-      await this.flushLiveKitShutdownOutbox();
-      const execution = await this.aggregate.applyDeadline(now, (observed) => {
-        context = observed;
-      });
-      if (execution.transition !== null && execution.event !== null) {
-        emitTransitionTelemetry(
-          { expectedRevision: execution.transition.receipt.sourceRevision, event: execution.event },
-          execution.transition,
-          "alarm",
-          this.ctx.id.name ?? null,
-        );
-      }
-      await this.flushLiveKitShutdownOutbox();
-      emitAlarmTelemetry(execution, alarmInfo, now, null, this.ctx.id.name ?? null);
-    } catch (error) {
-      emitAlarmTelemetry(
-        { outcome: "failed", ...context, transition: null },
-        alarmInfo,
-        now,
-        error,
-        this.ctx.id.name ?? null,
-      );
-      throw error;
-    }
-  }
-
-  private async flushLiveKitShutdownOutbox(): Promise<void> {
-    const pending = await this.ctx.storage.get<LiveKitShutdownMessage>(LIVEKIT_SHUTDOWN_OUTBOX_KEY);
-    if (pending === undefined) return;
-
-    await this.env.LIVEKIT_SHUTDOWN_QUEUE.send(pending, { contentType: "json" });
-    await this.ctx.storage.transaction(async (transaction) => {
-      const current = await transaction.get<LiveKitShutdownMessage>(LIVEKIT_SHUTDOWN_OUTBOX_KEY);
-      if (current?.triggerEventId === pending.triggerEventId) {
-        await transaction.delete(LIVEKIT_SHUTDOWN_OUTBOX_KEY);
-      }
-    });
+    await this.alarms.run(alarmInfo);
   }
 }
