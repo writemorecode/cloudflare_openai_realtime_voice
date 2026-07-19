@@ -56,6 +56,46 @@ export type BeginLiveKitProvisioningResult =
   | Readonly<{ outcome: "in_progress"; retryAt: number }>
   | Readonly<{ outcome: "rejected"; reason: "not_starting" | "epoch_mismatch" }>;
 
+export interface BeginLiveKitProvisioningCommand {
+  readonly roomName: string;
+  readonly transportEpoch: number;
+  readonly leaseId: string;
+  readonly leaseExpiresAt: number;
+  readonly now: number;
+}
+
+export type CompleteLiveKitProvisioningCommand = LiveKitProvisioningReady & {
+  readonly leaseId: string;
+};
+
+export interface BeginLiveKitShutdownCommand {
+  readonly leaseId: string;
+  readonly leaseExpiresAt: number;
+  readonly now: number;
+}
+
+export interface CompleteLiveKitShutdownCommand {
+  readonly leaseId: string;
+  readonly stoppedAt: number;
+}
+
+export interface RecordAgentObservationCommand {
+  readonly eventId: string;
+  readonly kind: AgentObservationKind;
+  readonly roomName: string;
+  readonly transportEpoch: number;
+}
+
+export interface RecordLiveKitMediaObservationCommand {
+  readonly eventId: string;
+  readonly kind: LiveKitMediaObservationKind;
+  readonly participantIdentity: string;
+  readonly roomName: string;
+  readonly transportEpoch: number;
+}
+
+export type RecordObservationResult = "recorded" | "duplicate" | "rejected";
+
 export interface TransitionReceipt {
   readonly eventId: string;
   readonly eventType: ConversationEventType;

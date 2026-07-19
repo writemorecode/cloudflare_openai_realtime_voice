@@ -34,33 +34,29 @@ import type {
   ApplyEventCommand,
   ApplyEventRejectionReason,
   ApplyEventResult,
+  BeginLiveKitProvisioningCommand,
   BeginLiveKitProvisioningResult,
+  BeginLiveKitShutdownCommand,
   BeginLiveKitShutdownResult,
+  CompleteLiveKitProvisioningCommand,
+  CompleteLiveKitShutdownCommand,
   InitializeResult,
   LiveKitMediaObservationKind,
   LiveKitProvisioningReady,
   LiveKitTransportEvidence,
+  RecordAgentObservationCommand,
+  RecordLiveKitMediaObservationCommand,
   TransitionReceipt,
 } from "./conversation-session-contract";
 import {
-  AGENT_OBSERVATION_RECEIPT_PREFIX,
-  LIVEKIT_MEDIA_RECEIPT_PREFIX,
-  LIVEKIT_PROVISIONING_KEY,
-  LIVEKIT_SHUTDOWN_KEY,
   LIVEKIT_SHUTDOWN_OUTBOX_KEY,
-  LIVEKIT_TRANSPORT_EVIDENCE_KEY,
   SNAPSHOT_KEY,
   SNAPSHOT_SCHEMA_VERSION,
   decodeSnapshot,
   receiptKey,
-  type LiveKitProvisioning,
-  type LiveKitProvisioningLease,
-  type LiveKitShutdown,
-  type LiveKitShutdownComplete,
-  type LiveKitShutdownLease,
   type PersistedSnapshot,
 } from "./conversation-session-storage";
-import { emptyTransportEvidence, updateMediaEvidence } from "./transport-evidence";
+import { LiveKitCoordinationStore } from "./livekit-coordination-store";
 import { toConversationStateDto } from "../worker/http/conversation-state-dto";
 import {
   LIVEKIT_SHUTDOWN_MESSAGE_VERSION,
@@ -115,6 +111,8 @@ class AlarmTransitionRejectedError extends Error {
 
 /** One named Durable Object instance owns one conversation aggregate. */
 export class ConversationSession extends DurableObject<Env> {
+  private readonly liveKit = new LiveKitCoordinationStore(this.ctx.storage);
+
   override async fetch(request: Request): Promise<Response> {
     const conversationId = request.headers.get(INTERNAL_CONVERSATION_HEADER);
     if (
@@ -256,214 +254,50 @@ export class ConversationSession extends DurableObject<Env> {
     return decodeSnapshot(this.ctx.storage.kv.get<PersistedSnapshot>(SNAPSHOT_KEY));
   }
 
-  async beginLiveKitProvisioning(command: {
-    readonly roomName: string;
-    readonly transportEpoch: number;
-    readonly leaseId: string;
-    readonly leaseExpiresAt: number;
-    readonly now: number;
-  }): Promise<BeginLiveKitProvisioningResult> {
-    return this.ctx.storage.transaction(async (transaction) => {
-      const state = await this.readState(transaction);
-      if (state?.tag !== ConversationStateTag.Starting) {
-        return { outcome: "rejected", reason: "not_starting" } as const;
-      }
-      const transport = state.data.transport;
-      if (
-        transport.status !== TransportStatus.Connecting ||
-        transport.epoch !== command.transportEpoch
-      ) {
-        return { outcome: "rejected", reason: "epoch_mismatch" } as const;
-      }
-
-      const current = await transaction.get<LiveKitProvisioning>(LIVEKIT_PROVISIONING_KEY);
-      if (current?.status === "ready") {
-        return current.roomName === command.roomName &&
-          current.transportEpoch === command.transportEpoch
-          ? ({ outcome: "ready", provisioning: current } as const)
-          : ({ outcome: "rejected", reason: "epoch_mismatch" } as const);
-      }
-      if (current?.status === "provisioning" && current.leaseExpiresAt > command.now) {
-        return { outcome: "in_progress", retryAt: current.leaseExpiresAt } as const;
-      }
-
-      await transaction.put(LIVEKIT_PROVISIONING_KEY, {
-        status: "provisioning",
-        roomName: command.roomName,
-        transportEpoch: command.transportEpoch,
-        leaseId: command.leaseId,
-        leaseExpiresAt: command.leaseExpiresAt,
-      } satisfies LiveKitProvisioningLease);
-      return { outcome: "owner", leaseId: command.leaseId } as const;
-    });
+  beginLiveKitProvisioning(
+    command: BeginLiveKitProvisioningCommand,
+  ): Promise<BeginLiveKitProvisioningResult> {
+    return this.liveKit.beginProvisioning(command);
   }
 
-  async completeLiveKitProvisioning(
-    command: LiveKitProvisioningReady & {
-      readonly leaseId: string;
-    },
-  ): Promise<boolean> {
-    return this.ctx.storage.transaction(async (transaction) => {
-      const current = await transaction.get<LiveKitProvisioning>(LIVEKIT_PROVISIONING_KEY);
-      if (
-        current?.status !== "provisioning" ||
-        current.leaseId !== command.leaseId ||
-        current.roomName !== command.roomName ||
-        current.transportEpoch !== command.transportEpoch
-      ) {
-        return false;
-      }
-      const ready: LiveKitProvisioningReady = {
-        status: "ready",
-        roomName: command.roomName,
-        transportEpoch: command.transportEpoch,
-        dispatchId: command.dispatchId,
-        egressId: command.egressId,
-        expectedR2Key: command.expectedR2Key,
-      };
-      await transaction.put(LIVEKIT_PROVISIONING_KEY, ready);
-      return true;
-    });
+  async completeLiveKitProvisioning(command: CompleteLiveKitProvisioningCommand): Promise<boolean> {
+    return this.liveKit.completeProvisioning(command);
   }
 
   async abandonLiveKitProvisioning(leaseId: string): Promise<void> {
-    await this.ctx.storage.transaction(async (transaction) => {
-      const current = await transaction.get<LiveKitProvisioning>(LIVEKIT_PROVISIONING_KEY);
-      if (current?.status === "provisioning" && current.leaseId === leaseId) {
-        await transaction.delete(LIVEKIT_PROVISIONING_KEY);
-      }
-    });
+    await this.liveKit.abandonProvisioning(leaseId);
   }
 
   async getLiveKitProvisioning(): Promise<LiveKitProvisioningReady | null> {
-    const current = await this.ctx.storage.get<LiveKitProvisioning>(LIVEKIT_PROVISIONING_KEY);
-    return current?.status === "ready" ? current : null;
+    return this.liveKit.getProvisioning();
   }
 
-  async beginLiveKitShutdown(command: {
-    readonly leaseId: string;
-    readonly leaseExpiresAt: number;
-    readonly now: number;
-  }): Promise<BeginLiveKitShutdownResult> {
-    return this.ctx.storage.transaction(async (transaction) => {
-      const state = await this.readState(transaction);
-      if (
-        state === null ||
-        state.tag === ConversationStateTag.Created ||
-        state.tag === ConversationStateTag.Starting ||
-        state.tag === ConversationStateTag.Live
-      ) {
-        return { outcome: "rejected", reason: "conversation_active" } as const;
-      }
-      const provisioning = await transaction.get<LiveKitProvisioning>(LIVEKIT_PROVISIONING_KEY);
-      if (provisioning?.status !== "ready") {
-        return { outcome: "rejected", reason: "not_provisioned" } as const;
-      }
-      const current = await transaction.get<LiveKitShutdown>(LIVEKIT_SHUTDOWN_KEY);
-      if (current?.status === "stopped") return { outcome: "stopped" } as const;
-      if (current?.status === "stopping" && current.leaseExpiresAt > command.now) {
-        return { outcome: "in_progress", retryAt: current.leaseExpiresAt } as const;
-      }
-      await transaction.put(LIVEKIT_SHUTDOWN_KEY, {
-        status: "stopping",
-        leaseId: command.leaseId,
-        leaseExpiresAt: command.leaseExpiresAt,
-      } satisfies LiveKitShutdownLease);
-      return { outcome: "owner", provisioning } as const;
-    });
+  beginLiveKitShutdown(command: BeginLiveKitShutdownCommand): Promise<BeginLiveKitShutdownResult> {
+    return this.liveKit.beginShutdown(command);
   }
 
-  async completeLiveKitShutdown(command: {
-    readonly leaseId: string;
-    readonly stoppedAt: number;
-  }): Promise<boolean> {
-    return this.ctx.storage.transaction(async (transaction) => {
-      const current = await transaction.get<LiveKitShutdown>(LIVEKIT_SHUTDOWN_KEY);
-      if (current?.status !== "stopping" || current.leaseId !== command.leaseId) return false;
-      await transaction.put(LIVEKIT_SHUTDOWN_KEY, {
-        status: "stopped",
-        stoppedAt: command.stoppedAt,
-      } satisfies LiveKitShutdownComplete);
-      return true;
-    });
+  completeLiveKitShutdown(command: CompleteLiveKitShutdownCommand): Promise<boolean> {
+    return this.liveKit.completeShutdown(command);
   }
 
   async abandonLiveKitShutdown(leaseId: string): Promise<void> {
-    await this.ctx.storage.transaction(async (transaction) => {
-      const current = await transaction.get<LiveKitShutdown>(LIVEKIT_SHUTDOWN_KEY);
-      if (current?.status === "stopping" && current.leaseId === leaseId) {
-        await transaction.delete(LIVEKIT_SHUTDOWN_KEY);
-      }
-    });
+    await this.liveKit.abandonShutdown(leaseId);
   }
 
-  async recordAgentObservation(command: {
-    readonly eventId: string;
-    readonly kind: AgentObservationKind;
-    readonly roomName: string;
-    readonly transportEpoch: number;
-  }): Promise<"recorded" | "duplicate" | "rejected"> {
-    return this.ctx.storage.transaction(async (transaction) => {
-      const provisioning = await transaction.get<LiveKitProvisioning>(LIVEKIT_PROVISIONING_KEY);
-      if (provisioning?.status !== "ready" || provisioning.roomName !== command.roomName) {
-        return "rejected" as const;
-      }
-      const receiptKey = `${AGENT_OBSERVATION_RECEIPT_PREFIX}${command.eventId}`;
-      if ((await transaction.get<boolean>(receiptKey)) === true) {
-        return "duplicate" as const;
-      }
-      const current =
-        (await transaction.get<LiveKitTransportEvidence>(LIVEKIT_TRANSPORT_EVIDENCE_KEY)) ??
-        emptyTransportEvidence(provisioning.transportEpoch);
-      const advancesRecoveryEpoch =
-        command.kind === "realtime_recovered" &&
-        command.transportEpoch === current.transportEpoch + 1;
-      if (current.transportEpoch !== command.transportEpoch && !advancesRecoveryEpoch) {
-        return "rejected" as const;
-      }
-      const realtimeReady =
-        command.kind === "realtime_ready" || command.kind === "realtime_recovered";
-      await transaction.put(LIVEKIT_TRANSPORT_EVIDENCE_KEY, {
-        ...current,
-        transportEpoch: command.transportEpoch,
-        realtimeReady,
-        realtimeReadyEventId: realtimeReady ? command.eventId : null,
-      } satisfies LiveKitTransportEvidence);
-      await transaction.put(receiptKey, true);
-      return "recorded" as const;
-    });
+  recordAgentObservation(
+    command: RecordAgentObservationCommand,
+  ): Promise<"recorded" | "duplicate" | "rejected"> {
+    return this.liveKit.recordAgentObservation(command);
   }
 
   async getLiveKitTransportEvidence(): Promise<LiveKitTransportEvidence | null> {
-    return (
-      (await this.ctx.storage.get<LiveKitTransportEvidence>(LIVEKIT_TRANSPORT_EVIDENCE_KEY)) ?? null
-    );
+    return this.liveKit.getTransportEvidence();
   }
 
-  async recordLiveKitMediaObservation(command: {
-    readonly eventId: string;
-    readonly kind: LiveKitMediaObservationKind;
-    readonly participantIdentity: string;
-    readonly roomName: string;
-    readonly transportEpoch: number;
-  }): Promise<"recorded" | "duplicate" | "rejected"> {
-    return this.ctx.storage.transaction(async (transaction) => {
-      const provisioning = await transaction.get<LiveKitProvisioning>(LIVEKIT_PROVISIONING_KEY);
-      if (provisioning?.status !== "ready" || provisioning.roomName !== command.roomName) {
-        return "rejected" as const;
-      }
-      const receiptKey = `${LIVEKIT_MEDIA_RECEIPT_PREFIX}${command.eventId}`;
-      if ((await transaction.get<boolean>(receiptKey)) === true) return "duplicate" as const;
-
-      const current =
-        (await transaction.get<LiveKitTransportEvidence>(LIVEKIT_TRANSPORT_EVIDENCE_KEY)) ??
-        emptyTransportEvidence(provisioning.transportEpoch);
-      if (current.transportEpoch !== command.transportEpoch) return "rejected" as const;
-      const next = updateMediaEvidence(current, command.kind, command.participantIdentity);
-      await transaction.put(LIVEKIT_TRANSPORT_EVIDENCE_KEY, next);
-      await transaction.put(receiptKey, true);
-      return "recorded" as const;
-    });
+  recordLiveKitMediaObservation(
+    command: RecordLiveKitMediaObservationCommand,
+  ): Promise<"recorded" | "duplicate" | "rejected"> {
+    return this.liveKit.recordMediaObservation(command);
   }
 
   async applyEvent(command: ApplyEventCommand): Promise<ApplyEventResult> {
