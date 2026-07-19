@@ -1,0 +1,1132 @@
+/**
+ * Cloudflare Durable Object runtime for one conversation aggregate.
+ *
+ * This is the authoritative stateful boundary: it persists snapshots and receipts, serializes
+ * transitions, owns the single alarm, and hosts the control WebSocket. It does not call media or
+ * model providers and it never handles audio bytes.
+ */
+import { DurableObject } from "cloudflare:workers";
+
+import {
+  ALARM_SHUTDOWN_GRACE_MS,
+  deadlineEventForState,
+  deadlineForState,
+} from "../domain/conversation-deadlines";
+import {
+  ConversationEventType,
+  ConversationStateTag,
+  IllegalTransitionError,
+  TransitionGuardError,
+  TransportStatus,
+  createConversation,
+  transitionRuntime,
+  value,
+  type ConversationEvent,
+  type ConversationSessionId,
+  type ConversationState,
+  type TransportState,
+  type UnixMillis,
+} from "../domain/conversation-state-machine";
+import { toConversationStateDto } from "../worker/http/conversation-state-dto";
+import {
+  LIVEKIT_SHUTDOWN_MESSAGE_VERSION,
+  type LiveKitShutdownMessage,
+} from "../shared/livekit-shutdown";
+import {
+  AckOutcomeCode,
+  BrowserMessageType,
+  ProtocolErrorCode,
+  ServerMessageType,
+  WIRE_PROTOCOL_VERSION,
+  WIRE_SUBPROTOCOL,
+  WireProtocolError,
+  decodeBrowserMessage,
+  encodeWireMessage,
+  type BrowserWireMessage,
+  type MessageAckBody,
+  type ServerWireMessage,
+} from "../shared/protocol/conversation-wire";
+
+const SNAPSHOT_KEY = "conversation:snapshot:v1";
+const RECEIPT_KEY_PREFIX = "conversation:receipt:v1:";
+const SNAPSHOT_SCHEMA_VERSION = 1 as const;
+const INTERNAL_CONVERSATION_HEADER = "X-Conversation-Id";
+const CLIENT_WEBSOCKET_TAG = "conversation-client";
+const LIVEKIT_PROVISIONING_KEY = "conversation:livekit-provisioning:v1";
+const LIVEKIT_TRANSPORT_EVIDENCE_KEY = "conversation:livekit-transport-evidence:v1";
+const AGENT_OBSERVATION_RECEIPT_PREFIX = "conversation:agent-observation:v1:";
+const LIVEKIT_MEDIA_RECEIPT_PREFIX = "conversation:livekit-media-observation:v1:";
+const LIVEKIT_SHUTDOWN_KEY = "conversation:livekit-shutdown:v1";
+const LIVEKIT_SHUTDOWN_OUTBOX_KEY = "conversation:livekit-shutdown-outbox:v1";
+
+interface ClientSocketAttachment {
+  readonly protocolVersion: typeof WIRE_PROTOCOL_VERSION;
+  readonly phase: "awaiting_hello" | "active";
+  readonly connectionId: string | null;
+  readonly transportEpoch: number | null;
+  readonly connectedAt: number;
+}
+
+interface PersistedSnapshot {
+  readonly schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION;
+  readonly state: ConversationState;
+}
+
+export interface LiveKitProvisioningReady {
+  readonly status: "ready";
+  readonly roomName: string;
+  readonly transportEpoch: number;
+  readonly dispatchId: string;
+  readonly egressId: string;
+  readonly expectedR2Key: string;
+}
+
+interface LiveKitProvisioningLease {
+  readonly status: "provisioning";
+  readonly roomName: string;
+  readonly transportEpoch: number;
+  readonly leaseId: string;
+  readonly leaseExpiresAt: number;
+}
+
+type LiveKitProvisioning = LiveKitProvisioningReady | LiveKitProvisioningLease;
+
+interface LiveKitShutdownLease {
+  readonly status: "stopping";
+  readonly leaseId: string;
+  readonly leaseExpiresAt: number;
+}
+
+interface LiveKitShutdownComplete {
+  readonly status: "stopped";
+  readonly stoppedAt: number;
+}
+
+type LiveKitShutdown = LiveKitShutdownLease | LiveKitShutdownComplete;
+
+export type BeginLiveKitShutdownResult =
+  | Readonly<{ outcome: "owner"; provisioning: LiveKitProvisioningReady }>
+  | Readonly<{ outcome: "stopped" }>
+  | Readonly<{ outcome: "in_progress"; retryAt: number }>
+  | Readonly<{ outcome: "rejected"; reason: "not_provisioned" | "conversation_active" }>;
+
+export interface LiveKitTransportEvidence {
+  readonly transportEpoch: number;
+  readonly browserParticipantActive: boolean;
+  readonly browserAudioPublished: boolean;
+  readonly agentParticipantActive: boolean;
+  readonly agentParticipantIdentity: string | null;
+  readonly agentAudioPublished: boolean;
+  readonly realtimeReady: boolean;
+  readonly realtimeReadyEventId: string | null;
+}
+
+export type AgentObservationKind =
+  | "realtime_ready"
+  | "realtime_interrupted"
+  | "realtime_recovered"
+  | "realtime_failed"
+  | "session_closed";
+
+export type LiveKitMediaObservationKind =
+  | "browser_participant_joined"
+  | "browser_participant_left"
+  | "browser_audio_published"
+  | "browser_audio_unpublished"
+  | "agent_participant_joined"
+  | "agent_participant_left"
+  | "agent_audio_published"
+  | "agent_audio_unpublished";
+
+export type BeginLiveKitProvisioningResult =
+  | Readonly<{ outcome: "owner"; leaseId: string }>
+  | Readonly<{ outcome: "ready"; provisioning: LiveKitProvisioningReady }>
+  | Readonly<{ outcome: "in_progress"; retryAt: number }>
+  | Readonly<{ outcome: "rejected"; reason: "not_starting" | "epoch_mismatch" }>;
+
+export interface TransitionReceipt {
+  readonly eventId: string;
+  readonly eventType: ConversationEventType;
+  readonly outcome: "applied";
+  readonly sourceState: ConversationStateTag;
+  readonly targetState: ConversationStateTag;
+  readonly sourceRevision: number;
+  readonly targetRevision: number;
+  readonly appliedAt: UnixMillis;
+}
+
+export type InitializeResult =
+  | Readonly<{ status: "initialized" | "existing"; state: ConversationState }>
+  | Readonly<{
+      status: "rejected";
+      reason: "identity_mismatch" | "already_initialized";
+      state: ConversationState | null;
+    }>;
+
+export interface ApplyEventCommand {
+  readonly expectedRevision: number;
+  readonly event: ConversationEvent;
+}
+
+export type ApplyEventRejectionReason =
+  | "not_initialized"
+  | "revision_conflict"
+  | "illegal_transition"
+  | "guard_failed";
+
+export type ApplyEventResult =
+  | Readonly<{ outcome: "applied"; state: ConversationState; receipt: TransitionReceipt }>
+  | Readonly<{ outcome: "duplicate"; state: ConversationState; receipt: TransitionReceipt }>
+  | Readonly<{
+      outcome: "rejected";
+      reason: ApplyEventRejectionReason;
+      state: ConversationState | null;
+    }>;
+
+type AcceptedApplyEventResult = Exclude<ApplyEventResult, { outcome: "rejected" }>;
+export type TransitionTrigger = "rpc" | "alarm";
+
+export interface TransitionTelemetryRecord {
+  readonly kind: "conversation_transition";
+  readonly level: "info" | "warn";
+  readonly observedAt: number;
+  readonly trigger: TransitionTrigger;
+  readonly sessionId: string | null;
+  readonly eventId: string;
+  readonly eventType: ConversationEventType;
+  readonly expectedRevision: number;
+  readonly sourceState: ConversationStateTag | null;
+  readonly targetState: ConversationStateTag | null;
+  readonly sourceRevision: number | null;
+  readonly targetRevision: number | null;
+  readonly currentRevision: number | null;
+  readonly outcome: ApplyEventResult["outcome"];
+  readonly rejectionReason: ApplyEventRejectionReason | null;
+}
+
+export type AlarmOutcome =
+  | "transition_applied"
+  | "transition_duplicate"
+  | "rescheduled_early"
+  | "no_state"
+  | "no_deadline"
+  | "failed";
+
+export interface AlarmTelemetryRecord {
+  readonly kind: "conversation_alarm";
+  readonly level: "info" | "error";
+  readonly observedAt: number;
+  readonly sessionId: string | null;
+  readonly state: ConversationStateTag | null;
+  readonly revision: number | null;
+  readonly deadline: number | null;
+  readonly scheduledTime: number | null;
+  readonly retryCount: number;
+  readonly isRetry: boolean;
+  readonly eventId: string | null;
+  readonly eventType: ConversationEventType | null;
+  readonly outcome: AlarmOutcome;
+  readonly error: string | null;
+}
+
+interface AlarmExecution {
+  readonly outcome: Exclude<AlarmOutcome, "failed">;
+  readonly state: ConversationState | null;
+  readonly deadline: UnixMillis | null;
+  readonly event: ConversationEvent | null;
+  readonly transition: AcceptedApplyEventResult | null;
+}
+
+export class UnsupportedSnapshotVersionError extends Error {
+  constructor(readonly schemaVersion: unknown) {
+    super(`Unsupported conversation snapshot schema version: ${String(schemaVersion)}`);
+    this.name = "UnsupportedSnapshotVersionError";
+  }
+}
+
+class AlarmTransitionRejectedError extends Error {
+  constructor(reason: ApplyEventRejectionReason) {
+    super(`Alarm transition was unexpectedly rejected: ${reason}`);
+    this.name = "AlarmTransitionRejectedError";
+  }
+}
+
+/** One named Durable Object instance owns one conversation aggregate. */
+export class ConversationSession extends DurableObject<Env> {
+  override async fetch(request: Request): Promise<Response> {
+    const conversationId = request.headers.get(INTERNAL_CONVERSATION_HEADER);
+    if (
+      request.headers.get("Upgrade")?.toLowerCase() !== "websocket" ||
+      conversationId === null ||
+      conversationId !== this.ctx.id.name
+    ) {
+      return new Response("WebSocket upgrade required", { status: 426 });
+    }
+    if ((await this.getState()) === null) {
+      return new Response("Conversation not found", { status: 404 });
+    }
+
+    const pair = new WebSocketPair();
+    const client = pair[0];
+    const server = pair[1];
+    this.ctx.acceptWebSocket(server, [CLIENT_WEBSOCKET_TAG]);
+    server.serializeAttachment({
+      protocolVersion: WIRE_PROTOCOL_VERSION,
+      phase: "awaiting_hello",
+      connectionId: null,
+      transportEpoch: null,
+      connectedAt: Date.now(),
+    } satisfies ClientSocketAttachment);
+
+    return new Response(null, {
+      status: 101,
+      headers: { "Sec-WebSocket-Protocol": WIRE_SUBPROTOCOL },
+      webSocket: client,
+    });
+  }
+
+  override async webSocketMessage(ws: WebSocket, rawMessage: string | ArrayBuffer): Promise<void> {
+    if (typeof rawMessage === "string") {
+      this.sendProtocolError(ws, null, ProtocolErrorCode.MalformedEnvelope, null);
+      ws.close(1002, "Binary messages required");
+      return;
+    }
+
+    let message: BrowserWireMessage;
+    try {
+      message = decodeBrowserMessage(rawMessage);
+    } catch (error) {
+      const protocolError =
+        error instanceof WireProtocolError
+          ? error
+          : new WireProtocolError(ProtocolErrorCode.InternalError);
+      const state = await this.getState();
+      this.sendProtocolError(
+        ws,
+        protocolError.messageId,
+        protocolError.code,
+        state?.revision ?? null,
+      );
+      if (
+        protocolError.code === ProtocolErrorCode.MalformedEnvelope ||
+        protocolError.code === ProtocolErrorCode.UnsupportedVersion ||
+        protocolError.code === ProtocolErrorCode.MessageTooLarge
+      ) {
+        ws.close(
+          protocolError.code === ProtocolErrorCode.MessageTooLarge ? 1009 : 1002,
+          "Protocol violation",
+        );
+      }
+      return;
+    }
+
+    try {
+      await this.handleBrowserMessage(ws, message);
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          kind: "conversation_websocket_error",
+          sessionId: this.ctx.id.name ?? null,
+          messageType: message[1],
+          error: error instanceof Error ? error.name : "UnknownError",
+        }),
+      );
+      const state = await this.getState();
+      this.sendProtocolError(
+        ws,
+        message[2],
+        ProtocolErrorCode.InternalError,
+        state?.revision ?? null,
+      );
+    }
+  }
+
+  override async webSocketClose(
+    _ws: WebSocket,
+    code: number,
+    _reason: string,
+    wasClean: boolean,
+  ): Promise<void> {
+    console.log(
+      JSON.stringify({
+        kind: "conversation_websocket_closed",
+        sessionId: this.ctx.id.name ?? null,
+        code,
+        wasClean,
+      }),
+    );
+  }
+
+  override async webSocketError(_ws: WebSocket, error: unknown): Promise<void> {
+    console.error(
+      JSON.stringify({
+        kind: "conversation_websocket_error",
+        sessionId: this.ctx.id.name ?? null,
+        error: error instanceof Error ? error.name : "UnknownError",
+      }),
+    );
+  }
+
+  async initialize(sessionId: ConversationSessionId, at: UnixMillis): Promise<InitializeResult> {
+    if (this.ctx.id.name !== sessionId) {
+      return {
+        status: "rejected",
+        reason: "identity_mismatch",
+        state: decodeSnapshot(this.ctx.storage.kv.get<PersistedSnapshot>(SNAPSHOT_KEY)),
+      };
+    }
+    return this.ctx.storage.transaction(async (transaction) => {
+      const current = await this.readState(transaction);
+      if (current !== null) {
+        await reconcileAlarm(transaction, current);
+        return current.data.sessionId === sessionId
+          ? ({ status: "existing", state: current } as const)
+          : ({ status: "rejected", reason: "already_initialized", state: current } as const);
+      }
+      const state = createConversation(sessionId, at);
+      await this.writeState(transaction, state);
+      await reconcileAlarm(transaction, state);
+      return { status: "initialized", state } as const;
+    });
+  }
+
+  getState(): ConversationState | null {
+    return decodeSnapshot(this.ctx.storage.kv.get<PersistedSnapshot>(SNAPSHOT_KEY));
+  }
+
+  async beginLiveKitProvisioning(command: {
+    readonly roomName: string;
+    readonly transportEpoch: number;
+    readonly leaseId: string;
+    readonly leaseExpiresAt: number;
+    readonly now: number;
+  }): Promise<BeginLiveKitProvisioningResult> {
+    return this.ctx.storage.transaction(async (transaction) => {
+      const state = await this.readState(transaction);
+      if (state?.tag !== ConversationStateTag.Starting) {
+        return { outcome: "rejected", reason: "not_starting" } as const;
+      }
+      const transport = state.data.transport;
+      if (
+        transport.status !== TransportStatus.Connecting ||
+        transport.epoch !== command.transportEpoch
+      ) {
+        return { outcome: "rejected", reason: "epoch_mismatch" } as const;
+      }
+
+      const current = await transaction.get<LiveKitProvisioning>(LIVEKIT_PROVISIONING_KEY);
+      if (current?.status === "ready") {
+        return current.roomName === command.roomName &&
+          current.transportEpoch === command.transportEpoch
+          ? ({ outcome: "ready", provisioning: current } as const)
+          : ({ outcome: "rejected", reason: "epoch_mismatch" } as const);
+      }
+      if (current?.status === "provisioning" && current.leaseExpiresAt > command.now) {
+        return { outcome: "in_progress", retryAt: current.leaseExpiresAt } as const;
+      }
+
+      await transaction.put(LIVEKIT_PROVISIONING_KEY, {
+        status: "provisioning",
+        roomName: command.roomName,
+        transportEpoch: command.transportEpoch,
+        leaseId: command.leaseId,
+        leaseExpiresAt: command.leaseExpiresAt,
+      } satisfies LiveKitProvisioningLease);
+      return { outcome: "owner", leaseId: command.leaseId } as const;
+    });
+  }
+
+  async completeLiveKitProvisioning(
+    command: LiveKitProvisioningReady & {
+      readonly leaseId: string;
+    },
+  ): Promise<boolean> {
+    return this.ctx.storage.transaction(async (transaction) => {
+      const current = await transaction.get<LiveKitProvisioning>(LIVEKIT_PROVISIONING_KEY);
+      if (
+        current?.status !== "provisioning" ||
+        current.leaseId !== command.leaseId ||
+        current.roomName !== command.roomName ||
+        current.transportEpoch !== command.transportEpoch
+      ) {
+        return false;
+      }
+      const ready: LiveKitProvisioningReady = {
+        status: "ready",
+        roomName: command.roomName,
+        transportEpoch: command.transportEpoch,
+        dispatchId: command.dispatchId,
+        egressId: command.egressId,
+        expectedR2Key: command.expectedR2Key,
+      };
+      await transaction.put(LIVEKIT_PROVISIONING_KEY, ready);
+      return true;
+    });
+  }
+
+  async abandonLiveKitProvisioning(leaseId: string): Promise<void> {
+    await this.ctx.storage.transaction(async (transaction) => {
+      const current = await transaction.get<LiveKitProvisioning>(LIVEKIT_PROVISIONING_KEY);
+      if (current?.status === "provisioning" && current.leaseId === leaseId) {
+        await transaction.delete(LIVEKIT_PROVISIONING_KEY);
+      }
+    });
+  }
+
+  async getLiveKitProvisioning(): Promise<LiveKitProvisioningReady | null> {
+    const current = await this.ctx.storage.get<LiveKitProvisioning>(LIVEKIT_PROVISIONING_KEY);
+    return current?.status === "ready" ? current : null;
+  }
+
+  async beginLiveKitShutdown(command: {
+    readonly leaseId: string;
+    readonly leaseExpiresAt: number;
+    readonly now: number;
+  }): Promise<BeginLiveKitShutdownResult> {
+    return this.ctx.storage.transaction(async (transaction) => {
+      const state = await this.readState(transaction);
+      if (
+        state === null ||
+        state.tag === ConversationStateTag.Created ||
+        state.tag === ConversationStateTag.Starting ||
+        state.tag === ConversationStateTag.Live
+      ) {
+        return { outcome: "rejected", reason: "conversation_active" } as const;
+      }
+      const provisioning = await transaction.get<LiveKitProvisioning>(LIVEKIT_PROVISIONING_KEY);
+      if (provisioning?.status !== "ready") {
+        return { outcome: "rejected", reason: "not_provisioned" } as const;
+      }
+      const current = await transaction.get<LiveKitShutdown>(LIVEKIT_SHUTDOWN_KEY);
+      if (current?.status === "stopped") return { outcome: "stopped" } as const;
+      if (current?.status === "stopping" && current.leaseExpiresAt > command.now) {
+        return { outcome: "in_progress", retryAt: current.leaseExpiresAt } as const;
+      }
+      await transaction.put(LIVEKIT_SHUTDOWN_KEY, {
+        status: "stopping",
+        leaseId: command.leaseId,
+        leaseExpiresAt: command.leaseExpiresAt,
+      } satisfies LiveKitShutdownLease);
+      return { outcome: "owner", provisioning } as const;
+    });
+  }
+
+  async completeLiveKitShutdown(command: {
+    readonly leaseId: string;
+    readonly stoppedAt: number;
+  }): Promise<boolean> {
+    return this.ctx.storage.transaction(async (transaction) => {
+      const current = await transaction.get<LiveKitShutdown>(LIVEKIT_SHUTDOWN_KEY);
+      if (current?.status !== "stopping" || current.leaseId !== command.leaseId) return false;
+      await transaction.put(LIVEKIT_SHUTDOWN_KEY, {
+        status: "stopped",
+        stoppedAt: command.stoppedAt,
+      } satisfies LiveKitShutdownComplete);
+      return true;
+    });
+  }
+
+  async abandonLiveKitShutdown(leaseId: string): Promise<void> {
+    await this.ctx.storage.transaction(async (transaction) => {
+      const current = await transaction.get<LiveKitShutdown>(LIVEKIT_SHUTDOWN_KEY);
+      if (current?.status === "stopping" && current.leaseId === leaseId) {
+        await transaction.delete(LIVEKIT_SHUTDOWN_KEY);
+      }
+    });
+  }
+
+  async recordAgentObservation(command: {
+    readonly eventId: string;
+    readonly kind: AgentObservationKind;
+    readonly roomName: string;
+    readonly transportEpoch: number;
+  }): Promise<"recorded" | "duplicate" | "rejected"> {
+    return this.ctx.storage.transaction(async (transaction) => {
+      const provisioning = await transaction.get<LiveKitProvisioning>(LIVEKIT_PROVISIONING_KEY);
+      if (provisioning?.status !== "ready" || provisioning.roomName !== command.roomName) {
+        return "rejected" as const;
+      }
+      const receiptKey = `${AGENT_OBSERVATION_RECEIPT_PREFIX}${command.eventId}`;
+      if ((await transaction.get<boolean>(receiptKey)) === true) {
+        return "duplicate" as const;
+      }
+      const current =
+        (await transaction.get<LiveKitTransportEvidence>(LIVEKIT_TRANSPORT_EVIDENCE_KEY)) ??
+        emptyTransportEvidence(provisioning.transportEpoch);
+      const advancesRecoveryEpoch =
+        command.kind === "realtime_recovered" &&
+        command.transportEpoch === current.transportEpoch + 1;
+      if (current.transportEpoch !== command.transportEpoch && !advancesRecoveryEpoch) {
+        return "rejected" as const;
+      }
+      const realtimeReady =
+        command.kind === "realtime_ready" || command.kind === "realtime_recovered";
+      await transaction.put(LIVEKIT_TRANSPORT_EVIDENCE_KEY, {
+        ...current,
+        transportEpoch: command.transportEpoch,
+        realtimeReady,
+        realtimeReadyEventId: realtimeReady ? command.eventId : null,
+      } satisfies LiveKitTransportEvidence);
+      await transaction.put(receiptKey, true);
+      return "recorded" as const;
+    });
+  }
+
+  async getLiveKitTransportEvidence(): Promise<LiveKitTransportEvidence | null> {
+    return (
+      (await this.ctx.storage.get<LiveKitTransportEvidence>(LIVEKIT_TRANSPORT_EVIDENCE_KEY)) ?? null
+    );
+  }
+
+  async recordLiveKitMediaObservation(command: {
+    readonly eventId: string;
+    readonly kind: LiveKitMediaObservationKind;
+    readonly participantIdentity: string;
+    readonly roomName: string;
+    readonly transportEpoch: number;
+  }): Promise<"recorded" | "duplicate" | "rejected"> {
+    return this.ctx.storage.transaction(async (transaction) => {
+      const provisioning = await transaction.get<LiveKitProvisioning>(LIVEKIT_PROVISIONING_KEY);
+      if (provisioning?.status !== "ready" || provisioning.roomName !== command.roomName) {
+        return "rejected" as const;
+      }
+      const receiptKey = `${LIVEKIT_MEDIA_RECEIPT_PREFIX}${command.eventId}`;
+      if ((await transaction.get<boolean>(receiptKey)) === true) return "duplicate" as const;
+
+      const current =
+        (await transaction.get<LiveKitTransportEvidence>(LIVEKIT_TRANSPORT_EVIDENCE_KEY)) ??
+        emptyTransportEvidence(provisioning.transportEpoch);
+      if (current.transportEpoch !== command.transportEpoch) return "rejected" as const;
+      const next = updateMediaEvidence(current, command.kind, command.participantIdentity);
+      await transaction.put(LIVEKIT_TRANSPORT_EVIDENCE_KEY, next);
+      await transaction.put(receiptKey, true);
+      return "recorded" as const;
+    });
+  }
+
+  async applyEvent(command: ApplyEventCommand): Promise<ApplyEventResult> {
+    const result = await this.ctx.storage.transaction((transaction) =>
+      this.applyEventInTransaction(transaction, command),
+    );
+    this.emitTransitionTelemetry(command, result, "rpc");
+    if (
+      result.outcome !== "rejected" &&
+      command.event.type === ConversationEventType.TimeLimitReached
+    ) {
+      await this.flushLiveKitShutdownOutbox();
+    }
+    return result;
+  }
+
+  /** Applies a trusted server-side integration event and publishes the new snapshot to clients. */
+  async applyIntegrationEvent(command: ApplyEventCommand): Promise<ApplyEventResult> {
+    const result = await this.applyEvent(command);
+    if (result.outcome === "applied") {
+      this.broadcastStateSnapshot(result.state);
+    }
+    return result;
+  }
+
+  override async alarm(alarmInfo?: AlarmInvocationInfo): Promise<void> {
+    const now = value.unixMillis(Date.now());
+    let context: Pick<AlarmExecution, "state" | "deadline" | "event"> = {
+      state: null,
+      deadline: null,
+      event: null,
+    };
+    try {
+      await this.flushLiveKitShutdownOutbox();
+      const execution = await this.ctx.storage.transaction<AlarmExecution>(async (transaction) => {
+        const state = await this.readState(transaction);
+        if (state === null) {
+          await transaction.deleteAlarm();
+          return {
+            outcome: "no_state",
+            state: null,
+            deadline: null,
+            event: null,
+            transition: null,
+          };
+        }
+        const deadline = deadlineForState(state);
+        const event = deadlineEventForState(state, now);
+        context = { state, deadline, event };
+        if (deadline === null || event === null) {
+          await transaction.deleteAlarm();
+          return { outcome: "no_deadline", state, deadline: null, event: null, transition: null };
+        }
+        if (Number(now) < Number(deadline)) {
+          await transaction.setAlarm(Number(deadline));
+          return { outcome: "rescheduled_early", state, deadline, event, transition: null };
+        }
+        const transition = await this.applyEventInTransaction(transaction, {
+          expectedRevision: state.revision,
+          event,
+        });
+        if (transition.outcome === "rejected") {
+          throw new AlarmTransitionRejectedError(transition.reason);
+        }
+        return {
+          outcome: transition.outcome === "applied" ? "transition_applied" : "transition_duplicate",
+          state,
+          deadline,
+          event,
+          transition,
+        };
+      });
+      if (execution.transition !== null && execution.event !== null) {
+        this.emitTransitionTelemetry(
+          { expectedRevision: execution.transition.receipt.sourceRevision, event: execution.event },
+          execution.transition,
+          "alarm",
+        );
+      }
+      await this.flushLiveKitShutdownOutbox();
+      this.emitAlarmTelemetry(execution, alarmInfo, now, null);
+    } catch (error) {
+      this.emitAlarmTelemetry(
+        { outcome: "failed", ...context, transition: null },
+        alarmInfo,
+        now,
+        error,
+      );
+      throw error;
+    }
+  }
+
+  private async handleBrowserMessage(ws: WebSocket, message: BrowserWireMessage): Promise<void> {
+    const [, type, messageId, body] = message;
+    const attachment = socketAttachment(ws);
+    if (type === BrowserMessageType.ClientHello) {
+      if (attachment.phase !== "awaiting_hello") {
+        this.sendProtocolError(ws, messageId, ProtocolErrorCode.MessageNotAllowedInState, null);
+        return;
+      }
+      await this.handleClientHello(ws, messageId, body);
+      return;
+    }
+    if (attachment.phase !== "active" || attachment.connectionId === null) {
+      this.sendProtocolError(ws, messageId, ProtocolErrorCode.Unauthorized, null);
+      ws.close(1008, "Client hello required");
+      return;
+    }
+
+    switch (type) {
+      case BrowserMessageType.SessionReady:
+      case BrowserMessageType.TransportStatus:
+      case BrowserMessageType.SessionClosed:
+      case BrowserMessageType.ArtifactStatus:
+        await this.acknowledgeBrowserObservation(ws, messageId);
+        return;
+      case BrowserMessageType.EndRequested:
+        await this.applyFromSocket(ws, messageId, body.expectedRevision, {
+          type: ConversationEventType.EndRequested,
+          eventId: `client:${messageId}`,
+          at: value.unixMillis(body.observedAt),
+          reason: "user_requested",
+          endingDeadlineAt: value.unixMillis(body.observedAt + ALARM_SHUTDOWN_GRACE_MS),
+        });
+        return;
+      case BrowserMessageType.ClientPing: {
+        const state = await this.getState();
+        this.sendWire(ws, [
+          WIRE_PROTOCOL_VERSION,
+          ServerMessageType.ServerPing,
+          crypto.randomUUID(),
+          { clientSentAt: body.sentAt, serverSentAt: Date.now() },
+        ]);
+        if (state !== null) this.sendAck(ws, messageId, AckOutcomeCode.Accepted, state);
+        return;
+      }
+    }
+  }
+
+  private async handleClientHello(
+    ws: WebSocket,
+    messageId: string,
+    body: Extract<
+      BrowserWireMessage,
+      readonly [1, BrowserMessageType.ClientHello, string, unknown]
+    >[3],
+  ): Promise<void> {
+    const state = await this.getState();
+    if (
+      state === null ||
+      body.conversationId !== state.data.sessionId ||
+      body.conversationId !== this.ctx.id.name
+    ) {
+      this.sendProtocolError(
+        ws,
+        messageId,
+        ProtocolErrorCode.ConversationMismatch,
+        state?.revision ?? null,
+      );
+      ws.close(1008, "Conversation mismatch");
+      return;
+    }
+    const epoch = transportEpoch(state.data.transport);
+    if (body.requestedEpoch !== null && body.requestedEpoch !== epoch) {
+      this.sendProtocolError(ws, messageId, ProtocolErrorCode.StaleTransportEpoch, state.revision);
+      ws.close(4001, "Transport epoch superseded");
+      return;
+    }
+    for (const existing of this.ctx.getWebSockets("conversation-client")) {
+      if (existing !== ws && socketAttachment(existing).phase === "active") {
+        existing.close(4001, "Client connection superseded");
+      }
+    }
+    ws.serializeAttachment({
+      protocolVersion: WIRE_PROTOCOL_VERSION,
+      phase: "active",
+      connectionId: body.connectionId,
+      transportEpoch: epoch,
+      connectedAt: Date.now(),
+    } satisfies ClientSocketAttachment);
+    this.sendWire(ws, [
+      WIRE_PROTOCOL_VERSION,
+      ServerMessageType.ServerHello,
+      crypto.randomUUID(),
+      {
+        connectionId: body.connectionId,
+        acceptedEpoch: epoch,
+        currentRevision: state.revision,
+        currentState: toConversationStateDto(state),
+      },
+    ]);
+    this.sendAck(ws, messageId, AckOutcomeCode.Accepted, state);
+  }
+
+  private async acknowledgeBrowserObservation(ws: WebSocket, messageId: string): Promise<void> {
+    const state = await this.getState();
+    if (state === null) {
+      this.sendProtocolError(ws, messageId, ProtocolErrorCode.InternalError, null);
+      return;
+    }
+    this.sendAck(ws, messageId, AckOutcomeCode.Accepted, state);
+    this.sendStateSnapshot(ws, state);
+  }
+
+  private async applyFromSocket(
+    ws: WebSocket,
+    messageId: string,
+    expectedRevision: number,
+    event: ConversationEvent,
+  ): Promise<void> {
+    const result = await this.applyEvent({ expectedRevision, event });
+    this.sendApplyResult(ws, messageId, result);
+    if (result.outcome !== "rejected") {
+      const attachment = socketAttachment(ws);
+      ws.serializeAttachment({
+        ...attachment,
+        transportEpoch: transportEpoch(result.state.data.transport),
+      } satisfies ClientSocketAttachment);
+    }
+  }
+
+  private sendApplyResult(ws: WebSocket, messageId: string, result: ApplyEventResult): void {
+    const state = result.state;
+    if (state === null) {
+      this.sendProtocolError(ws, messageId, ProtocolErrorCode.ConversationMismatch, null);
+      return;
+    }
+    const outcome =
+      result.outcome === "applied"
+        ? AckOutcomeCode.Accepted
+        : result.outcome === "duplicate"
+          ? AckOutcomeCode.Duplicate
+          : result.reason === "revision_conflict"
+            ? AckOutcomeCode.StaleRevision
+            : AckOutcomeCode.Rejected;
+    this.sendAck(ws, messageId, outcome, state);
+    this.sendStateSnapshot(ws, state);
+  }
+
+  private sendAck(
+    ws: WebSocket,
+    messageId: string,
+    outcome: AckOutcomeCode,
+    state: ConversationState,
+  ): void {
+    const body: MessageAckBody = {
+      acknowledgedMessageId: messageId,
+      outcome,
+      currentRevision: state.revision,
+      currentState: state.tag,
+    };
+    this.sendWire(ws, [
+      WIRE_PROTOCOL_VERSION,
+      ServerMessageType.MessageAck,
+      crypto.randomUUID(),
+      body,
+    ]);
+  }
+
+  private sendStateSnapshot(ws: WebSocket, state: ConversationState): void {
+    this.sendWire(ws, [
+      WIRE_PROTOCOL_VERSION,
+      ServerMessageType.StateSnapshot,
+      crypto.randomUUID(),
+      { revision: state.revision, state: toConversationStateDto(state) },
+    ]);
+  }
+
+  private broadcastStateSnapshot(state: ConversationState): void {
+    for (const ws of this.ctx.getWebSockets(CLIENT_WEBSOCKET_TAG)) {
+      try {
+        const attachment = socketAttachment(ws);
+        if (attachment.phase === "active") this.sendStateSnapshot(ws, state);
+      } catch (error) {
+        console.warn(
+          JSON.stringify({
+            kind: "conversation_snapshot_broadcast_failed",
+            sessionId: this.ctx.id.name ?? null,
+            revision: state.revision,
+            error: error instanceof Error ? error.name : "UnknownError",
+          }),
+        );
+        ws.close(1011, "Snapshot delivery failed");
+      }
+    }
+  }
+
+  private sendProtocolError(
+    ws: WebSocket,
+    messageId: string | null,
+    code: ProtocolErrorCode,
+    currentRevision: number | null,
+  ): void {
+    this.sendWire(ws, [
+      WIRE_PROTOCOL_VERSION,
+      ServerMessageType.ProtocolError,
+      crypto.randomUUID(),
+      { acknowledgedMessageId: messageId, code, currentRevision },
+    ]);
+  }
+
+  private sendWire(ws: WebSocket, message: ServerWireMessage): void {
+    ws.send(encodeWireMessage(message));
+  }
+
+  private async applyEventInTransaction(
+    transaction: DurableObjectTransaction,
+    command: ApplyEventCommand,
+  ): Promise<ApplyEventResult> {
+    const receipt = await transaction.get<TransitionReceipt>(receiptKey(command.event.eventId));
+    const current = await this.readState(transaction);
+    if (receipt !== undefined) {
+      if (current === null)
+        throw new Error("Transition receipt exists without a conversation snapshot");
+      await reconcileAlarm(transaction, current);
+      return { outcome: "duplicate", state: current, receipt };
+    }
+    if (current === null) return { outcome: "rejected", reason: "not_initialized", state: null };
+    if (current.revision !== command.expectedRevision) {
+      return { outcome: "rejected", reason: "revision_conflict", state: current };
+    }
+    let next: ConversationState;
+    try {
+      next = transitionRuntime(current, command.event);
+    } catch (error) {
+      if (error instanceof IllegalTransitionError) {
+        return { outcome: "rejected", reason: "illegal_transition", state: current };
+      }
+      if (error instanceof TransitionGuardError) {
+        return { outcome: "rejected", reason: "guard_failed", state: current };
+      }
+      throw error;
+    }
+    const appliedReceipt: TransitionReceipt = {
+      eventId: command.event.eventId,
+      eventType: command.event.type,
+      outcome: "applied",
+      sourceState: current.tag,
+      targetState: next.tag,
+      sourceRevision: current.revision,
+      targetRevision: next.revision,
+      appliedAt: command.event.at,
+    };
+    await this.writeState(transaction, next);
+    await transaction.put(receiptKey(command.event.eventId), appliedReceipt);
+    if (command.event.type === ConversationEventType.TimeLimitReached) {
+      await transaction.put(LIVEKIT_SHUTDOWN_OUTBOX_KEY, {
+        version: LIVEKIT_SHUTDOWN_MESSAGE_VERSION,
+        conversationId: current.data.sessionId,
+        triggerEventId: command.event.eventId,
+      } satisfies LiveKitShutdownMessage);
+    }
+    await reconcileAlarm(transaction, next);
+    return { outcome: "applied", state: next, receipt: appliedReceipt };
+  }
+
+  private async readState(
+    transaction: DurableObjectTransaction,
+  ): Promise<ConversationState | null> {
+    return decodeSnapshot(await transaction.get<PersistedSnapshot>(SNAPSHOT_KEY));
+  }
+
+  private async writeState(
+    transaction: DurableObjectTransaction,
+    state: ConversationState,
+  ): Promise<void> {
+    await transaction.put(SNAPSHOT_KEY, {
+      schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+      state,
+    } satisfies PersistedSnapshot);
+  }
+
+  private async flushLiveKitShutdownOutbox(): Promise<void> {
+    const pending = await this.ctx.storage.get<LiveKitShutdownMessage>(LIVEKIT_SHUTDOWN_OUTBOX_KEY);
+    if (pending === undefined) return;
+
+    await this.env.LIVEKIT_SHUTDOWN_QUEUE.send(pending, { contentType: "json" });
+    await this.ctx.storage.transaction(async (transaction) => {
+      const current = await transaction.get<LiveKitShutdownMessage>(LIVEKIT_SHUTDOWN_OUTBOX_KEY);
+      if (current?.triggerEventId === pending.triggerEventId) {
+        await transaction.delete(LIVEKIT_SHUTDOWN_OUTBOX_KEY);
+      }
+    });
+  }
+
+  private emitTransitionTelemetry(
+    command: ApplyEventCommand,
+    result: ApplyEventResult,
+    trigger: TransitionTrigger,
+  ): void {
+    const receipt = result.outcome === "rejected" ? null : result.receipt;
+    const record: TransitionTelemetryRecord = {
+      kind: "conversation_transition",
+      level: result.outcome === "rejected" ? "warn" : "info",
+      observedAt: Date.now(),
+      trigger,
+      sessionId: result.state?.data.sessionId ?? this.ctx.id.name ?? null,
+      eventId: command.event.eventId,
+      eventType: command.event.type,
+      expectedRevision: command.expectedRevision,
+      sourceState: receipt?.sourceState ?? result.state?.tag ?? null,
+      targetState: receipt?.targetState ?? null,
+      sourceRevision: receipt?.sourceRevision ?? result.state?.revision ?? null,
+      targetRevision: receipt?.targetRevision ?? null,
+      currentRevision: result.state?.revision ?? null,
+      outcome: result.outcome,
+      rejectionReason: result.outcome === "rejected" ? result.reason : null,
+    };
+    console.log(JSON.stringify(record));
+  }
+
+  private emitAlarmTelemetry(
+    execution: Omit<AlarmExecution, "outcome"> & { outcome: AlarmOutcome },
+    alarmInfo: AlarmInvocationInfo | undefined,
+    observedAt: UnixMillis,
+    error: unknown,
+  ): void {
+    const record: AlarmTelemetryRecord = {
+      kind: "conversation_alarm",
+      level: execution.outcome === "failed" ? "error" : "info",
+      observedAt,
+      sessionId: execution.state?.data.sessionId ?? this.ctx.id.name ?? null,
+      state: execution.state?.tag ?? null,
+      revision: execution.state?.revision ?? null,
+      deadline: execution.deadline,
+      scheduledTime: alarmInfo?.scheduledTime ?? null,
+      retryCount: alarmInfo?.retryCount ?? 0,
+      isRetry: alarmInfo?.isRetry ?? false,
+      eventId: execution.event?.eventId ?? null,
+      eventType: execution.event?.type ?? null,
+      outcome: execution.outcome,
+      error: error instanceof Error ? error.name : error === null ? null : "UnknownError",
+    };
+    console.log(JSON.stringify(record));
+  }
+}
+
+function decodeSnapshot(snapshot: PersistedSnapshot | undefined): ConversationState | null {
+  if (snapshot === undefined) return null;
+  if (snapshot.schemaVersion !== SNAPSHOT_SCHEMA_VERSION) {
+    throw new UnsupportedSnapshotVersionError(snapshot.schemaVersion);
+  }
+  return snapshot.state;
+}
+
+async function reconcileAlarm(
+  transaction: DurableObjectTransaction,
+  state: ConversationState,
+): Promise<void> {
+  const deadline = deadlineForState(state);
+  if (deadline === null) {
+    await transaction.deleteAlarm();
+    return;
+  }
+  await transaction.setAlarm(Number(deadline));
+}
+
+function receiptKey(eventId: string): string {
+  return `${RECEIPT_KEY_PREFIX}${eventId}`;
+}
+
+function socketAttachment(ws: WebSocket): ClientSocketAttachment {
+  const attachment = ws.deserializeAttachment();
+  if (typeof attachment === "object" && attachment !== null) {
+    return attachment as ClientSocketAttachment;
+  }
+  return {
+    protocolVersion: WIRE_PROTOCOL_VERSION,
+    phase: "awaiting_hello",
+    connectionId: null,
+    transportEpoch: null,
+    connectedAt: Date.now(),
+  };
+}
+
+function emptyTransportEvidence(transportEpoch: number): LiveKitTransportEvidence {
+  return {
+    transportEpoch,
+    browserParticipantActive: false,
+    browserAudioPublished: false,
+    agentParticipantActive: false,
+    agentParticipantIdentity: null,
+    agentAudioPublished: false,
+    realtimeReady: false,
+    realtimeReadyEventId: null,
+  };
+}
+
+function updateMediaEvidence(
+  current: LiveKitTransportEvidence,
+  kind: LiveKitMediaObservationKind,
+  participantIdentity: string,
+): LiveKitTransportEvidence {
+  switch (kind) {
+    case "browser_participant_joined":
+      return { ...current, browserParticipantActive: true };
+    case "browser_participant_left":
+      return { ...current, browserParticipantActive: false, browserAudioPublished: false };
+    case "browser_audio_published":
+      return { ...current, browserAudioPublished: true };
+    case "browser_audio_unpublished":
+      return { ...current, browserAudioPublished: false };
+    case "agent_participant_joined":
+      return {
+        ...current,
+        agentParticipantActive: true,
+        agentParticipantIdentity: participantIdentity,
+      };
+    case "agent_participant_left":
+      if (current.agentParticipantIdentity !== participantIdentity) return current;
+      return {
+        ...current,
+        agentParticipantActive: false,
+        agentParticipantIdentity: null,
+        agentAudioPublished: false,
+      };
+    case "agent_audio_published":
+      if (current.agentParticipantIdentity !== participantIdentity) return current;
+      return { ...current, agentAudioPublished: true };
+    case "agent_audio_unpublished":
+      if (current.agentParticipantIdentity !== participantIdentity) return current;
+      return { ...current, agentAudioPublished: false };
+  }
+}
+
+function transportEpoch(transport: TransportState): number {
+  return transport.status === TransportStatus.Idle ? 0 : transport.epoch;
+}
