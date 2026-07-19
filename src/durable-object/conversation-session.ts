@@ -27,6 +27,40 @@ import {
   type TransportState,
   type UnixMillis,
 } from "../domain/conversation-state-machine";
+import { emitAlarmTelemetry, emitTransitionTelemetry } from "./conversation-telemetry";
+import type {
+  AgentObservationKind,
+  AlarmExecution,
+  ApplyEventCommand,
+  ApplyEventRejectionReason,
+  ApplyEventResult,
+  BeginLiveKitProvisioningResult,
+  BeginLiveKitShutdownResult,
+  InitializeResult,
+  LiveKitMediaObservationKind,
+  LiveKitProvisioningReady,
+  LiveKitTransportEvidence,
+  TransitionReceipt,
+} from "./conversation-session-contract";
+import {
+  AGENT_OBSERVATION_RECEIPT_PREFIX,
+  LIVEKIT_MEDIA_RECEIPT_PREFIX,
+  LIVEKIT_PROVISIONING_KEY,
+  LIVEKIT_SHUTDOWN_KEY,
+  LIVEKIT_SHUTDOWN_OUTBOX_KEY,
+  LIVEKIT_TRANSPORT_EVIDENCE_KEY,
+  SNAPSHOT_KEY,
+  SNAPSHOT_SCHEMA_VERSION,
+  decodeSnapshot,
+  receiptKey,
+  type LiveKitProvisioning,
+  type LiveKitProvisioningLease,
+  type LiveKitShutdown,
+  type LiveKitShutdownComplete,
+  type LiveKitShutdownLease,
+  type PersistedSnapshot,
+} from "./conversation-session-storage";
+import { emptyTransportEvidence, updateMediaEvidence } from "./transport-evidence";
 import { toConversationStateDto } from "../worker/http/conversation-state-dto";
 import {
   LIVEKIT_SHUTDOWN_MESSAGE_VERSION,
@@ -47,17 +81,8 @@ import {
   type ServerWireMessage,
 } from "../shared/protocol/conversation-wire";
 
-const SNAPSHOT_KEY = "conversation:snapshot:v1";
-const RECEIPT_KEY_PREFIX = "conversation:receipt:v1:";
-const SNAPSHOT_SCHEMA_VERSION = 1 as const;
 const INTERNAL_CONVERSATION_HEADER = "X-Conversation-Id";
 const CLIENT_WEBSOCKET_TAG = "conversation-client";
-const LIVEKIT_PROVISIONING_KEY = "conversation:livekit-provisioning:v1";
-const LIVEKIT_TRANSPORT_EVIDENCE_KEY = "conversation:livekit-transport-evidence:v1";
-const AGENT_OBSERVATION_RECEIPT_PREFIX = "conversation:agent-observation:v1:";
-const LIVEKIT_MEDIA_RECEIPT_PREFIX = "conversation:livekit-media-observation:v1:";
-const LIVEKIT_SHUTDOWN_KEY = "conversation:livekit-shutdown:v1";
-const LIVEKIT_SHUTDOWN_OUTBOX_KEY = "conversation:livekit-shutdown-outbox:v1";
 
 interface ClientSocketAttachment {
   readonly protocolVersion: typeof WIRE_PROTOCOL_VERSION;
@@ -67,182 +92,19 @@ interface ClientSocketAttachment {
   readonly connectedAt: number;
 }
 
-interface PersistedSnapshot {
-  readonly schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION;
-  readonly state: ConversationState;
-}
-
-export interface LiveKitProvisioningReady {
-  readonly status: "ready";
-  readonly roomName: string;
-  readonly transportEpoch: number;
-  readonly dispatchId: string;
-  readonly egressId: string;
-  readonly expectedR2Key: string;
-}
-
-interface LiveKitProvisioningLease {
-  readonly status: "provisioning";
-  readonly roomName: string;
-  readonly transportEpoch: number;
-  readonly leaseId: string;
-  readonly leaseExpiresAt: number;
-}
-
-type LiveKitProvisioning = LiveKitProvisioningReady | LiveKitProvisioningLease;
-
-interface LiveKitShutdownLease {
-  readonly status: "stopping";
-  readonly leaseId: string;
-  readonly leaseExpiresAt: number;
-}
-
-interface LiveKitShutdownComplete {
-  readonly status: "stopped";
-  readonly stoppedAt: number;
-}
-
-type LiveKitShutdown = LiveKitShutdownLease | LiveKitShutdownComplete;
-
-export type BeginLiveKitShutdownResult =
-  | Readonly<{ outcome: "owner"; provisioning: LiveKitProvisioningReady }>
-  | Readonly<{ outcome: "stopped" }>
-  | Readonly<{ outcome: "in_progress"; retryAt: number }>
-  | Readonly<{ outcome: "rejected"; reason: "not_provisioned" | "conversation_active" }>;
-
-export interface LiveKitTransportEvidence {
-  readonly transportEpoch: number;
-  readonly browserParticipantActive: boolean;
-  readonly browserAudioPublished: boolean;
-  readonly agentParticipantActive: boolean;
-  readonly agentParticipantIdentity: string | null;
-  readonly agentAudioPublished: boolean;
-  readonly realtimeReady: boolean;
-  readonly realtimeReadyEventId: string | null;
-}
-
-export type AgentObservationKind =
-  | "realtime_ready"
-  | "realtime_interrupted"
-  | "realtime_recovered"
-  | "realtime_failed"
-  | "session_closed";
-
-export type LiveKitMediaObservationKind =
-  | "browser_participant_joined"
-  | "browser_participant_left"
-  | "browser_audio_published"
-  | "browser_audio_unpublished"
-  | "agent_participant_joined"
-  | "agent_participant_left"
-  | "agent_audio_published"
-  | "agent_audio_unpublished";
-
-export type BeginLiveKitProvisioningResult =
-  | Readonly<{ outcome: "owner"; leaseId: string }>
-  | Readonly<{ outcome: "ready"; provisioning: LiveKitProvisioningReady }>
-  | Readonly<{ outcome: "in_progress"; retryAt: number }>
-  | Readonly<{ outcome: "rejected"; reason: "not_starting" | "epoch_mismatch" }>;
-
-export interface TransitionReceipt {
-  readonly eventId: string;
-  readonly eventType: ConversationEventType;
-  readonly outcome: "applied";
-  readonly sourceState: ConversationStateTag;
-  readonly targetState: ConversationStateTag;
-  readonly sourceRevision: number;
-  readonly targetRevision: number;
-  readonly appliedAt: UnixMillis;
-}
-
-export type InitializeResult =
-  | Readonly<{ status: "initialized" | "existing"; state: ConversationState }>
-  | Readonly<{
-      status: "rejected";
-      reason: "identity_mismatch" | "already_initialized";
-      state: ConversationState | null;
-    }>;
-
-export interface ApplyEventCommand {
-  readonly expectedRevision: number;
-  readonly event: ConversationEvent;
-}
-
-export type ApplyEventRejectionReason =
-  | "not_initialized"
-  | "revision_conflict"
-  | "illegal_transition"
-  | "guard_failed";
-
-export type ApplyEventResult =
-  | Readonly<{ outcome: "applied"; state: ConversationState; receipt: TransitionReceipt }>
-  | Readonly<{ outcome: "duplicate"; state: ConversationState; receipt: TransitionReceipt }>
-  | Readonly<{
-      outcome: "rejected";
-      reason: ApplyEventRejectionReason;
-      state: ConversationState | null;
-    }>;
-
-type AcceptedApplyEventResult = Exclude<ApplyEventResult, { outcome: "rejected" }>;
-export type TransitionTrigger = "rpc" | "alarm";
-
-export interface TransitionTelemetryRecord {
-  readonly kind: "conversation_transition";
-  readonly level: "info" | "warn";
-  readonly observedAt: number;
-  readonly trigger: TransitionTrigger;
-  readonly sessionId: string | null;
-  readonly eventId: string;
-  readonly eventType: ConversationEventType;
-  readonly expectedRevision: number;
-  readonly sourceState: ConversationStateTag | null;
-  readonly targetState: ConversationStateTag | null;
-  readonly sourceRevision: number | null;
-  readonly targetRevision: number | null;
-  readonly currentRevision: number | null;
-  readonly outcome: ApplyEventResult["outcome"];
-  readonly rejectionReason: ApplyEventRejectionReason | null;
-}
-
-export type AlarmOutcome =
-  | "transition_applied"
-  | "transition_duplicate"
-  | "rescheduled_early"
-  | "no_state"
-  | "no_deadline"
-  | "failed";
-
-export interface AlarmTelemetryRecord {
-  readonly kind: "conversation_alarm";
-  readonly level: "info" | "error";
-  readonly observedAt: number;
-  readonly sessionId: string | null;
-  readonly state: ConversationStateTag | null;
-  readonly revision: number | null;
-  readonly deadline: number | null;
-  readonly scheduledTime: number | null;
-  readonly retryCount: number;
-  readonly isRetry: boolean;
-  readonly eventId: string | null;
-  readonly eventType: ConversationEventType | null;
-  readonly outcome: AlarmOutcome;
-  readonly error: string | null;
-}
-
-interface AlarmExecution {
-  readonly outcome: Exclude<AlarmOutcome, "failed">;
-  readonly state: ConversationState | null;
-  readonly deadline: UnixMillis | null;
-  readonly event: ConversationEvent | null;
-  readonly transition: AcceptedApplyEventResult | null;
-}
-
-export class UnsupportedSnapshotVersionError extends Error {
-  constructor(readonly schemaVersion: unknown) {
-    super(`Unsupported conversation snapshot schema version: ${String(schemaVersion)}`);
-    this.name = "UnsupportedSnapshotVersionError";
-  }
-}
+export type {
+  AgentObservationKind,
+  ApplyEventCommand,
+  ApplyEventResult,
+  BeginLiveKitProvisioningResult,
+  BeginLiveKitShutdownResult,
+  InitializeResult,
+  LiveKitMediaObservationKind,
+  LiveKitProvisioningReady,
+  LiveKitTransportEvidence,
+} from "./conversation-session-contract";
+export type { AlarmTelemetryRecord, TransitionTelemetryRecord } from "./conversation-telemetry";
+export { UnsupportedSnapshotVersionError } from "./conversation-session-storage";
 
 class AlarmTransitionRejectedError extends Error {
   constructor(reason: ApplyEventRejectionReason) {
@@ -608,7 +470,7 @@ export class ConversationSession extends DurableObject<Env> {
     const result = await this.ctx.storage.transaction((transaction) =>
       this.applyEventInTransaction(transaction, command),
     );
-    this.emitTransitionTelemetry(command, result, "rpc");
+    emitTransitionTelemetry(command, result, "rpc", this.ctx.id.name ?? null);
     if (
       result.outcome !== "rejected" &&
       command.event.type === ConversationEventType.TimeLimitReached
@@ -675,20 +537,22 @@ export class ConversationSession extends DurableObject<Env> {
         };
       });
       if (execution.transition !== null && execution.event !== null) {
-        this.emitTransitionTelemetry(
+        emitTransitionTelemetry(
           { expectedRevision: execution.transition.receipt.sourceRevision, event: execution.event },
           execution.transition,
           "alarm",
+          this.ctx.id.name ?? null,
         );
       }
       await this.flushLiveKitShutdownOutbox();
-      this.emitAlarmTelemetry(execution, alarmInfo, now, null);
+      emitAlarmTelemetry(execution, alarmInfo, now, null, this.ctx.id.name ?? null);
     } catch (error) {
-      this.emitAlarmTelemetry(
+      emitAlarmTelemetry(
         { outcome: "failed", ...context, transition: null },
         alarmInfo,
         now,
         error,
+        this.ctx.id.name ?? null,
       );
       throw error;
     }
@@ -986,65 +850,6 @@ export class ConversationSession extends DurableObject<Env> {
       }
     });
   }
-
-  private emitTransitionTelemetry(
-    command: ApplyEventCommand,
-    result: ApplyEventResult,
-    trigger: TransitionTrigger,
-  ): void {
-    const receipt = result.outcome === "rejected" ? null : result.receipt;
-    const record: TransitionTelemetryRecord = {
-      kind: "conversation_transition",
-      level: result.outcome === "rejected" ? "warn" : "info",
-      observedAt: Date.now(),
-      trigger,
-      sessionId: result.state?.data.sessionId ?? this.ctx.id.name ?? null,
-      eventId: command.event.eventId,
-      eventType: command.event.type,
-      expectedRevision: command.expectedRevision,
-      sourceState: receipt?.sourceState ?? result.state?.tag ?? null,
-      targetState: receipt?.targetState ?? null,
-      sourceRevision: receipt?.sourceRevision ?? result.state?.revision ?? null,
-      targetRevision: receipt?.targetRevision ?? null,
-      currentRevision: result.state?.revision ?? null,
-      outcome: result.outcome,
-      rejectionReason: result.outcome === "rejected" ? result.reason : null,
-    };
-    console.log(JSON.stringify(record));
-  }
-
-  private emitAlarmTelemetry(
-    execution: Omit<AlarmExecution, "outcome"> & { outcome: AlarmOutcome },
-    alarmInfo: AlarmInvocationInfo | undefined,
-    observedAt: UnixMillis,
-    error: unknown,
-  ): void {
-    const record: AlarmTelemetryRecord = {
-      kind: "conversation_alarm",
-      level: execution.outcome === "failed" ? "error" : "info",
-      observedAt,
-      sessionId: execution.state?.data.sessionId ?? this.ctx.id.name ?? null,
-      state: execution.state?.tag ?? null,
-      revision: execution.state?.revision ?? null,
-      deadline: execution.deadline,
-      scheduledTime: alarmInfo?.scheduledTime ?? null,
-      retryCount: alarmInfo?.retryCount ?? 0,
-      isRetry: alarmInfo?.isRetry ?? false,
-      eventId: execution.event?.eventId ?? null,
-      eventType: execution.event?.type ?? null,
-      outcome: execution.outcome,
-      error: error instanceof Error ? error.name : error === null ? null : "UnknownError",
-    };
-    console.log(JSON.stringify(record));
-  }
-}
-
-function decodeSnapshot(snapshot: PersistedSnapshot | undefined): ConversationState | null {
-  if (snapshot === undefined) return null;
-  if (snapshot.schemaVersion !== SNAPSHOT_SCHEMA_VERSION) {
-    throw new UnsupportedSnapshotVersionError(snapshot.schemaVersion);
-  }
-  return snapshot.state;
 }
 
 async function reconcileAlarm(
@@ -1059,10 +864,6 @@ async function reconcileAlarm(
   await transaction.setAlarm(Number(deadline));
 }
 
-function receiptKey(eventId: string): string {
-  return `${RECEIPT_KEY_PREFIX}${eventId}`;
-}
-
 function socketAttachment(ws: WebSocket): ClientSocketAttachment {
   const attachment = ws.deserializeAttachment();
   if (typeof attachment === "object" && attachment !== null) {
@@ -1075,56 +876,6 @@ function socketAttachment(ws: WebSocket): ClientSocketAttachment {
     transportEpoch: null,
     connectedAt: Date.now(),
   };
-}
-
-function emptyTransportEvidence(transportEpoch: number): LiveKitTransportEvidence {
-  return {
-    transportEpoch,
-    browserParticipantActive: false,
-    browserAudioPublished: false,
-    agentParticipantActive: false,
-    agentParticipantIdentity: null,
-    agentAudioPublished: false,
-    realtimeReady: false,
-    realtimeReadyEventId: null,
-  };
-}
-
-function updateMediaEvidence(
-  current: LiveKitTransportEvidence,
-  kind: LiveKitMediaObservationKind,
-  participantIdentity: string,
-): LiveKitTransportEvidence {
-  switch (kind) {
-    case "browser_participant_joined":
-      return { ...current, browserParticipantActive: true };
-    case "browser_participant_left":
-      return { ...current, browserParticipantActive: false, browserAudioPublished: false };
-    case "browser_audio_published":
-      return { ...current, browserAudioPublished: true };
-    case "browser_audio_unpublished":
-      return { ...current, browserAudioPublished: false };
-    case "agent_participant_joined":
-      return {
-        ...current,
-        agentParticipantActive: true,
-        agentParticipantIdentity: participantIdentity,
-      };
-    case "agent_participant_left":
-      if (current.agentParticipantIdentity !== participantIdentity) return current;
-      return {
-        ...current,
-        agentParticipantActive: false,
-        agentParticipantIdentity: null,
-        agentAudioPublished: false,
-      };
-    case "agent_audio_published":
-      if (current.agentParticipantIdentity !== participantIdentity) return current;
-      return { ...current, agentAudioPublished: true };
-    case "agent_audio_unpublished":
-      if (current.agentParticipantIdentity !== participantIdentity) return current;
-      return { ...current, agentAudioPublished: false };
-  }
 }
 
 function transportEpoch(transport: TransportState): number {

@@ -1,0 +1,59 @@
+import type { ConversationState } from "../domain/conversation-state-machine";
+import type { LiveKitProvisioningReady } from "./conversation-session-contract";
+
+export const SNAPSHOT_KEY = "conversation:snapshot:v1";
+export const RECEIPT_KEY_PREFIX = "conversation:receipt:v1:";
+export const SNAPSHOT_SCHEMA_VERSION = 1 as const;
+export const LIVEKIT_PROVISIONING_KEY = "conversation:livekit-provisioning:v1";
+export const LIVEKIT_TRANSPORT_EVIDENCE_KEY = "conversation:livekit-transport-evidence:v1";
+export const AGENT_OBSERVATION_RECEIPT_PREFIX = "conversation:agent-observation:v1:";
+export const LIVEKIT_MEDIA_RECEIPT_PREFIX = "conversation:livekit-media-observation:v1:";
+export const LIVEKIT_SHUTDOWN_KEY = "conversation:livekit-shutdown:v1";
+export const LIVEKIT_SHUTDOWN_OUTBOX_KEY = "conversation:livekit-shutdown-outbox:v1";
+
+export interface PersistedSnapshot {
+  readonly schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION;
+  readonly state: ConversationState;
+}
+
+export interface LiveKitProvisioningLease {
+  readonly status: "provisioning";
+  readonly roomName: string;
+  readonly transportEpoch: number;
+  readonly leaseId: string;
+  readonly leaseExpiresAt: number;
+}
+
+export type LiveKitProvisioning = LiveKitProvisioningReady | LiveKitProvisioningLease;
+
+export interface LiveKitShutdownLease {
+  readonly status: "stopping";
+  readonly leaseId: string;
+  readonly leaseExpiresAt: number;
+}
+
+export interface LiveKitShutdownComplete {
+  readonly status: "stopped";
+  readonly stoppedAt: number;
+}
+
+export type LiveKitShutdown = LiveKitShutdownLease | LiveKitShutdownComplete;
+
+export class UnsupportedSnapshotVersionError extends Error {
+  constructor(readonly schemaVersion: unknown) {
+    super(`Unsupported conversation snapshot schema version: ${String(schemaVersion)}`);
+    this.name = "UnsupportedSnapshotVersionError";
+  }
+}
+
+export function decodeSnapshot(snapshot: PersistedSnapshot | undefined): ConversationState | null {
+  if (snapshot === undefined) return null;
+  if (snapshot.schemaVersion !== SNAPSHOT_SCHEMA_VERSION) {
+    throw new UnsupportedSnapshotVersionError(snapshot.schemaVersion);
+  }
+  return snapshot.state;
+}
+
+export function receiptKey(eventId: string): string {
+  return `${RECEIPT_KEY_PREFIX}${eventId}`;
+}
