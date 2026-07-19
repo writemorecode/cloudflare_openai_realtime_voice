@@ -84,60 +84,73 @@ export class ConversationSession extends DurableObject<Env> {
     this.sockets.handleError(error);
   }
 
+  /** Initializes this named object once; rejects identity mismatches without mutating storage. */
   async initialize(sessionId: ConversationSessionId, at: UnixMillis): Promise<InitializeResult> {
     return this.aggregate.initialize(this.ctx.id.name, sessionId, at);
   }
 
+  /** Returns the authoritative snapshot, or null before initialization. */
   getState(): ConversationState | null {
     return this.aggregate.getState();
   }
 
+  /** Claims or observes the retry-safe LiveKit provisioning lease for the current starting epoch. */
   beginLiveKitProvisioning(
     command: BeginLiveKitProvisioningCommand,
   ): Promise<BeginLiveKitProvisioningResult> {
     return this.liveKit.beginProvisioning(command);
   }
 
+  /** Commits provider identifiers only when the caller still owns the provisioning lease. */
   async completeLiveKitProvisioning(command: CompleteLiveKitProvisioningCommand): Promise<boolean> {
     return this.liveKit.completeProvisioning(command);
   }
 
+  /** Releases a provisioning lease owned by the supplied lease ID. */
   async abandonLiveKitProvisioning(leaseId: string): Promise<void> {
     await this.liveKit.abandonProvisioning(leaseId);
   }
 
+  /** Returns completed internal LiveKit provisioning metadata, if available. */
   async getLiveKitProvisioning(): Promise<LiveKitProvisioningReady | null> {
     return this.liveKit.getProvisioning();
   }
 
+  /** Claims or observes teardown after the conversation has left its active lifecycle states. */
   beginLiveKitShutdown(command: BeginLiveKitShutdownCommand): Promise<BeginLiveKitShutdownResult> {
     return this.liveKit.beginShutdown(command);
   }
 
+  /** Marks teardown complete only when the caller still owns the shutdown lease. */
   completeLiveKitShutdown(command: CompleteLiveKitShutdownCommand): Promise<boolean> {
     return this.liveKit.completeShutdown(command);
   }
 
+  /** Releases a shutdown lease owned by the supplied lease ID. */
   async abandonLiveKitShutdown(leaseId: string): Promise<void> {
     await this.liveKit.abandonShutdown(leaseId);
   }
 
-  recordAgentObservation(
+  /** Records retry-stable agent readiness evidence and preserves the legacy RPC outcome strings. */
+  async recordAgentObservation(
     command: RecordAgentObservationCommand,
   ): Promise<"recorded" | "duplicate" | "rejected"> {
-    return this.liveKit.recordAgentObservation(command);
+    return (await this.liveKit.recordAgentObservation(command)).outcome;
   }
 
+  /** Returns the current composite transport evidence used by readiness reconciliation. */
   async getLiveKitTransportEvidence(): Promise<LiveKitTransportEvidence | null> {
     return this.liveKit.getTransportEvidence();
   }
 
-  recordLiveKitMediaObservation(
+  /** Records retry-stable LiveKit media evidence and preserves the legacy RPC outcome strings. */
+  async recordLiveKitMediaObservation(
     command: RecordLiveKitMediaObservationCommand,
   ): Promise<"recorded" | "duplicate" | "rejected"> {
-    return this.liveKit.recordMediaObservation(command);
+    return (await this.liveKit.recordMediaObservation(command)).outcome;
   }
 
+  /** Applies one revision-checked domain event and flushes a time-limit shutdown outbox entry. */
   async applyEvent(command: ApplyEventCommand): Promise<ApplyEventResult> {
     const result = await this.aggregate.applyEvent(command);
     emitTransitionTelemetry(command, result, "rpc", this.ctx.id.name ?? null);

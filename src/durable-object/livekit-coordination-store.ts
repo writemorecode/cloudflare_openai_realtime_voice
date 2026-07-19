@@ -162,11 +162,16 @@ export class LiveKitCoordinationStore {
   recordAgentObservation(command: RecordAgentObservationCommand): Promise<RecordObservationResult> {
     return this.storage.transaction(async (transaction) => {
       const provisioning = await transaction.get<LiveKitProvisioning>(LIVEKIT_PROVISIONING_KEY);
-      if (provisioning?.status !== "ready" || provisioning.roomName !== command.roomName) {
-        return "rejected" as const;
+      if (provisioning?.status !== "ready") {
+        return { outcome: "rejected", reason: "not_provisioned" } as const;
+      }
+      if (provisioning.roomName !== command.roomName) {
+        return { outcome: "rejected", reason: "room_mismatch" } as const;
       }
       const receiptKey = `${AGENT_OBSERVATION_RECEIPT_PREFIX}${command.eventId}`;
-      if ((await transaction.get<boolean>(receiptKey)) === true) return "duplicate" as const;
+      if ((await transaction.get<boolean>(receiptKey)) === true) {
+        return { outcome: "duplicate" } as const;
+      }
 
       const current =
         (await transaction.get<LiveKitTransportEvidence>(LIVEKIT_TRANSPORT_EVIDENCE_KEY)) ??
@@ -175,7 +180,7 @@ export class LiveKitCoordinationStore {
         command.kind === "realtime_recovered" &&
         command.transportEpoch === current.transportEpoch + 1;
       if (current.transportEpoch !== command.transportEpoch && !advancesRecoveryEpoch) {
-        return "rejected" as const;
+        return { outcome: "rejected", reason: "epoch_mismatch" } as const;
       }
       const realtimeReady =
         command.kind === "realtime_ready" || command.kind === "realtime_recovered";
@@ -186,7 +191,7 @@ export class LiveKitCoordinationStore {
         realtimeReadyEventId: realtimeReady ? command.eventId : null,
       } satisfies LiveKitTransportEvidence);
       await transaction.put(receiptKey, true);
-      return "recorded" as const;
+      return { outcome: "recorded" } as const;
     });
   }
 
@@ -201,20 +206,27 @@ export class LiveKitCoordinationStore {
   ): Promise<RecordObservationResult> {
     return this.storage.transaction(async (transaction) => {
       const provisioning = await transaction.get<LiveKitProvisioning>(LIVEKIT_PROVISIONING_KEY);
-      if (provisioning?.status !== "ready" || provisioning.roomName !== command.roomName) {
-        return "rejected" as const;
+      if (provisioning?.status !== "ready") {
+        return { outcome: "rejected", reason: "not_provisioned" } as const;
+      }
+      if (provisioning.roomName !== command.roomName) {
+        return { outcome: "rejected", reason: "room_mismatch" } as const;
       }
       const receiptKey = `${LIVEKIT_MEDIA_RECEIPT_PREFIX}${command.eventId}`;
-      if ((await transaction.get<boolean>(receiptKey)) === true) return "duplicate" as const;
+      if ((await transaction.get<boolean>(receiptKey)) === true) {
+        return { outcome: "duplicate" } as const;
+      }
 
       const current =
         (await transaction.get<LiveKitTransportEvidence>(LIVEKIT_TRANSPORT_EVIDENCE_KEY)) ??
         emptyTransportEvidence(provisioning.transportEpoch);
-      if (current.transportEpoch !== command.transportEpoch) return "rejected" as const;
+      if (current.transportEpoch !== command.transportEpoch) {
+        return { outcome: "rejected", reason: "epoch_mismatch" } as const;
+      }
       const next = updateMediaEvidence(current, command.kind, command.participantIdentity);
       await transaction.put(LIVEKIT_TRANSPORT_EVIDENCE_KEY, next);
       await transaction.put(receiptKey, true);
-      return "recorded" as const;
+      return { outcome: "recorded" } as const;
     });
   }
 }

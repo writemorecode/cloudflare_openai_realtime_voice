@@ -94,7 +94,13 @@ export interface RecordLiveKitMediaObservationCommand {
   readonly transportEpoch: number;
 }
 
-export type RecordObservationResult = "recorded" | "duplicate" | "rejected";
+export type RecordObservationResult =
+  | Readonly<{ outcome: "recorded" }>
+  | Readonly<{ outcome: "duplicate" }>
+  | Readonly<{
+      outcome: "rejected";
+      reason: "not_provisioned" | "room_mismatch" | "epoch_mismatch";
+    }>;
 
 export interface TransitionReceipt {
   readonly eventId: string;
