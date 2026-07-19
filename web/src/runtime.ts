@@ -1,3 +1,4 @@
+/** Owns the browser-side LiveKit room and control-WebSocket session for one conversation. */
 import {
   Room,
   RoomEvent,

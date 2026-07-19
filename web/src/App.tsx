@@ -1,3 +1,4 @@
+/** Renders the browser experience for authentication, a live conversation, and its completion. */
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ConversationStateTag, TransportStatus } from "../../src/domain/conversation-state-machine";

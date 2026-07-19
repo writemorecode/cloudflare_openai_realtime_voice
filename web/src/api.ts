@@ -1,3 +1,4 @@
+/** Implements the browser-facing HTTP client for authenticated conversation API operations. */
 import type { ConversationStateDto } from "../../src/worker/http/conversation-state-dto";
 import { WIRE_SUBPROTOCOL } from "../../src/shared/protocol/conversation-wire";
 import type { AuthSession, ConversationApi, LiveKitAccess } from "./types";

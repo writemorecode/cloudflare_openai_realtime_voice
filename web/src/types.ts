@@ -1,3 +1,4 @@
+/** Defines the browser application's API, media-runtime, and event contracts. */
 import type { ConversationStateDto } from "../../src/worker/http/conversation-state-dto";
 
 export interface LiveKitAccess {

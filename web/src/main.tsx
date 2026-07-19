@@ -1,3 +1,4 @@
+/** Mounts the React browser application into its required document root. */
 import { createRoot } from "react-dom/client";
 
 import { App } from "./App";

@@ -1,3 +1,4 @@
+/** Verifies browser-page authentication, navigation, and live-conversation controls. */
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";

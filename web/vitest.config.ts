@@ -1,3 +1,4 @@
+/** Configures browser-component tests with the React plugin and JSDOM environment. */
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
