@@ -4,3 +4,13 @@ dist/
 coverage/
 *.log
 .DS_Store
+worker-configuration.d.ts
+.dev.vars*
+agent/.env.local
+agent-secrets.env
+agent/console-recordings/
+config.txt
+secrets.txt
+
+.agents/
+skills-lock.json
