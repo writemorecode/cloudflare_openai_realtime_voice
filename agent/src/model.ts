@@ -1,3 +1,4 @@
+/** Creates the OpenAI Realtime model adapter and observes its lifecycle readiness signals. */
 import * as openai from "@livekit/agents-plugin-openai";
 
 import type { AgentRuntimeConfig } from "./config.js";

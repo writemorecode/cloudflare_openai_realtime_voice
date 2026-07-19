@@ -1,3 +1,4 @@
+/** Encodes, validates, and creates the versioned metadata attached to agent dispatches. */
 import { randomUUID } from "node:crypto";
 
 import { z } from "zod";

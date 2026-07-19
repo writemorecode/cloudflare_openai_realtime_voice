@@ -1,3 +1,4 @@
+/** Verifies lifecycle-report delivery, retry, and failure handling. */
 import { describe, expect, it, vi } from "vitest";
 
 import { HttpAgentLifecycleReporter, createLifecycleReporter } from "../src/reporter.js";

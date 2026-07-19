@@ -1,3 +1,4 @@
+/** Coordinates agent-session startup, Realtime lifecycle reporting, and graceful shutdown. */
 import type { AgentDispatchMetadataV1 } from "./dispatch-metadata.js";
 import type { RealtimeLifecycleObserver } from "./model.js";
 import { lifecycleEvent, type AgentLifecycleReporter, type AgentFailureEvent } from "./reporter.js";

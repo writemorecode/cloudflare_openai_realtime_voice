@@ -1,3 +1,4 @@
+/** Verifies Realtime model construction and lifecycle-observer behavior. */
 import { EventEmitter } from "node:events";
 
 import { describe, expect, it, vi } from "vitest";

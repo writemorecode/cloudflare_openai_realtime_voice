@@ -1,3 +1,4 @@
+/** Verifies agent-session orchestration and lifecycle signal reporting. */
 import { EventEmitter } from "node:events";
 
 import { describe, expect, it, vi } from "vitest";

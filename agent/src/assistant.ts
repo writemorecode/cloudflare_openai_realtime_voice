@@ -1,3 +1,4 @@
+/** Defines the concise voice-assistant instructions and constructs the LiveKit assistant. */
 import { voice } from "@livekit/agents";
 
 export const ASSISTANT_INSTRUCTIONS = [

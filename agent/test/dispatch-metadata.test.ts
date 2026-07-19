@@ -1,3 +1,4 @@
+/** Verifies the dispatch metadata contract shared with the Worker provisioning boundary. */
 import { describe, expect, it } from "vitest";
 
 import {

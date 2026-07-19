@@ -1,3 +1,4 @@
+/** Reports agent lifecycle observations to the authenticated Worker control-plane endpoint. */
 import type { AgentDispatchMetadataV1 } from "./dispatch-metadata.js";
 
 export interface AgentLifecycleEvent {

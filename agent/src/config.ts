@@ -1,3 +1,4 @@
+/** Parses and validates the environment configuration for the long-running agent process. */
 import { z } from "zod";
 
 export const DEFAULT_REALTIME_MODEL = "gpt-realtime-2.1";

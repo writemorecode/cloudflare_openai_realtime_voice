@@ -1,3 +1,4 @@
+/** Verifies agent environment parsing and validation behavior. */
 import { describe, expect, it } from "vitest";
 
 import { readAgentRuntimeConfig } from "../src/config.js";

@@ -1,3 +1,4 @@
+/** Runs an opt-in end-to-end smoke check against the configured LiveKit and Realtime services. */
 import { initializeLogger, voice } from "@livekit/agents";
 import * as openai from "@livekit/agents-plugin-openai";
 import { describe, expect, it } from "vitest";
