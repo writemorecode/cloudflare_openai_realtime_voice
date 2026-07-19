@@ -1,0 +1,21 @@
+{
+  "rules": [
+    {
+      "id": "delete-all-recordings-after-24-hours",
+      "enabled": true,
+      "conditions": {},
+      "deleteObjectsTransition": {
+        "condition": {
+          "type": "Age",
+          "maxAge": 86400
+        }
+      },
+      "abortMultipartUploadsTransition": {
+        "condition": {
+          "type": "Age",
+          "maxAge": 86400
+        }
+      }
+    }
+  ]
+}

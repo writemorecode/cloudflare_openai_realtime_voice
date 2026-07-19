@@ -1,9 +1,30 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "oai-cf-realtime",
-  "main": "src/index.ts",
+  "main": "src/worker/index.ts",
   "compatibility_date": "2026-07-10",
   "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/v1/*"],
+  },
+  "vars": {
+    "ALLOWED_ORIGIN": "https://oai-cf-realtime.gustav-ae-karlsson.workers.dev/",
+    "LIVEKIT_URL": "wss://ai-oral-exam-app-4bfi82y0.livekit.cloud",
+    "R2_BUCKET_NAME": "oral-exam-recordings-dev",
+    "R2_S3_ENDPOINT": "https://017227baf7a62fd2323cc61950f5d57e.r2.cloudflarestorage.com",
+  },
+  "secrets": {
+    "required": [
+      "AGENT_CALLBACK_TOKEN",
+      "CONVERSATION_ID_SECRET",
+      "LIVEKIT_API_KEY",
+      "LIVEKIT_API_SECRET",
+      "R2_S3_ACCESS_KEY_ID",
+      "R2_S3_SECRET_ACCESS_KEY",
+    ],
+  },
   "observability": {
     "logs": {
       "enabled": true,
@@ -22,10 +43,43 @@
       },
     ],
   },
+  "d1_databases": [
+    {
+      "binding": "AUTH_DB",
+      "database_name": "oral-exam-auth",
+      "database_id": "1af84547-3ebc-4914-bdd8-f6ea7b0e7275",
+      "migrations_dir": "migrations",
+    },
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "LIVEKIT_SHUTDOWN_QUEUE",
+        "queue": "oral-exam-livekit-shutdown",
+      },
+    ],
+    "consumers": [
+      {
+        "queue": "oral-exam-livekit-shutdown",
+        "max_batch_size": 5,
+        "max_batch_timeout": 1,
+        "max_retries": 5,
+        "retry_delay": 5,
+        "max_concurrency": 3,
+        "dead_letter_queue": "oral-exam-livekit-shutdown-dlq",
+      },
+    ],
+  },
   "migrations": [
     {
       "tag": "v1",
       "new_sqlite_classes": ["ConversationSession"],
+    },
+  ],
+  "r2_buckets": [
+    {
+      "bucket_name": "oral-exam-recordings-dev",
+      "binding": "RECORDINGS",
     },
   ],
 }
