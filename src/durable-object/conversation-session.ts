@@ -7,19 +7,10 @@
  */
 import { DurableObject } from "cloudflare:workers";
 
-import {
-  ALARM_SHUTDOWN_GRACE_MS,
-  deadlineEventForState,
-  deadlineForState,
-} from "../domain/conversation-deadlines";
+import { ALARM_SHUTDOWN_GRACE_MS } from "../domain/conversation-deadlines";
 import {
   ConversationEventType,
-  ConversationStateTag,
-  IllegalTransitionError,
-  TransitionGuardError,
   TransportStatus,
-  createConversation,
-  transitionRuntime,
   value,
   type ConversationEvent,
   type ConversationSessionId,
@@ -27,12 +18,11 @@ import {
   type TransportState,
   type UnixMillis,
 } from "../domain/conversation-state-machine";
+import { ConversationAggregateStore } from "./conversation-aggregate-store";
 import { emitAlarmTelemetry, emitTransitionTelemetry } from "./conversation-telemetry";
 import type {
-  AgentObservationKind,
   AlarmExecution,
   ApplyEventCommand,
-  ApplyEventRejectionReason,
   ApplyEventResult,
   BeginLiveKitProvisioningCommand,
   BeginLiveKitProvisioningResult,
@@ -41,27 +31,15 @@ import type {
   CompleteLiveKitProvisioningCommand,
   CompleteLiveKitShutdownCommand,
   InitializeResult,
-  LiveKitMediaObservationKind,
   LiveKitProvisioningReady,
   LiveKitTransportEvidence,
   RecordAgentObservationCommand,
   RecordLiveKitMediaObservationCommand,
-  TransitionReceipt,
 } from "./conversation-session-contract";
-import {
-  LIVEKIT_SHUTDOWN_OUTBOX_KEY,
-  SNAPSHOT_KEY,
-  SNAPSHOT_SCHEMA_VERSION,
-  decodeSnapshot,
-  receiptKey,
-  type PersistedSnapshot,
-} from "./conversation-session-storage";
+import { LIVEKIT_SHUTDOWN_OUTBOX_KEY } from "./conversation-session-storage";
 import { LiveKitCoordinationStore } from "./livekit-coordination-store";
 import { toConversationStateDto } from "../worker/http/conversation-state-dto";
-import {
-  LIVEKIT_SHUTDOWN_MESSAGE_VERSION,
-  type LiveKitShutdownMessage,
-} from "../shared/livekit-shutdown";
+import type { LiveKitShutdownMessage } from "../shared/livekit-shutdown";
 import {
   AckOutcomeCode,
   BrowserMessageType,
@@ -102,15 +80,9 @@ export type {
 export type { AlarmTelemetryRecord, TransitionTelemetryRecord } from "./conversation-telemetry";
 export { UnsupportedSnapshotVersionError } from "./conversation-session-storage";
 
-class AlarmTransitionRejectedError extends Error {
-  constructor(reason: ApplyEventRejectionReason) {
-    super(`Alarm transition was unexpectedly rejected: ${reason}`);
-    this.name = "AlarmTransitionRejectedError";
-  }
-}
-
 /** One named Durable Object instance owns one conversation aggregate. */
 export class ConversationSession extends DurableObject<Env> {
+  private readonly aggregate = new ConversationAggregateStore(this.ctx.storage);
   private readonly liveKit = new LiveKitCoordinationStore(this.ctx.storage);
 
   override async fetch(request: Request): Promise<Response> {
@@ -228,30 +200,11 @@ export class ConversationSession extends DurableObject<Env> {
   }
 
   async initialize(sessionId: ConversationSessionId, at: UnixMillis): Promise<InitializeResult> {
-    if (this.ctx.id.name !== sessionId) {
-      return {
-        status: "rejected",
-        reason: "identity_mismatch",
-        state: decodeSnapshot(this.ctx.storage.kv.get<PersistedSnapshot>(SNAPSHOT_KEY)),
-      };
-    }
-    return this.ctx.storage.transaction(async (transaction) => {
-      const current = await this.readState(transaction);
-      if (current !== null) {
-        await reconcileAlarm(transaction, current);
-        return current.data.sessionId === sessionId
-          ? ({ status: "existing", state: current } as const)
-          : ({ status: "rejected", reason: "already_initialized", state: current } as const);
-      }
-      const state = createConversation(sessionId, at);
-      await this.writeState(transaction, state);
-      await reconcileAlarm(transaction, state);
-      return { status: "initialized", state } as const;
-    });
+    return this.aggregate.initialize(this.ctx.id.name, sessionId, at);
   }
 
   getState(): ConversationState | null {
-    return decodeSnapshot(this.ctx.storage.kv.get<PersistedSnapshot>(SNAPSHOT_KEY));
+    return this.aggregate.getState();
   }
 
   beginLiveKitProvisioning(
@@ -301,9 +254,7 @@ export class ConversationSession extends DurableObject<Env> {
   }
 
   async applyEvent(command: ApplyEventCommand): Promise<ApplyEventResult> {
-    const result = await this.ctx.storage.transaction((transaction) =>
-      this.applyEventInTransaction(transaction, command),
-    );
+    const result = await this.aggregate.applyEvent(command);
     emitTransitionTelemetry(command, result, "rpc", this.ctx.id.name ?? null);
     if (
       result.outcome !== "rejected" &&
@@ -332,43 +283,8 @@ export class ConversationSession extends DurableObject<Env> {
     };
     try {
       await this.flushLiveKitShutdownOutbox();
-      const execution = await this.ctx.storage.transaction<AlarmExecution>(async (transaction) => {
-        const state = await this.readState(transaction);
-        if (state === null) {
-          await transaction.deleteAlarm();
-          return {
-            outcome: "no_state",
-            state: null,
-            deadline: null,
-            event: null,
-            transition: null,
-          };
-        }
-        const deadline = deadlineForState(state);
-        const event = deadlineEventForState(state, now);
-        context = { state, deadline, event };
-        if (deadline === null || event === null) {
-          await transaction.deleteAlarm();
-          return { outcome: "no_deadline", state, deadline: null, event: null, transition: null };
-        }
-        if (Number(now) < Number(deadline)) {
-          await transaction.setAlarm(Number(deadline));
-          return { outcome: "rescheduled_early", state, deadline, event, transition: null };
-        }
-        const transition = await this.applyEventInTransaction(transaction, {
-          expectedRevision: state.revision,
-          event,
-        });
-        if (transition.outcome === "rejected") {
-          throw new AlarmTransitionRejectedError(transition.reason);
-        }
-        return {
-          outcome: transition.outcome === "applied" ? "transition_applied" : "transition_duplicate",
-          state,
-          deadline,
-          event,
-          transition,
-        };
+      const execution = await this.aggregate.applyDeadline(now, (observed) => {
+        context = observed;
       });
       if (execution.transition !== null && execution.event !== null) {
         emitTransitionTelemetry(
@@ -605,73 +521,6 @@ export class ConversationSession extends DurableObject<Env> {
     ws.send(encodeWireMessage(message));
   }
 
-  private async applyEventInTransaction(
-    transaction: DurableObjectTransaction,
-    command: ApplyEventCommand,
-  ): Promise<ApplyEventResult> {
-    const receipt = await transaction.get<TransitionReceipt>(receiptKey(command.event.eventId));
-    const current = await this.readState(transaction);
-    if (receipt !== undefined) {
-      if (current === null)
-        throw new Error("Transition receipt exists without a conversation snapshot");
-      await reconcileAlarm(transaction, current);
-      return { outcome: "duplicate", state: current, receipt };
-    }
-    if (current === null) return { outcome: "rejected", reason: "not_initialized", state: null };
-    if (current.revision !== command.expectedRevision) {
-      return { outcome: "rejected", reason: "revision_conflict", state: current };
-    }
-    let next: ConversationState;
-    try {
-      next = transitionRuntime(current, command.event);
-    } catch (error) {
-      if (error instanceof IllegalTransitionError) {
-        return { outcome: "rejected", reason: "illegal_transition", state: current };
-      }
-      if (error instanceof TransitionGuardError) {
-        return { outcome: "rejected", reason: "guard_failed", state: current };
-      }
-      throw error;
-    }
-    const appliedReceipt: TransitionReceipt = {
-      eventId: command.event.eventId,
-      eventType: command.event.type,
-      outcome: "applied",
-      sourceState: current.tag,
-      targetState: next.tag,
-      sourceRevision: current.revision,
-      targetRevision: next.revision,
-      appliedAt: command.event.at,
-    };
-    await this.writeState(transaction, next);
-    await transaction.put(receiptKey(command.event.eventId), appliedReceipt);
-    if (command.event.type === ConversationEventType.TimeLimitReached) {
-      await transaction.put(LIVEKIT_SHUTDOWN_OUTBOX_KEY, {
-        version: LIVEKIT_SHUTDOWN_MESSAGE_VERSION,
-        conversationId: current.data.sessionId,
-        triggerEventId: command.event.eventId,
-      } satisfies LiveKitShutdownMessage);
-    }
-    await reconcileAlarm(transaction, next);
-    return { outcome: "applied", state: next, receipt: appliedReceipt };
-  }
-
-  private async readState(
-    transaction: DurableObjectTransaction,
-  ): Promise<ConversationState | null> {
-    return decodeSnapshot(await transaction.get<PersistedSnapshot>(SNAPSHOT_KEY));
-  }
-
-  private async writeState(
-    transaction: DurableObjectTransaction,
-    state: ConversationState,
-  ): Promise<void> {
-    await transaction.put(SNAPSHOT_KEY, {
-      schemaVersion: SNAPSHOT_SCHEMA_VERSION,
-      state,
-    } satisfies PersistedSnapshot);
-  }
-
   private async flushLiveKitShutdownOutbox(): Promise<void> {
     const pending = await this.ctx.storage.get<LiveKitShutdownMessage>(LIVEKIT_SHUTDOWN_OUTBOX_KEY);
     if (pending === undefined) return;
@@ -684,18 +533,6 @@ export class ConversationSession extends DurableObject<Env> {
       }
     });
   }
-}
-
-async function reconcileAlarm(
-  transaction: DurableObjectTransaction,
-  state: ConversationState,
-): Promise<void> {
-  const deadline = deadlineForState(state);
-  if (deadline === null) {
-    await transaction.deleteAlarm();
-    return;
-  }
-  await transaction.setAlarm(Number(deadline));
 }
 
 function socketAttachment(ws: WebSocket): ClientSocketAttachment {
