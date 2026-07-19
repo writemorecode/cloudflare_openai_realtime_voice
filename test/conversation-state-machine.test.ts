@@ -1,144 +1,305 @@
 import { describe, expect, expectTypeOf, it } from "vitest";
 
 import {
+  ArtifactStatus,
   ConversationEventType,
   ConversationStateTag,
-  RecoverableConnection,
+  FailureStage,
   StopReason,
   TransitionGuardError,
+  TransportStatus,
   createConversation,
   transition,
+  transitionRuntime,
   value,
-  type AwaitingBridgeState,
+  type CompletedState,
   type LiveState,
-  type ProvisioningState,
-  type StartingRecordingState,
-  type StoppingState,
-} from "../src/conversation-state-machine";
+  type StartingState,
+} from "../src/domain/conversation-state-machine";
 
 const at = value.unixMillis;
 const sessionId = value.conversationSessionId("conversation-1");
 
-const startRequested = {
-  type: ConversationEventType.StartRequested,
-  eventId: "event-start",
-  at: at(1_000),
-  provisioningDeadlineAt: at(5_000),
-} as const;
-
-const recordingConfirmed = {
-  type: ConversationEventType.RecordingConfirmed,
-  eventId: "event-recording-confirmed",
-  at: at(5_000),
-  recordingId: value.recordingId("recording-1"),
-  maximumEndAt: at(1_205_000),
-} as const;
-
-function awaitingBridge(): AwaitingBridgeState {
-  const created = createConversation(sessionId, at(0));
-  const provisioning = transition(created, startRequested);
-
-  return transition(provisioning, {
-    type: ConversationEventType.ResourcesProvisioned,
-    eventId: "event-resources",
-    at: at(2_000),
-    resources: {
-      meetingId: value.realtimeKitMeetingId("meeting-1"),
-      humanParticipantId: value.participantId("human-1"),
-      agentParticipantId: value.participantId("agent-1"),
-      bridgeGeneration: 1,
-    },
-    readinessDeadlineAt: at(10_000),
-  });
-}
-
-function startingRecording(): StartingRecordingState {
-  const waiting = awaitingBridge();
-  const ready = transition(waiting, {
-    type: ConversationEventType.BridgeProgressed,
-    eventId: "event-bridge-progress",
-    at: at(3_000),
-    bridgeGeneration: 1,
-    readiness: {
-      humanJoined: true,
-      agentJoined: true,
-      openAiConnected: true,
-      sidebandConnected: true,
-      agentTrackPublished: true,
-    },
-  });
-
-  return transition(ready, {
-    type: ConversationEventType.BridgeReady,
-    eventId: "event-bridge-ready",
-    at: at(4_000),
-    bridgeGeneration: 1,
-    realtimeKitSessionId: value.realtimeKitSessionId("rtk-session-1"),
-    openAiCallId: value.openAiCallId("openai-call-1"),
-    recordingRequestId: value.recordingRequestId("recording-request-1"),
-    recordingStartDeadlineAt: at(8_000),
+function starting(): StartingState {
+  return transition(createConversation(sessionId, at(0)), {
+    type: ConversationEventType.StartRequested,
+    eventId: "start",
+    at: at(1),
+    startDeadlineAt: at(1_000),
   });
 }
 
 function live(): LiveState {
-  return transition(startingRecording(), recordingConfirmed);
+  let state = transition(starting(), {
+    type: ConversationEventType.TransportConnected,
+    eventId: "connected",
+    at: at(2),
+    epoch: 1,
+  });
+  state = transition(state, {
+    type: ConversationEventType.RecordingStarted,
+    eventId: "recording",
+    at: at(3),
+    recordingId: value.recordingId("recording-1"),
+  });
+  return transition(state, {
+    type: ConversationEventType.SessionStarted,
+    eventId: "session-ready",
+    at: at(4),
+    epoch: 1,
+    maximumEndAt: at(10_000),
+  });
 }
 
-describe("conversation state machine typing", () => {
-  it("infers the exact target state for a legal transition", () => {
-    const created = createConversation(sessionId, at(0));
-    const provisioning = transition(created, startRequested);
-
-    expectTypeOf(provisioning).toEqualTypeOf<ProvisioningState>();
-    expect(provisioning.tag).toBe(ConversationStateTag.Provisioning);
+function ending() {
+  return transition(live(), {
+    type: ConversationEventType.EndRequested,
+    eventId: "end",
+    at: at(5),
+    reason: "done",
+    endingDeadlineAt: at(2_000),
   });
-});
+}
 
-describe("conversation state machine guards", () => {
-  it("requires complete bridge readiness before starting recording", () => {
-    const waiting = awaitingBridge();
+describe("conversation aggregate transitions", () => {
+  it("starts with connecting transport at epoch one", () => {
+    const state = starting();
+    expectTypeOf(state).toEqualTypeOf<StartingState>();
+    expect(state).toMatchObject({
+      tag: ConversationStateTag.Starting,
+      revision: 1,
+      data: {
+        transport: { status: TransportStatus.Connecting, epoch: 1 },
+        artifact: { status: ArtifactStatus.Pending },
+      },
+    });
+  });
+
+  it("requires connected transport and active recording before going live", () => {
+    const initial = starting();
+    expect(() =>
+      transition(initial, {
+        type: ConversationEventType.SessionStarted,
+        eventId: "too-early",
+        at: at(2),
+        epoch: 1,
+        maximumEndAt: at(100),
+      }),
+    ).toThrow(TransitionGuardError);
+
+    const connected = transition(initial, {
+      type: ConversationEventType.TransportConnected,
+      eventId: "connected-only",
+      at: at(2),
+      epoch: 1,
+    });
+    expect(() =>
+      transition(connected, {
+        type: ConversationEventType.SessionStarted,
+        eventId: "no-recording",
+        at: at(3),
+        epoch: 1,
+        maximumEndAt: at(100),
+      }),
+    ).toThrow(/artifact must be recording/);
+
+    expect(live()).toMatchObject({
+      tag: ConversationStateTag.Live,
+      data: {
+        transport: { status: TransportStatus.Connected, epoch: 1 },
+        artifact: { status: ArtifactStatus.Recording },
+      },
+    });
+  });
+
+  it("keeps lifecycle live while reconnecting and increments the epoch on recovery", () => {
+    const interrupted = transition(live(), {
+      type: ConversationEventType.TransportInterrupted,
+      eventId: "interrupt-1",
+      at: at(10),
+      epoch: 1,
+      errorCode: value.errorCode("network.lost"),
+      recoveryDeadlineAt: at(20_010),
+    });
+    const observedAgain = transition(interrupted, {
+      type: ConversationEventType.TransportInterrupted,
+      eventId: "interrupt-2",
+      at: at(11),
+      epoch: 1,
+      errorCode: value.errorCode("network.still_lost"),
+      recoveryDeadlineAt: at(99_999),
+    });
+    expect(observedAgain.tag).toBe(ConversationStateTag.Live);
+    expect(observedAgain.data.transport).toMatchObject({
+      status: TransportStatus.Reconnecting,
+      epoch: 1,
+      attempt: 2,
+      deadlineAt: at(20_010),
+    });
 
     expect(() =>
-      transition(waiting, {
-        type: ConversationEventType.BridgeReady,
-        eventId: "event-too-early",
-        at: at(3_000),
-        bridgeGeneration: 1,
-        realtimeKitSessionId: value.realtimeKitSessionId("rtk-session-1"),
-        openAiCallId: value.openAiCallId("openai-call-1"),
-        recordingRequestId: value.recordingRequestId("recording-request-1"),
-        recordingStartDeadlineAt: at(8_000),
+      transition(observedAgain, {
+        type: ConversationEventType.TransportConnected,
+        eventId: "bad-epoch",
+        at: at(12),
+        epoch: 1,
       }),
-    ).toThrowError(TransitionGuardError);
+    ).toThrow(/increment by one/);
+    const restored = transition(observedAgain, {
+      type: ConversationEventType.TransportConnected,
+      eventId: "restored",
+      at: at(13),
+      epoch: 2,
+    });
+    expect(restored.data.transport).toMatchObject({ status: TransportStatus.Connected, epoch: 2 });
   });
 
-  it("moves a live conversation into recovery without losing live resources", () => {
-    const active = live();
-    const recovering = transition(active, {
-      type: ConversationEventType.RecoverableConnectionLost,
-      eventId: "event-sideband-lost",
-      at: at(6_000),
-      connection: RecoverableConnection.OpenAiSideband,
-      recoveryDeadlineAt: at(12_000),
+  it("fails a live conversation when recovery times out", () => {
+    const reconnecting = transition(live(), {
+      type: ConversationEventType.TransportInterrupted,
+      eventId: "interrupt",
+      at: at(10),
+      epoch: 1,
+      errorCode: value.errorCode("network.lost"),
+      recoveryDeadlineAt: at(20_010),
     });
-
-    expect(recovering.tag).toBe(ConversationStateTag.Recovering);
-    expect(recovering.data.live.resources.recordingId).toBe(active.data.resources.recordingId);
+    const failed = transition(reconnecting, {
+      type: ConversationEventType.RecoveryDeadlineExceeded,
+      eventId: "timeout",
+      at: at(20_010),
+      errorCode: value.errorCode("deadline.recovery_exceeded"),
+      endingDeadlineAt: at(35_010),
+    });
+    expect(failed).toMatchObject({
+      tag: ConversationStateTag.Failed,
+      data: {
+        stage: FailureStage.Transport,
+        transport: { status: TransportStatus.Failed },
+      },
+    });
   });
 
-  it("hard-stops a live conversation when recording fails", () => {
-    const active = live();
-    const stopping = transition(active, {
-      type: ConversationEventType.RecordingFailed,
-      eventId: "event-recording-failed",
-      at: at(7_000),
-      recordingId: active.data.resources.recordingId,
-      errorCode: value.errorCode("recording_failed"),
-      shutdownDeadlineAt: at(15_000),
+  it("completes when the artifact becomes ready before transport closes", () => {
+    const uploading = transition(ending(), {
+      type: ConversationEventType.RecordingUploadStarted,
+      eventId: "upload",
+      at: at(6),
+      recordingId: value.recordingId("recording-1"),
+      expectedR2Key: value.r2ObjectKey("recordings/1.webm"),
+      artifactDeadlineAt: at(5_000),
     });
+    const state = transition(uploading, {
+      type: ConversationEventType.RecordingArtifactVerified,
+      eventId: "ready",
+      at: at(7),
+      recordingId: value.recordingId("recording-1"),
+      r2Key: value.r2ObjectKey("recordings/1.webm"),
+      r2Etag: value.r2Etag("etag-1"),
+    });
+    expect(state.tag).toBe(ConversationStateTag.Ending);
+    if (state.tag !== ConversationStateTag.Ending) throw new Error("expected ending state");
+    const completed = transition(state, {
+      type: ConversationEventType.SessionClosed,
+      eventId: "closed",
+      at: at(8),
+      epoch: 1,
+    });
+    expectTypeOf(completed).toEqualTypeOf<
+      | import("../src/domain/conversation-state-machine").EndingState
+      | CompletedState
+      | import("../src/domain/conversation-state-machine").CancelledState
+      | import("../src/domain/conversation-state-machine").FailedState
+    >();
+    expect(completed).toMatchObject({
+      tag: ConversationStateTag.Completed,
+      data: { terminationReason: StopReason.UserRequested },
+    });
+  });
 
-    expectTypeOf(stopping).toEqualTypeOf<StoppingState>();
-    expect(stopping.data.reason).toBe(StopReason.RecordingFailed);
-    expect(stopping.data.recording.kind).toBe("errored");
+  it("completes when transport closes before the artifact becomes ready", () => {
+    let state: import("../src/domain/conversation-state-machine").ConversationState = transition(
+      ending(),
+      {
+        type: ConversationEventType.RecordingUploadStarted,
+        eventId: "upload",
+        at: at(6),
+        recordingId: value.recordingId("recording-1"),
+        expectedR2Key: value.r2ObjectKey("recordings/1.webm"),
+        artifactDeadlineAt: at(5_000),
+      },
+    );
+    state = transitionRuntime(state, {
+      type: ConversationEventType.SessionClosed,
+      eventId: "closed",
+      at: at(7),
+      epoch: 1,
+    });
+    expect(state.tag).toBe(ConversationStateTag.Ending);
+    const completed = transitionRuntime(state, {
+      type: ConversationEventType.RecordingArtifactVerified,
+      eventId: "ready",
+      at: at(8),
+      recordingId: value.recordingId("recording-1"),
+      r2Key: value.r2ObjectKey("recordings/1.webm"),
+      r2Etag: value.r2Etag("etag-1"),
+    });
+    expect(completed.tag).toBe(ConversationStateTag.Completed);
+  });
+
+  it("cancels before live without requiring an artifact", () => {
+    const endingState = transition(starting(), {
+      type: ConversationEventType.EndRequested,
+      eventId: "cancel",
+      at: at(2),
+      reason: "user_requested",
+      endingDeadlineAt: at(100),
+    });
+    const cancelled = transition(endingState, {
+      type: ConversationEventType.SessionClosed,
+      eventId: "closed",
+      at: at(3),
+      epoch: 1,
+    });
+    expect(cancelled.tag).toBe(ConversationStateTag.Cancelled);
+    expect(cancelled.data.artifact.status).toBe(ArtifactStatus.Pending);
+  });
+
+  it("turns artifact failure into failed shutdown without requiring readiness", () => {
+    const endingState = transition(live(), {
+      type: ConversationEventType.ArtifactFailed,
+      eventId: "artifact-failed",
+      at: at(5),
+      recordingId: value.recordingId("recording-1"),
+      errorCode: value.errorCode("artifact.recording_failed"),
+      endingDeadlineAt: at(100),
+    });
+    const failed = transition(endingState, {
+      type: ConversationEventType.SessionClosed,
+      eventId: "closed",
+      at: at(6),
+      epoch: 1,
+    });
+    expect(failed).toMatchObject({
+      tag: ConversationStateTag.Failed,
+      data: { stage: FailureStage.Artifact, artifact: { status: ArtifactStatus.Failed } },
+    });
+  });
+
+  it("rejects events from terminal states", () => {
+    const cancelled = transition(createConversation(sessionId, at(0)), {
+      type: ConversationEventType.EndRequested,
+      eventId: "cancel-created",
+      at: at(1),
+      reason: "never_started",
+      endingDeadlineAt: at(10),
+    });
+    expect(() =>
+      transitionRuntime(cancelled, {
+        type: ConversationEventType.StartRequested,
+        eventId: "too-late",
+        at: at(2),
+        startDeadlineAt: at(10),
+      }),
+    ).toThrow(/illegal/);
   });
 });
