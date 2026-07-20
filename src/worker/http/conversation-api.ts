@@ -215,11 +215,12 @@ async function releaseLiveKitAccess(env: Env, conversationId: string): Promise<R
 
 async function receiveLiveKitAgentEvent(request: Request, env: Env): Promise<RouteResult> {
   const handled = await handleAgentEvent(request, env);
+  if (!handled.ok) throw handled.error;
   return {
     response: new Response(null, { status: 204 }),
-    conversationId: handled.conversationId,
-    state: toConversationStateDto(handled.state),
-    outcome: handled.outcome,
+    conversationId: handled.value.conversationId,
+    state: toConversationStateDto(handled.value.state),
+    outcome: handled.value.outcome,
   };
 }
 

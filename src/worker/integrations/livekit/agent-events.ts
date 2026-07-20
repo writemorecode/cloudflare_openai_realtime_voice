@@ -19,6 +19,7 @@ import type {
 } from "../../../durable-object/conversation-session";
 import { ApiError } from "../../http/api-errors";
 import { authenticateBearer } from "../../http/api-security";
+import { err, ok, tryCatch, type Result } from "../../try-catch";
 import { applyIntegrationEventWithRetry } from "./integration-event-retry";
 import { reconcileCompositeReadiness } from "./readiness";
 
@@ -54,40 +55,58 @@ export interface AgentEventResult {
   readonly outcome: string;
 }
 
-export async function handleAgentEvent(request: Request, env: Env): Promise<AgentEventResult> {
-  authenticateBearer(request, env.AGENT_CALLBACK_TOKEN);
+export async function handleAgentEvent(
+  request: Request,
+  env: Env,
+): Promise<Result<AgentEventResult, ApiError>> {
+  const authenticated = await tryCatch(
+    () => authenticateBearer(request, env.AGENT_CALLBACK_TOKEN),
+    (cause) => (cause instanceof ApiError ? cause : agentOperationFailed(cause)),
+  );
+  if (!authenticated.ok) return authenticated;
+
   const contentType = request.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase();
   if (contentType !== "application/json") {
-    throw new ApiError(415, "unsupported_media_type", "Content-Type must be application/json.");
+    return err(
+      new ApiError(415, "unsupported_media_type", "Content-Type must be application/json."),
+    );
   }
   const declaredLength = request.headers.get("Content-Length");
   if (declaredLength !== null && Number(declaredLength) > MAX_AGENT_EVENT_BODY_BYTES) {
-    throw new ApiError(413, "agent_event_too_large", "The agent event body is too large.");
+    return err(new ApiError(413, "agent_event_too_large", "The agent event body is too large."));
   }
-  const body = await request.text();
-  if (new TextEncoder().encode(body).byteLength > MAX_AGENT_EVENT_BODY_BYTES) {
-    throw new ApiError(413, "agent_event_too_large", "The agent event body is too large.");
+  const body = await tryCatch(() => request.text(), agentOperationFailed);
+  if (!body.ok) return body;
+  if (new TextEncoder().encode(body.value).byteLength > MAX_AGENT_EVENT_BODY_BYTES) {
+    return err(new ApiError(413, "agent_event_too_large", "The agent event body is too large."));
   }
 
-  const parsed = parseJson(body);
-  if (!parsed.success) {
-    throw new ApiError(400, "invalid_agent_event", "The agent event is invalid.", {}, parsed.error);
-  }
+  const parsed = await tryCatch(
+    () => JSON.parse(body.value) as unknown,
+    (cause) => new ApiError(400, "invalid_agent_event", "The agent event is invalid.", {}, cause),
+  );
+  if (!parsed.ok) return parsed;
   const result = agentEventSchema.safeParse(parsed.value);
   if (!result.success) {
-    throw new ApiError(400, "invalid_agent_event", "The agent event is invalid.");
+    return err(new ApiError(400, "invalid_agent_event", "The agent event is invalid."));
   }
   const event = result.data;
   if (event.roomName !== `conversation-${event.conversationId}`) {
-    throw new ApiError(400, "agent_event_room_mismatch", "The agent event room does not match.");
+    return err(
+      new ApiError(400, "agent_event_room_mismatch", "The agent event room does not match."),
+    );
   }
 
   const stub = env.CONVERSATION_SESSIONS.getByName(event.conversationId);
-  const initial = await stub.getState();
-  if (initial === null) {
-    throw new ApiError(404, "conversation_not_found", "Conversation not found.");
+  const initial = await tryCatch(
+    async (): Promise<ConversationState | null> => await stub.getState(),
+    agentOperationFailed,
+  );
+  if (!initial.ok) return initial;
+  if (initial.value === null) {
+    return err(new ApiError(404, "conversation_not_found", "Conversation not found."));
   }
-  let state: ConversationState = initial;
+  let state: ConversationState = initial.value;
   const transport = state.data.transport;
   const advancesRecoveryEpoch =
     event.type === "realtime_recovered" &&
@@ -98,28 +117,39 @@ export async function handleAgentEvent(request: Request, env: Env): Promise<Agen
     transport.status === TransportStatus.Idle ||
     (transport.epoch !== event.transportEpoch && !advancesRecoveryEpoch)
   ) {
-    throw new ApiError(409, "stale_transport_epoch", "The agent event transport epoch is stale.");
+    return err(
+      new ApiError(409, "stale_transport_epoch", "The agent event transport epoch is stale."),
+    );
   }
 
-  const observation = await stub.recordAgentObservation({
-    eventId: event.eventId,
-    kind: event.type satisfies AgentObservationKind,
-    roomName: event.roomName,
-    transportEpoch: event.transportEpoch,
-  });
-  if (observation === "rejected") {
-    throw new ApiError(409, "agent_event_correlation_failed", "The agent event did not correlate.");
+  const observation = await tryCatch(
+    () =>
+      stub.recordAgentObservation({
+        eventId: event.eventId,
+        kind: event.type satisfies AgentObservationKind,
+        roomName: event.roomName,
+        transportEpoch: event.transportEpoch,
+      }),
+    agentOperationFailed,
+  );
+  if (!observation.ok) return observation;
+  if (observation.value === "rejected") {
+    return err(
+      new ApiError(409, "agent_event_correlation_failed", "The agent event did not correlate."),
+    );
   }
-  if (observation === "duplicate") {
-    return { conversationId: event.conversationId, state, outcome: "duplicate" };
+  if (observation.value === "duplicate") {
+    return ok({ conversationId: event.conversationId, state, outcome: "duplicate" });
   }
 
   const domainEvent = domainEventForAgentObservation(event, state);
   if (domainEvent !== null) {
-    state = await applyIntegrationEvent(stub, state, domainEvent);
+    const applied = await applyIntegrationEvent(stub, state, domainEvent);
+    if (!applied.ok) return applied;
+    state = applied.value;
   }
   const readiness = await reconcileCompositeReadiness(stub, Date.now());
-  if (!readiness.ok) throw readiness.error;
+  if (!readiness.ok) return readiness;
   state = readiness.value;
   console.log(
     JSON.stringify({
@@ -132,21 +162,11 @@ export async function handleAgentEvent(request: Request, env: Env): Promise<Agen
       resultingRevision: state.revision,
     }),
   );
-  return {
+  return ok({
     conversationId: event.conversationId,
     state,
     outcome: domainEvent === null ? "evidence_recorded" : "transition_applied",
-  };
-}
-
-function parseJson(
-  body: string,
-): Readonly<{ success: true; value: unknown }> | Readonly<{ success: false; error: unknown }> {
-  try {
-    return { success: true, value: JSON.parse(body) as unknown };
-  } catch (error) {
-    return { success: false, error };
-  }
+  });
 }
 
 function domainEventForAgentObservation(
@@ -201,8 +221,8 @@ async function applyIntegrationEvent(
   stub: DurableObjectStub<ConversationSession>,
   initial: ConversationState,
   event: ConversationEvent,
-): Promise<ConversationState> {
-  const applied = await applyIntegrationEventWithRetry(stub, initial, event, {
+): Promise<Result<ConversationState, ApiError>> {
+  return applyIntegrationEventWithRetry(stub, initial, event, {
     rejected: () => new ApiError(409, "agent_event_rejected", "The agent event was rejected."),
     exhausted: () =>
       new ApiError(409, "agent_event_conflict", "The agent event could not be applied."),
@@ -215,6 +235,14 @@ async function applyIntegrationEvent(
         cause,
       ),
   });
-  if (!applied.ok) throw applied.error;
-  return applied.value;
+}
+
+function agentOperationFailed(cause: unknown): ApiError {
+  return new ApiError(
+    500,
+    "agent_event_operation_failed",
+    "The agent event could not be processed.",
+    {},
+    cause,
+  );
 }
