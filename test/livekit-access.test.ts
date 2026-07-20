@@ -138,9 +138,12 @@ describe("LiveKit access", () => {
     const first = await createLiveKitAccess(env, conversationId, services);
     const repeated = await createLiveKitAccess(env, conversationId, services);
 
-    expect(first.roomName).toBe(`conversation-${conversationId}`);
-    expect(first.serverUrl).toBe("wss://test.livekit.cloud");
-    expect(repeated.roomName).toBe(first.roomName);
+    expect(first).toMatchObject({ ok: true });
+    expect(repeated).toMatchObject({ ok: true });
+    if (!first.ok || !repeated.ok) return;
+    expect(first.value.roomName).toBe(`conversation-${conversationId}`);
+    expect(first.value.serverUrl).toBe("wss://test.livekit.cloud");
+    expect(repeated.value.roomName).toBe(first.value.roomName);
     expect(services.createRoom).toHaveBeenCalledTimes(1);
     expect(services.createDispatch).toHaveBeenCalledTimes(1);
     expect(services.startEgress).toHaveBeenCalledTimes(1);
@@ -148,11 +151,11 @@ describe("LiveKit access", () => {
     const grants = await new TokenVerifier(
       "test-livekit-api-key",
       "test-livekit-api-secret-with-sufficient-entropy",
-    ).verify(first.participantToken);
+    ).verify(first.value.participantToken);
     expect(grants.sub).toBe(`browser-${conversationId}`);
     expect(grants.video).toMatchObject({
       roomJoin: true,
-      room: first.roomName,
+      room: first.value.roomName,
       canPublish: true,
       canPublishSources: ["microphone"],
       canPublishData: false,
@@ -174,7 +177,10 @@ describe("LiveKit access", () => {
 
     await expect(
       createLiveKitAccess(env, body.conversationId, fakeServices()),
-    ).rejects.toMatchObject({ status: 409, code: "conversation_not_starting" });
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { status: 409, code: "conversation_not_starting" },
+    });
   });
 
   it("stops recording, dispatch, and room exactly once after shutdown begins", async () => {
@@ -196,8 +202,14 @@ describe("LiveKit access", () => {
     expect(ending.outcome).toBe("applied");
 
     const services = fakeShutdownServices(`conversation-${conversationId}`);
-    expect(await stopLiveKitAccess(env, conversationId, services)).toBe("stopped");
-    expect(await stopLiveKitAccess(env, conversationId, services)).toBe("already_stopped");
+    expect(await stopLiveKitAccess(env, conversationId, services)).toEqual({
+      ok: true,
+      value: "stopped",
+    });
+    expect(await stopLiveKitAccess(env, conversationId, services)).toEqual({
+      ok: true,
+      value: "already_stopped",
+    });
     expect(services.stopEgress).toHaveBeenCalledTimes(1);
     expect(services.deleteDispatch).toHaveBeenCalledTimes(1);
     expect(services.deleteRoom).toHaveBeenCalledTimes(1);
@@ -213,7 +225,10 @@ describe("LiveKit access", () => {
         conversationId,
         fakeShutdownServices(`conversation-${conversationId}`),
       ),
-    ).rejects.toMatchObject({ status: 409, code: "conversation_not_ending" });
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { status: 409, code: "conversation_not_ending" },
+    });
   });
 
   it("converges after a partial provider teardown failure", async () => {
@@ -236,11 +251,14 @@ describe("LiveKit access", () => {
     const services = fakeShutdownServices(`conversation-${conversationId}`, {
       failFirstRoomDelete: true,
     });
-    await expect(stopLiveKitAccess(env, conversationId, services)).rejects.toMatchObject({
-      status: 502,
-      code: "livekit_shutdown_failed",
+    await expect(stopLiveKitAccess(env, conversationId, services)).resolves.toMatchObject({
+      ok: false,
+      error: { status: 502, code: "livekit_shutdown_failed" },
     });
-    expect(await stopLiveKitAccess(env, conversationId, services)).toBe("stopped");
+    expect(await stopLiveKitAccess(env, conversationId, services)).toEqual({
+      ok: true,
+      value: "stopped",
+    });
     expect(services.stopEgress).toHaveBeenCalledTimes(1);
     expect(services.deleteDispatch).toHaveBeenCalledTimes(1);
     expect(services.deleteRoom).toHaveBeenCalledTimes(2);

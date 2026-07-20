@@ -201,6 +201,7 @@ async function dispatch(request: Request, env: Env, route: MatchedRoute): Promis
 
 async function releaseLiveKitAccess(env: Env, conversationId: string): Promise<RouteResult> {
   const outcome = await stopLiveKitAccess(env, conversationId);
+  if (!outcome.ok) throw outcome.error;
   const state = await env.CONVERSATION_SESSIONS.getByName(conversationId).getState();
   if (state === null) {
     throw new ApiError(404, "conversation_not_found", "Conversation not found.");
@@ -209,7 +210,7 @@ async function releaseLiveKitAccess(env: Env, conversationId: string): Promise<R
     response: new Response(null, { status: 204 }),
     conversationId,
     state: toConversationStateDto(state),
-    outcome,
+    outcome: outcome.value,
   };
 }
 
@@ -226,12 +227,13 @@ async function receiveLiveKitAgentEvent(request: Request, env: Env): Promise<Rou
 
 async function provideLiveKitAccess(env: Env, conversationId: string): Promise<RouteResult> {
   const access = await createLiveKitAccess(env, conversationId);
+  if (!access.ok) throw access.error;
   const state = await env.CONVERSATION_SESSIONS.getByName(conversationId).getState();
   if (state === null) {
     throw new ApiError(404, "conversation_not_found", "Conversation not found.");
   }
   return {
-    response: Response.json(access satisfies LiveKitAccessResponse, {
+    response: Response.json(access.value satisfies LiveKitAccessResponse, {
       headers: { "Cache-Control": "no-store" },
     }),
     conversationId,

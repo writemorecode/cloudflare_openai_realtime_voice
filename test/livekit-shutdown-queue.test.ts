@@ -3,6 +3,7 @@ import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../src/worker/http/api-errors";
+import { err, ok } from "../src/worker/try-catch";
 import {
   LIVEKIT_SHUTDOWN_MESSAGE_VERSION,
   type LiveKitShutdownMessage,
@@ -28,7 +29,7 @@ function message(): LiveKitShutdownMessage {
 describe("LiveKit shutdown queue", () => {
   it("acknowledges successful idempotent teardown", async () => {
     const messages = batch(message());
-    const stop = vi.fn().mockResolvedValue("stopped");
+    const stop = vi.fn().mockResolvedValue(ok("stopped"));
 
     await handleLiveKitShutdownBatch(messages, env, stop);
     const result = await getQueueResult(messages, createExecutionContext());
@@ -40,7 +41,11 @@ describe("LiveKit shutdown queue", () => {
 
   it("retries transient provider failures", async () => {
     const messages = batch(message(), 2);
-    const stop = vi.fn().mockRejectedValue(new Error("temporary LiveKit failure"));
+    const stop = vi
+      .fn()
+      .mockResolvedValue(
+        err(new ApiError(502, "livekit_shutdown_failed", "Temporary LiveKit failure.")),
+      );
 
     await handleLiveKitShutdownBatch(messages, env, stop);
     const result = await getQueueResult(messages, createExecutionContext());
@@ -53,8 +58,8 @@ describe("LiveKit shutdown queue", () => {
     const messages = batch(message());
     const stop = vi
       .fn()
-      .mockRejectedValue(
-        new ApiError(409, "livekit_not_provisioned", "LiveKit resources cannot be stopped."),
+      .mockResolvedValue(
+        err(new ApiError(409, "livekit_not_provisioned", "LiveKit resources cannot be stopped.")),
       );
 
     await handleLiveKitShutdownBatch(messages, env, stop);

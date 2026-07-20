@@ -1,5 +1,6 @@
 /** Processes retryable queue messages that clean up provisioned LiveKit conversation resources. */
 import { ApiError } from "../../http/api-errors";
+import type { Result } from "../../try-catch";
 import {
   isLiveKitShutdownMessage,
   type LiveKitShutdownMessage,
@@ -11,7 +12,7 @@ const MAX_RETRY_DELAY_SECONDS = 60;
 export type LiveKitStopOperation = (
   env: Env,
   conversationId: string,
-) => Promise<"stopped" | "already_stopped">;
+) => Promise<Result<"stopped" | "already_stopped", ApiError>>;
 
 export async function handleLiveKitShutdownBatch(
   batch: MessageBatch<LiveKitShutdownMessage>,
@@ -33,45 +34,52 @@ export async function handleLiveKitShutdownBatch(
 
       try {
         const outcome = await stop(env, message.body.conversationId);
+        if (!outcome.ok) {
+          if (outcome.error.code === "livekit_not_provisioned") {
+            console.warn(
+              JSON.stringify({
+                kind: "livekit_shutdown_queue_not_provisioned",
+                messageId: message.id,
+                conversationId: message.body.conversationId,
+              }),
+            );
+            message.ack();
+            return;
+          }
+          retryMessage(message, outcome.error);
+          return;
+        }
         console.log(
           JSON.stringify({
             kind: "livekit_shutdown_queue_processed",
             messageId: message.id,
             conversationId: message.body.conversationId,
             triggerEventId: message.body.triggerEventId,
-            outcome,
+            outcome: outcome.value,
           }),
         );
         message.ack();
       } catch (error) {
-        if (error instanceof ApiError && error.code === "livekit_not_provisioned") {
-          console.warn(
-            JSON.stringify({
-              kind: "livekit_shutdown_queue_not_provisioned",
-              messageId: message.id,
-              conversationId: message.body.conversationId,
-            }),
-          );
-          message.ack();
-          return;
-        }
-
-        const delaySeconds = Math.min(
-          MAX_RETRY_DELAY_SECONDS,
-          2 ** Math.max(0, message.attempts - 1) * 5,
-        );
-        console.error(
-          JSON.stringify({
-            kind: "livekit_shutdown_queue_retry",
-            messageId: message.id,
-            conversationId: message.body.conversationId,
-            attempt: message.attempts,
-            delaySeconds,
-            error: error instanceof Error ? error.name : "unknown_error",
-          }),
-        );
-        message.retry({ delaySeconds });
+        retryMessage(message, error);
       }
     }),
   );
+}
+
+function retryMessage(message: Message<LiveKitShutdownMessage>, error: unknown): void {
+  const delaySeconds = Math.min(
+    MAX_RETRY_DELAY_SECONDS,
+    2 ** Math.max(0, message.attempts - 1) * 5,
+  );
+  console.error(
+    JSON.stringify({
+      kind: "livekit_shutdown_queue_retry",
+      messageId: message.id,
+      conversationId: message.body.conversationId,
+      attempt: message.attempts,
+      delaySeconds,
+      error: error instanceof Error ? error.name : "unknown_error",
+    }),
+  );
+  message.retry({ delaySeconds });
 }
