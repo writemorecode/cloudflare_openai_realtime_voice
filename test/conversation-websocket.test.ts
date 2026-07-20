@@ -41,8 +41,15 @@ async function connect(conversationId: string): Promise<WebSocket> {
   return socket;
 }
 
+async function derivedConversationId(name: string): Promise<string> {
+  const result = await deriveConversationId(ID_SECRET, name);
+  expect(result).toMatchObject({ ok: true });
+  if (!result.ok) throw result.error;
+  return result.value;
+}
+
 async function setup(name: string, start = false) {
-  const conversationId = await deriveConversationId(ID_SECRET, name);
+  const conversationId = await derivedConversationId(name);
   const stub = env.CONVERSATION_SESSIONS.getByName(conversationId);
   await stub.initialize(value.conversationSessionId(conversationId), value.unixMillis(Date.now()));
   if (start) {
@@ -104,7 +111,7 @@ async function accepted(socket: WebSocket) {
 
 describe("generic conversation WebSocket", () => {
   it("rejects unauthenticated upgrades", async () => {
-    const conversationId = await deriveConversationId(ID_SECRET, "ws-unauthorized");
+    const conversationId = await derivedConversationId("ws-unauthorized");
     const response = await exports.default.fetch(
       new Request(`${ORIGIN}/v1/conversations/${conversationId}/connect`, {
         headers: {

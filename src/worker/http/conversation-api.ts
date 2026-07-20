@@ -78,7 +78,9 @@ export const conversationApi = {
 
     try {
       assertConfigured(env);
-      origin = validateOrigin(request, env.ALLOWED_ORIGIN);
+      const validOrigin = validateOrigin(request, env.ALLOWED_ORIGIN);
+      if (!validOrigin.ok) throw validOrigin.error;
+      origin = validOrigin.value;
       route = matchRoute(url.pathname);
 
       if (request.method === "OPTIONS") {
@@ -290,7 +292,13 @@ async function connectConversation(
 
 async function createConversation(request: Request, env: Env): Promise<RouteResult> {
   const idempotencyKey = validateIdempotencyKey(request.headers.get("Idempotency-Key"));
-  const conversationId = await deriveConversationId(env.CONVERSATION_ID_SECRET, idempotencyKey);
+  if (!idempotencyKey.ok) throw idempotencyKey.error;
+  const derivedConversationId = await deriveConversationId(
+    env.CONVERSATION_ID_SECRET,
+    idempotencyKey.value,
+  );
+  if (!derivedConversationId.ok) throw derivedConversationId.error;
+  const conversationId = derivedConversationId.value;
   const stub = env.CONVERSATION_SESSIONS.getByName(conversationId);
   const initialized = await stub.initialize(
     value.conversationSessionId(conversationId),

@@ -1,22 +1,28 @@
 /** Validates browser origins and builds CORS headers for the public HTTP API. */
 import { ApiError } from "./api-errors";
+import { err, ok, type Result } from "../try-catch";
 
 export const CORS_ALLOWED_HEADERS = "Content-Type, Idempotency-Key";
 
-export function validateOrigin(request: Request, allowedOrigin: string): string | null {
+export function validateOrigin(
+  request: Request,
+  allowedOrigin: string,
+): Result<string | null, ApiError> {
   const origin = request.headers.get("Origin");
-  if (origin === null) return null;
+  if (origin === null) return ok(null);
 
   const configuredUrl = parseOrigin(allowedOrigin);
   if (configuredUrl === null) {
-    throw new Error("ALLOWED_ORIGIN must be a valid HTTP(S) origin");
+    return err(
+      new ApiError(500, "cors_not_configured", "The API origin policy is not configured."),
+    );
   }
 
   const requestUrl = parseOrigin(origin);
   if (requestUrl === null || requestUrl.origin !== configuredUrl.origin) {
-    throw new ApiError(403, "origin_not_allowed", "The request origin is not allowed.");
+    return err(new ApiError(403, "origin_not_allowed", "The request origin is not allowed."));
   }
-  return origin;
+  return ok(origin);
 }
 
 function parseOrigin(value: string): URL | null {

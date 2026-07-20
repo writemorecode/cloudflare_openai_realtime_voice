@@ -59,10 +59,7 @@ export async function handleAgentEvent(
   request: Request,
   env: Env,
 ): Promise<Result<AgentEventResult, ApiError>> {
-  const authenticated = await tryCatch(
-    () => authenticateBearer(request, env.AGENT_CALLBACK_TOKEN),
-    (cause) => (cause instanceof ApiError ? cause : agentOperationFailed(cause)),
-  );
+  const authenticated = authenticateBearer(request, env.AGENT_CALLBACK_TOKEN);
   if (!authenticated.ok) return authenticated;
 
   const contentType = request.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase();
