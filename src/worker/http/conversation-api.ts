@@ -79,103 +79,110 @@ export const conversationApi = {
   async fetch(request: Request, env: Env): Promise<Response> {
     const startedAt = Date.now();
     const requestId = crypto.randomUUID();
-    const url = new URL(request.url);
-    let route: MatchedRoute | null = null;
-    let origin: string | null = null;
-    let result: RouteResult | null = null;
-
-    try {
+    const context: { route: MatchedRoute | null; origin: string | null } = {
+      route: null,
+      origin: null,
+    };
+    const processed = await tryCatch(async (): Promise<ApiResult<RouteResult>> => {
       const configured = validateConfiguration(env);
-      if (!configured.ok) throw configured.error;
+      if (!configured.ok) return configured;
       const validOrigin = validateOrigin(request, env.ALLOWED_ORIGIN);
-      if (!validOrigin.ok) throw validOrigin.error;
-      origin = validOrigin.value;
-      const matchedRoute = matchRoute(url.pathname);
-      if (!matchedRoute.ok) throw matchedRoute.error;
-      route = matchedRoute.value;
+      if (!validOrigin.ok) return validOrigin;
+      context.origin = validOrigin.value;
+      const matchedRoute = matchRoute(new URL(request.url).pathname);
+      if (!matchedRoute.ok) return matchedRoute;
+      context.route = matchedRoute.value;
+      return processMatchedRequest(request, env, context.route, context.origin);
+    }, httpOperationFailed);
+    const handled = processed.ok ? processed.value : processed;
+    const result = handled.ok
+      ? handled.value
+      : errorRouteResult(handled.error, requestId, context.route?.conversationId ?? null);
 
-      if (request.method === "OPTIONS") {
-        if (route === null) {
-          throw new ApiError(404, "route_not_found", "The requested route does not exist.");
-        }
-        if (origin === null) {
-          throw new ApiError(
-            400,
-            "origin_required",
-            "CORS preflight requests require an Origin header.",
-          );
-        }
-        const response = preflightResponse(origin, route.allowedMethods);
-        result = {
-          response,
-          conversationId: route.conversationId,
-          state: null,
-          outcome: "preflight",
-        };
-      } else {
-        if (route === null) {
-          throw new ApiError(404, "route_not_found", "The requested route does not exist.");
-        }
-        if (!route.allowedMethods.includes(request.method)) {
-          throw new ApiError(405, "method_not_allowed", "The request method is not allowed.", {
-            Allow: route.allowedMethods.join(", "),
-          });
-        }
-        if (route.name !== "livekit_webhook") {
-          const headers = validateSmallHeaders(request);
-          if (!headers.ok) throw headers.error;
-        }
-        if (route.name === "livekit_webhook") {
-          // LiveKit authenticates this route with its signed webhook JWT.
-        } else if (route.name === "livekit_agent_event") {
-          // The integration handler verifies the agent-only bearer credential.
-        } else if (route.name === "login") {
-          const browserOrigin = requireBrowserOrigin(origin);
-          if (!browserOrigin.ok) throw browserOrigin.error;
-        } else {
-          if (requiresSameOrigin(route, request)) {
-            const browserOrigin = requireBrowserOrigin(origin);
-            if (!browserOrigin.ok) throw browserOrigin.error;
-          }
-          const authenticated = await authenticateBrowserSession(request, env.AUTH_DB);
-          if (!authenticated.ok) throw authenticated.error;
-        }
-        const dispatched = await dispatch(request, env, route);
-        if (!dispatched.ok) throw dispatched.error;
-        result = dispatched.value;
-      }
-    } catch (error) {
-      const apiError =
-        error instanceof ApiError
-          ? error
-          : new ApiError(500, "internal_error", "The request could not be completed.");
-      if (!(error instanceof ApiError) || (error.status >= 500 && error.cause !== undefined)) {
-        const cause = error instanceof ApiError ? error.cause : error;
-        console.error(
-          JSON.stringify({
-            kind: "conversation_http_error",
-            requestId,
-            error: cause instanceof Error ? cause.name : "unknown_error",
-          }),
-        );
-      }
-      result = {
-        response: problemResponse(apiError, requestId),
-        conversationId: route?.conversationId ?? null,
-        state: null,
-        outcome: apiError.code,
-      };
+    if (!handled.ok && handled.error.status >= 500 && handled.error.cause !== undefined) {
+      const cause = handled.error.cause;
+      console.error(
+        JSON.stringify({
+          kind: "conversation_http_error",
+          requestId,
+          error: cause instanceof Error ? cause.name : "unknown_error",
+        }),
+      );
     }
 
     if (result.response.status === 101) {
-      emitRequestTelemetry(request, route, result, 101, startedAt, requestId);
+      emitRequestTelemetry(request, context.route, result, 101, startedAt, requestId);
       return result.response;
     }
-    const response = withRequestMetadata(withCors(result.response, origin), requestId);
-    emitRequestTelemetry(request, route, result, response.status, startedAt, requestId);
+    const response = withRequestMetadata(withCors(result.response, context.origin), requestId);
+    emitRequestTelemetry(request, context.route, result, response.status, startedAt, requestId);
     return response;
   },
 } satisfies ExportedHandler<Env>;
+
+async function processMatchedRequest(
+  request: Request,
+  env: Env,
+  route: MatchedRoute | null,
+  origin: string | null,
+): Promise<ApiResult<RouteResult>> {
+  if (route === null) {
+    return err(new ApiError(404, "route_not_found", "The requested route does not exist."));
+  }
+  if (request.method === "OPTIONS") {
+    if (origin === null) {
+      return err(
+        new ApiError(400, "origin_required", "CORS preflight requests require an Origin header."),
+      );
+    }
+    return ok({
+      response: preflightResponse(origin, route.allowedMethods),
+      conversationId: route.conversationId,
+      state: null,
+      outcome: "preflight",
+    });
+  }
+  if (!route.allowedMethods.includes(request.method)) {
+    return err(
+      new ApiError(405, "method_not_allowed", "The request method is not allowed.", {
+        Allow: route.allowedMethods.join(", "),
+      }),
+    );
+  }
+  if (route.name !== "livekit_webhook") {
+    const headers = validateSmallHeaders(request);
+    if (!headers.ok) return headers;
+  }
+  if (route.name === "livekit_webhook") {
+    // LiveKit authenticates this route with its signed webhook JWT.
+  } else if (route.name === "livekit_agent_event") {
+    // The integration handler verifies the agent-only bearer credential.
+  } else if (route.name === "login") {
+    const browserOrigin = requireBrowserOrigin(origin);
+    if (!browserOrigin.ok) return browserOrigin;
+  } else {
+    if (requiresSameOrigin(route, request)) {
+      const browserOrigin = requireBrowserOrigin(origin);
+      if (!browserOrigin.ok) return browserOrigin;
+    }
+    const authenticated = await authenticateBrowserSession(request, env.AUTH_DB);
+    if (!authenticated.ok) return authenticated;
+  }
+  return dispatch(request, env, route);
+}
+
+function errorRouteResult(
+  error: ApiError,
+  requestId: string,
+  conversationId: string | null,
+): RouteResult {
+  return {
+    response: problemResponse(error, requestId),
+    conversationId,
+    state: null,
+    outcome: error.code,
+  };
+}
 
 function validateConfiguration(env: Env): ApiResult<void> {
   if (
