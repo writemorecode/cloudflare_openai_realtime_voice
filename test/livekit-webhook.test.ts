@@ -218,11 +218,13 @@ describe("LiveKit webhook", () => {
     ];
 
     for (const [index, observation] of observations.entries()) {
+      // oxlint-disable-next-line no-await-in-loop -- Each webhook observation advances the state asserted below.
       const response = await webhookRequest({
         ...observation,
         createdAt: String(Math.floor(Date.now() / 1000)),
       });
       expect(response.status).toBe(204);
+      // oxlint-disable-next-line no-await-in-loop -- Assert the state produced by this specific observation.
       const state = await stub.getState();
       expect(state?.tag).toBe(
         index === observations.length - 1

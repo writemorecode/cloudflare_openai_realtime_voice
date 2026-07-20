@@ -85,6 +85,7 @@ async function makeConversationLive(conversationId: string): Promise<void> {
   ] as const;
   for (const [kind, participantIdentity] of observations) {
     expect(
+      // oxlint-disable-next-line no-await-in-loop -- Each observation advances the durable-object state for the next one.
       await stub.recordLiveKitMediaObservation({
         eventId: crypto.randomUUID(),
         kind,

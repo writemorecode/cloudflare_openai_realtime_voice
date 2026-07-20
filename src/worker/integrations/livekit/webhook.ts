@@ -504,6 +504,7 @@ async function applyIntegrationEvent(
 ): Promise<ConversationState> {
   let state = initial;
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    // oxlint-disable-next-line no-await-in-loop -- Each retry needs the latest revision from the prior response.
     const result: ApplyEventResult = await stub.applyIntegrationEvent({
       expectedRevision: state.revision,
       event,

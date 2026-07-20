@@ -17,9 +17,9 @@ describe("createRealtimeModel", () => {
         callbackToken: null,
       },
       { ready: vi.fn(), failed: vi.fn(), recovered: vi.fn() },
-    ) as unknown as { _options: unknown };
+    );
 
-    expect(model._options).toEqual(
+    expect(Reflect.get(model, "_options")).toEqual(
       expect.objectContaining({
         apiKey: "test-key",
         model: "gpt-realtime-2.1",

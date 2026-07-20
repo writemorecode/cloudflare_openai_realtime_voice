@@ -6,9 +6,9 @@ import { decode, encode } from "@msgpack/msgpack";
 import { z } from "zod";
 
 import {
-  ArtifactStatus,
+  ArtifactStatus as ConversationArtifactStatus,
   ConversationStateTag,
-  TransportStatus,
+  TransportStatus as ConversationTransportStatus,
 } from "../../domain/conversation-state-machine";
 import type { ConversationStateDto } from "../../worker/http/conversation-state-dto";
 
@@ -105,24 +105,24 @@ const endRequestedBodySchema = revisionEpochBodySchema;
 const clientPingBodySchema = z.object({ sentAt: finiteInt });
 
 const transportDtoSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal(TransportStatus.Idle) }),
-  z.object({ status: z.literal(TransportStatus.Connecting), epoch: positiveEpoch }),
-  z.object({ status: z.literal(TransportStatus.Connected), epoch: positiveEpoch }),
+  z.object({ status: z.literal(ConversationTransportStatus.Idle) }),
+  z.object({ status: z.literal(ConversationTransportStatus.Connecting), epoch: positiveEpoch }),
+  z.object({ status: z.literal(ConversationTransportStatus.Connected), epoch: positiveEpoch }),
   z.object({
-    status: z.literal(TransportStatus.Reconnecting),
+    status: z.literal(ConversationTransportStatus.Reconnecting),
     epoch: positiveEpoch,
     attempt: positiveEpoch,
     lastErrorCode: errorCode,
   }),
-  z.object({ status: z.literal(TransportStatus.Closed), epoch: positiveEpoch }),
-  z.object({ status: z.literal(TransportStatus.Failed), epoch: finiteInt, errorCode }),
+  z.object({ status: z.literal(ConversationTransportStatus.Closed), epoch: positiveEpoch }),
+  z.object({ status: z.literal(ConversationTransportStatus.Failed), epoch: finiteInt, errorCode }),
 ]);
 const artifactDtoSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal(ArtifactStatus.Pending) }),
-  z.object({ status: z.literal(ArtifactStatus.Recording) }),
-  z.object({ status: z.literal(ArtifactStatus.Uploading) }),
-  z.object({ status: z.literal(ArtifactStatus.Ready) }),
-  z.object({ status: z.literal(ArtifactStatus.Failed), errorCode }),
+  z.object({ status: z.literal(ConversationArtifactStatus.Pending) }),
+  z.object({ status: z.literal(ConversationArtifactStatus.Recording) }),
+  z.object({ status: z.literal(ConversationArtifactStatus.Uploading) }),
+  z.object({ status: z.literal(ConversationArtifactStatus.Ready) }),
+  z.object({ status: z.literal(ConversationArtifactStatus.Failed), errorCode }),
 ]);
 const stateDtoSchema: z.ZodType<ConversationStateDto> = z.looseObject({
   conversationId: z.string(),
@@ -219,12 +219,15 @@ export type ServerWireMessage =
   | WireMessage<ServerMessageType.ServerPing, ServerPingBody>;
 
 export class WireProtocolError extends Error {
+  readonly messageId: string | null;
+
   constructor(
     readonly code: ProtocolErrorCode,
-    readonly messageId: string | null = null,
+    readonly acknowledgedMessageId: string | null = null,
     cause?: unknown,
   ) {
     super(`Conversation wire protocol error: ${ProtocolErrorCode[code]}`, { cause });
+    this.messageId = acknowledgedMessageId;
     this.name = "WireProtocolError";
   }
 }

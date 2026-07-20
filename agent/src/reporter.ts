@@ -87,6 +87,7 @@ export class HttpAgentLifecycleReporter implements AgentLifecycleReporter {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
       try {
+        // oxlint-disable-next-line no-await-in-loop -- Lifecycle-report retries must be sent one at a time.
         const response = await this.fetch(this.endpoint, {
           method: "POST",
           headers: {
@@ -108,6 +109,7 @@ export class HttpAgentLifecycleReporter implements AgentLifecycleReporter {
         clearTimeout(timeout);
       }
       if (attempt < this.maxAttempts) {
+        // oxlint-disable-next-line no-await-in-loop -- Delay only after the preceding attempt has completed.
         await this.sleep(this.retryBaseDelayMs * 2 ** (attempt - 1));
       }
     }
