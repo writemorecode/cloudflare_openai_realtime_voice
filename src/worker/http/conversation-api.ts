@@ -126,12 +126,13 @@ export const conversationApi = {
         error instanceof ApiError
           ? error
           : new ApiError(500, "internal_error", "The request could not be completed.");
-      if (!(error instanceof ApiError)) {
+      if (!(error instanceof ApiError) || (error.status >= 500 && error.cause !== undefined)) {
+        const cause = error instanceof ApiError ? error.cause : error;
         console.error(
           JSON.stringify({
             kind: "conversation_http_error",
             requestId,
-            error: error instanceof Error ? error.name : "unknown_error",
+            error: cause instanceof Error ? cause.name : "unknown_error",
           }),
         );
       }

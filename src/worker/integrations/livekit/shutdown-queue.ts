@@ -67,6 +67,7 @@ export async function handleLiveKitShutdownBatch(
 }
 
 function retryMessage(message: Message<LiveKitShutdownMessage>, error: unknown): void {
+  const cause = error instanceof ApiError && error.cause !== undefined ? error.cause : error;
   const delaySeconds = Math.min(
     MAX_RETRY_DELAY_SECONDS,
     2 ** Math.max(0, message.attempts - 1) * 5,
@@ -78,7 +79,7 @@ function retryMessage(message: Message<LiveKitShutdownMessage>, error: unknown):
       conversationId: message.body.conversationId,
       attempt: message.attempts,
       delaySeconds,
-      error: error instanceof Error ? error.name : "unknown_error",
+      error: cause instanceof Error ? cause.name : "unknown_error",
     }),
   );
   message.retry({ delaySeconds });
