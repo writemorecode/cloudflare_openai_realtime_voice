@@ -3,8 +3,13 @@ import {
   ConversationEventType,
   ConversationStateTag,
   value,
+  type ConversationState,
 } from "../../domain/conversation-state-machine";
-import type { ConversationSession } from "../../durable-object/conversation-session";
+import type {
+  ApplyEventResult,
+  ConversationSession,
+  InitializeResult,
+} from "../../durable-object/conversation-session";
 import { ApiError, problemResponse } from "./api-errors";
 import { preflightResponse, validateOrigin, withCors } from "./api-cors";
 import { deriveConversationId, validateIdempotencyKey } from "./api-security";
@@ -18,6 +23,7 @@ import {
   stopLiveKitAccess,
   type LiveKitAccessResponse,
 } from "../integrations/livekit/access";
+import { err, ok, tryCatch, type Result } from "../try-catch";
 
 const STARTING_WINDOW_MS = 60_000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -65,6 +71,8 @@ interface RouteResult {
   readonly outcome: string;
 }
 
+type ApiResult<T> = Result<T, ApiError>;
+
 export type StartConversationResponse = ConversationStateDto;
 
 export const conversationApi = {
@@ -77,11 +85,14 @@ export const conversationApi = {
     let result: RouteResult | null = null;
 
     try {
-      assertConfigured(env);
+      const configured = validateConfiguration(env);
+      if (!configured.ok) throw configured.error;
       const validOrigin = validateOrigin(request, env.ALLOWED_ORIGIN);
       if (!validOrigin.ok) throw validOrigin.error;
       origin = validOrigin.value;
-      route = matchRoute(url.pathname);
+      const matchedRoute = matchRoute(url.pathname);
+      if (!matchedRoute.ok) throw matchedRoute.error;
+      route = matchedRoute.value;
 
       if (request.method === "OPTIONS") {
         if (route === null) {
@@ -110,19 +121,28 @@ export const conversationApi = {
             Allow: route.allowedMethods.join(", "),
           });
         }
-        if (route.name !== "livekit_webhook") validateSmallHeaders(request);
+        if (route.name !== "livekit_webhook") {
+          const headers = validateSmallHeaders(request);
+          if (!headers.ok) throw headers.error;
+        }
         if (route.name === "livekit_webhook") {
           // LiveKit authenticates this route with its signed webhook JWT.
         } else if (route.name === "livekit_agent_event") {
           // The integration handler verifies the agent-only bearer credential.
         } else if (route.name === "login") {
-          requireBrowserOrigin(origin);
+          const browserOrigin = requireBrowserOrigin(origin);
+          if (!browserOrigin.ok) throw browserOrigin.error;
         } else {
-          if (requiresSameOrigin(route, request)) requireBrowserOrigin(origin);
+          if (requiresSameOrigin(route, request)) {
+            const browserOrigin = requireBrowserOrigin(origin);
+            if (!browserOrigin.ok) throw browserOrigin.error;
+          }
           const authenticated = await authenticateBrowserSession(request, env.AUTH_DB);
           if (!authenticated.ok) throw authenticated.error;
         }
-        result = await dispatch(request, env, route);
+        const dispatched = await dispatch(request, env, route);
+        if (!dispatched.ok) throw dispatched.error;
+        result = dispatched.value;
       }
     } catch (error) {
       const apiError =
@@ -157,46 +177,73 @@ export const conversationApi = {
   },
 } satisfies ExportedHandler<Env>;
 
-function assertConfigured(env: Env): void {
+function validateConfiguration(env: Env): ApiResult<void> {
   if (
     env.AGENT_CALLBACK_TOKEN.length === 0 ||
     env.CONVERSATION_ID_SECRET.length === 0 ||
     env.ALLOWED_ORIGIN.length === 0
   ) {
-    throw new Error("Required API configuration is missing");
+    return err(new ApiError(500, "api_not_configured", "The API is not configured."));
   }
+  return ok(undefined);
 }
 
-async function dispatch(request: Request, env: Env, route: MatchedRoute): Promise<RouteResult> {
+async function dispatch(
+  request: Request,
+  env: Env,
+  route: MatchedRoute,
+): Promise<ApiResult<RouteResult>> {
   switch (route.name) {
-    case "login":
-      return authRouteResult(await login(request, env.AUTH_DB), "logged_in");
-    case "logout":
-      await assertNoBody(request);
-      return authRouteResult(await logout(request, env.AUTH_DB), "logged_out");
-    case "auth_session": {
-      await assertNoBody(request);
-      const user = await authenticateBrowserSession(request, env.AUTH_DB);
-      if (!user.ok) throw user.error;
-      return authSessionResult(user.value);
+    case "login": {
+      const loggedIn = await login(request, env.AUTH_DB);
+      return loggedIn.ok ? ok(authResult(loggedIn.value, "logged_in")) : loggedIn;
     }
-    case "create_conversation":
-      await assertNoBody(request);
+    case "logout": {
+      const empty = await validateNoBody(request);
+      if (!empty.ok) return empty;
+      const loggedOut = await logout(request, env.AUTH_DB);
+      return loggedOut.ok ? ok(authResult(loggedOut.value, "logged_out")) : loggedOut;
+    }
+    case "auth_session": {
+      const empty = await validateNoBody(request);
+      if (!empty.ok) return empty;
+      const user = await authenticateBrowserSession(request, env.AUTH_DB);
+      return user.ok ? ok(authSessionResult(user.value)) : user;
+    }
+    case "create_conversation": {
+      const empty = await validateNoBody(request);
+      if (!empty.ok) return empty;
       return createConversation(request, env);
-    case "start_conversation":
-      await assertNoBody(request);
-      return startConversation(env, requireConversationId(route));
-    case "get_state":
-      await assertNoBody(request);
-      return getConversationState(env, requireConversationId(route));
-    case "connect":
-      await assertNoBody(request);
-      return connectConversation(request, env, requireConversationId(route));
-    case "livekit_access":
-      await assertNoBody(request);
+    }
+    case "start_conversation": {
+      const empty = await validateNoBody(request);
+      if (!empty.ok) return empty;
+      const conversationId = requireConversationId(route);
+      return conversationId.ok ? startConversation(env, conversationId.value) : conversationId;
+    }
+    case "get_state": {
+      const empty = await validateNoBody(request);
+      if (!empty.ok) return empty;
+      const conversationId = requireConversationId(route);
+      return conversationId.ok ? getConversationState(env, conversationId.value) : conversationId;
+    }
+    case "connect": {
+      const empty = await validateNoBody(request);
+      if (!empty.ok) return empty;
+      const conversationId = requireConversationId(route);
+      return conversationId.ok
+        ? connectConversation(request, env, conversationId.value)
+        : conversationId;
+    }
+    case "livekit_access": {
+      const empty = await validateNoBody(request);
+      if (!empty.ok) return empty;
+      const conversationId = requireConversationId(route);
+      if (!conversationId.ok) return conversationId;
       return request.method === "DELETE"
-        ? releaseLiveKitAccess(env, requireConversationId(route))
-        : provideLiveKitAccess(env, requireConversationId(route));
+        ? releaseLiveKitAccess(env, conversationId.value)
+        : provideLiveKitAccess(env, conversationId.value);
+    }
     case "livekit_webhook":
       return receiveLiveKitWebhook(request, env);
     case "livekit_agent_event":
@@ -204,70 +251,83 @@ async function dispatch(request: Request, env: Env, route: MatchedRoute): Promis
   }
 }
 
-async function releaseLiveKitAccess(env: Env, conversationId: string): Promise<RouteResult> {
+async function releaseLiveKitAccess(
+  env: Env,
+  conversationId: string,
+): Promise<ApiResult<RouteResult>> {
   const outcome = await stopLiveKitAccess(env, conversationId);
-  if (!outcome.ok) throw outcome.error;
-  const state = await env.CONVERSATION_SESSIONS.getByName(conversationId).getState();
-  if (state === null) {
-    throw new ApiError(404, "conversation_not_found", "Conversation not found.");
+  if (!outcome.ok) return outcome;
+  const state = await conversationState(env, conversationId);
+  if (!state.ok) return state;
+  if (state.value === null) {
+    return err(new ApiError(404, "conversation_not_found", "Conversation not found."));
   }
-  return {
+  return ok({
     response: new Response(null, { status: 204 }),
     conversationId,
-    state: toConversationStateDto(state),
+    state: toConversationStateDto(state.value),
     outcome: outcome.value,
-  };
+  });
 }
 
-async function receiveLiveKitAgentEvent(request: Request, env: Env): Promise<RouteResult> {
+async function receiveLiveKitAgentEvent(
+  request: Request,
+  env: Env,
+): Promise<ApiResult<RouteResult>> {
   const handled = await handleAgentEvent(request, env);
-  if (!handled.ok) throw handled.error;
-  return {
+  if (!handled.ok) return handled;
+  return ok({
     response: new Response(null, { status: 204 }),
     conversationId: handled.value.conversationId,
     state: toConversationStateDto(handled.value.state),
     outcome: handled.value.outcome,
-  };
+  });
 }
 
-async function provideLiveKitAccess(env: Env, conversationId: string): Promise<RouteResult> {
+async function provideLiveKitAccess(
+  env: Env,
+  conversationId: string,
+): Promise<ApiResult<RouteResult>> {
   const access = await createLiveKitAccess(env, conversationId);
-  if (!access.ok) throw access.error;
-  const state = await env.CONVERSATION_SESSIONS.getByName(conversationId).getState();
-  if (state === null) {
-    throw new ApiError(404, "conversation_not_found", "Conversation not found.");
+  if (!access.ok) return access;
+  const state = await conversationState(env, conversationId);
+  if (!state.ok) return state;
+  if (state.value === null) {
+    return err(new ApiError(404, "conversation_not_found", "Conversation not found."));
   }
-  return {
+  return ok({
     response: Response.json(access.value satisfies LiveKitAccessResponse, {
       headers: { "Cache-Control": "no-store" },
     }),
     conversationId,
-    state: toConversationStateDto(state),
+    state: toConversationStateDto(state.value),
     outcome: "livekit_access_ready",
-  };
+  });
 }
 
-async function receiveLiveKitWebhook(request: Request, env: Env): Promise<RouteResult> {
+async function receiveLiveKitWebhook(request: Request, env: Env): Promise<ApiResult<RouteResult>> {
   const handled = await handleLiveKitWebhook(request, env);
-  if (!handled.ok) throw handled.error;
+  if (!handled.ok) return handled;
   const state = toConversationStateDto(handled.value.state);
-  return {
+  return ok({
     response: new Response(null, { status: 204 }),
     conversationId: handled.value.conversationId,
     state,
     outcome: handled.value.outcome,
-  };
+  });
 }
 
 async function connectConversation(
   request: Request,
   env: Env,
   conversationId: string,
-): Promise<RouteResult> {
+): Promise<ApiResult<RouteResult>> {
   if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
-    throw new ApiError(426, "websocket_upgrade_required", "A WebSocket upgrade is required.", {
-      Upgrade: "websocket",
-    });
+    return err(
+      new ApiError(426, "websocket_upgrade_required", "A WebSocket upgrade is required.", {
+        Upgrade: "websocket",
+      }),
+    );
   }
 
   const headers = new Headers(request.headers);
@@ -275,87 +335,112 @@ async function connectConversation(
   headers.set("X-Conversation-Id", conversationId);
   headers.delete("Authorization");
   headers.delete("Cookie");
-  const response = await env.CONVERSATION_SESSIONS.getByName(conversationId).fetch(
-    new Request(request.url, { method: "GET", headers }),
+  const response = await tryCatch(
+    () =>
+      env.CONVERSATION_SESSIONS.getByName(conversationId).fetch(
+        new Request(request.url, { method: "GET", headers }),
+      ),
+    httpOperationFailed,
   );
-  if (response.status === 404) {
-    throw new ApiError(404, "conversation_not_found", "Conversation not found.");
+  if (!response.ok) return response;
+  if (response.value.status === 404) {
+    return err(new ApiError(404, "conversation_not_found", "Conversation not found."));
   }
-  if (response.status !== 101) {
-    throw new ApiError(500, "websocket_upgrade_failed", "WebSocket upgrade failed.");
+  if (response.value.status !== 101) {
+    return err(new ApiError(500, "websocket_upgrade_failed", "WebSocket upgrade failed."));
   }
-  return {
-    response,
+  return ok({
+    response: response.value,
     conversationId,
     state: null,
     outcome: "websocket_upgraded",
-  };
+  });
 }
 
-async function createConversation(request: Request, env: Env): Promise<RouteResult> {
+async function createConversation(request: Request, env: Env): Promise<ApiResult<RouteResult>> {
   const idempotencyKey = validateIdempotencyKey(request.headers.get("Idempotency-Key"));
-  if (!idempotencyKey.ok) throw idempotencyKey.error;
+  if (!idempotencyKey.ok) return idempotencyKey;
   const derivedConversationId = await deriveConversationId(
     env.CONVERSATION_ID_SECRET,
     idempotencyKey.value,
   );
-  if (!derivedConversationId.ok) throw derivedConversationId.error;
+  if (!derivedConversationId.ok) return derivedConversationId;
   const conversationId = derivedConversationId.value;
   const stub = env.CONVERSATION_SESSIONS.getByName(conversationId);
-  const initialized = await stub.initialize(
-    value.conversationSessionId(conversationId),
-    value.unixMillis(Date.now()),
+  const initialized = await tryCatch(
+    async (): Promise<InitializeResult> =>
+      await stub.initialize(
+        value.conversationSessionId(conversationId),
+        value.unixMillis(Date.now()),
+      ),
+    httpOperationFailed,
   );
-  if (initialized.status === "rejected") {
-    throw new ApiError(409, "conversation_identity_conflict", "Conversation identity conflict.");
+  if (!initialized.ok) return initialized;
+  if (initialized.value.status === "rejected") {
+    return err(
+      new ApiError(409, "conversation_identity_conflict", "Conversation identity conflict."),
+    );
   }
-  const state = toConversationStateDto(initialized.state);
-  return {
-    response: Response.json(state, { status: initialized.status === "initialized" ? 201 : 200 }),
+  const state = toConversationStateDto(initialized.value.state);
+  return ok({
+    response: Response.json(state, {
+      status: initialized.value.status === "initialized" ? 201 : 200,
+    }),
     conversationId,
     state,
-    outcome: initialized.status,
-  };
+    outcome: initialized.value.status,
+  });
 }
 
-async function startConversation(env: Env, conversationId: string): Promise<RouteResult> {
+async function startConversation(
+  env: Env,
+  conversationId: string,
+): Promise<ApiResult<RouteResult>> {
   const stub = env.CONVERSATION_SESSIONS.getByName(conversationId);
-  const current = await stub.getState();
-  if (current === null) {
-    throw new ApiError(404, "conversation_not_found", "Conversation not found.");
+  const current = await conversationState(env, conversationId);
+  if (!current.ok) return current;
+  if (current.value === null) {
+    return err(new ApiError(404, "conversation_not_found", "Conversation not found."));
   }
+  const currentState = current.value;
 
-  if (current.tag === ConversationStateTag.Starting) {
-    return pendingStartResult(current, "already_starting");
+  if (currentState.tag === ConversationStateTag.Starting) {
+    return ok(pendingStartResult(currentState, "already_starting"));
   }
-  if (current.tag !== ConversationStateTag.Created) {
-    throw new ApiError(409, "conversation_not_startable", "Conversation is not startable.");
+  if (currentState.tag !== ConversationStateTag.Created) {
+    return err(new ApiError(409, "conversation_not_startable", "Conversation is not startable."));
   }
 
   const now = Date.now();
-  const applied = await stub.applyEvent({
-    expectedRevision: current.revision,
-    event: {
-      type: ConversationEventType.StartRequested,
-      eventId: `${START_EVENT_PREFIX}${conversationId}`,
-      at: value.unixMillis(now),
-      startDeadlineAt: value.unixMillis(now + STARTING_WINDOW_MS),
-    },
-  });
+  const applied = await tryCatch(
+    async (): Promise<ApplyEventResult> =>
+      await stub.applyEvent({
+        expectedRevision: currentState.revision,
+        event: {
+          type: ConversationEventType.StartRequested,
+          eventId: `${START_EVENT_PREFIX}${conversationId}`,
+          at: value.unixMillis(now),
+          startDeadlineAt: value.unixMillis(now + STARTING_WINDOW_MS),
+        },
+      }),
+    httpOperationFailed,
+  );
+  if (!applied.ok) return applied;
 
-  if (applied.outcome === "duplicate") {
-    return pendingStartResult(applied.state, "already_starting");
+  if (applied.value.outcome === "duplicate") {
+    return ok(pendingStartResult(applied.value.state, "already_starting"));
   }
-  if (applied.outcome === "applied") {
-    return pendingStartResult(applied.state, "start_requested");
+  if (applied.value.outcome === "applied") {
+    return ok(pendingStartResult(applied.value.state, "start_requested"));
   }
 
   // A concurrent command may have won after the initial state read.
-  const latest = await stub.getState();
-  if (latest?.tag === ConversationStateTag.Starting) {
-    return pendingStartResult(latest, "already_starting");
+  const latest = await conversationState(env, conversationId);
+  if (!latest.ok) return latest;
+  if (latest.value?.tag === ConversationStateTag.Starting) {
+    return ok(pendingStartResult(latest.value, "already_starting"));
   }
-  throw new ApiError(409, "conversation_not_startable", "Conversation is not startable.");
+  return err(new ApiError(409, "conversation_not_startable", "Conversation is not startable."));
 }
 
 function pendingStartResult(
@@ -374,12 +459,16 @@ function pendingStartResult(
   };
 }
 
-async function getConversationState(env: Env, conversationId: string): Promise<RouteResult> {
-  const state = await env.CONVERSATION_SESSIONS.getByName(conversationId).getState();
-  if (state === null) {
-    throw new ApiError(404, "conversation_not_found", "Conversation not found.");
+async function getConversationState(
+  env: Env,
+  conversationId: string,
+): Promise<ApiResult<RouteResult>> {
+  const state = await conversationState(env, conversationId);
+  if (!state.ok) return state;
+  if (state.value === null) {
+    return err(new ApiError(404, "conversation_not_found", "Conversation not found."));
   }
-  return stateResult(state, "state_returned");
+  return ok(stateResult(state.value, "state_returned"));
 }
 
 function stateResult(
@@ -395,57 +484,58 @@ function stateResult(
   };
 }
 
-function matchRoute(pathname: string): MatchedRoute | null {
+function matchRoute(pathname: string): ApiResult<MatchedRoute | null> {
   if (pathname === "/v1/auth/login") {
-    return { name: "login", allowedMethods: ["POST"], conversationId: null };
+    return ok({ name: "login", allowedMethods: ["POST"], conversationId: null });
   }
   if (pathname === "/v1/auth/logout") {
-    return { name: "logout", allowedMethods: ["POST"], conversationId: null };
+    return ok({ name: "logout", allowedMethods: ["POST"], conversationId: null });
   }
   if (pathname === "/v1/auth/session") {
-    return { name: "auth_session", allowedMethods: ["GET"], conversationId: null };
+    return ok({ name: "auth_session", allowedMethods: ["GET"], conversationId: null });
   }
   if (pathname === "/v1/integrations/livekit/webhook") {
-    return { name: "livekit_webhook", allowedMethods: ["POST"], conversationId: null };
+    return ok({ name: "livekit_webhook", allowedMethods: ["POST"], conversationId: null });
   }
   if (pathname === "/v1/integrations/livekit/agent-events") {
-    return { name: "livekit_agent_event", allowedMethods: ["POST"], conversationId: null };
+    return ok({ name: "livekit_agent_event", allowedMethods: ["POST"], conversationId: null });
   }
   if (pathname === "/v1/conversations") {
-    return { name: "create_conversation", allowedMethods: ["POST"], conversationId: null };
+    return ok({ name: "create_conversation", allowedMethods: ["POST"], conversationId: null });
   }
 
   const match = /^\/v1\/conversations\/([^/]+)\/(start|state|connect|livekit-access)$/.exec(
     pathname,
   );
   if (match === null) {
-    return null;
+    return ok(null);
   }
   const conversationId = match[1];
   if (conversationId === undefined || !UUID_PATTERN.test(conversationId)) {
-    throw new ApiError(400, "invalid_conversation_id", "Conversation ID must be a canonical UUID.");
+    return err(
+      new ApiError(400, "invalid_conversation_id", "Conversation ID must be a canonical UUID."),
+    );
   }
   switch (match[2]) {
     case "start":
-      return { name: "start_conversation", allowedMethods: ["POST"], conversationId };
+      return ok({ name: "start_conversation", allowedMethods: ["POST"], conversationId });
     case "state":
-      return { name: "get_state", allowedMethods: ["GET"], conversationId };
+      return ok({ name: "get_state", allowedMethods: ["GET"], conversationId });
     case "connect":
-      return { name: "connect", allowedMethods: ["GET"], conversationId };
+      return ok({ name: "connect", allowedMethods: ["GET"], conversationId });
     case "livekit-access":
-      return { name: "livekit_access", allowedMethods: ["POST", "DELETE"], conversationId };
+      return ok({
+        name: "livekit_access",
+        allowedMethods: ["POST", "DELETE"],
+        conversationId,
+      });
     default:
-      return null;
+      return ok(null);
   }
 }
 
 function authResult(response: Response, outcome: string): RouteResult {
   return { response, conversationId: null, state: null, outcome };
-}
-
-function authRouteResult(result: Awaited<ReturnType<typeof login>>, outcome: string): RouteResult {
-  if (!result.ok) throw result.error;
-  return authResult(result.value, outcome);
 }
 
 function authSessionResult(user: AuthenticatedUser): RouteResult {
@@ -463,50 +553,67 @@ function requiresSameOrigin(route: MatchedRoute, request: Request): boolean {
   );
 }
 
-function requireBrowserOrigin(origin: string | null): void {
+function requireBrowserOrigin(origin: string | null): ApiResult<void> {
   if (origin === null) {
-    throw new ApiError(
-      403,
-      "origin_required",
-      "Browser requests require an allowed Origin header.",
+    return err(
+      new ApiError(403, "origin_required", "Browser requests require an allowed Origin header."),
     );
   }
+  return ok(undefined);
 }
 
-function requireConversationId(route: MatchedRoute): string {
+function requireConversationId(route: MatchedRoute): ApiResult<string> {
   if (route.conversationId === null) {
-    throw new Error("Matched conversation route has no conversation ID");
+    return err(new ApiError(500, "invalid_route", "The request route is invalid."));
   }
-  return route.conversationId;
+  return ok(route.conversationId);
 }
 
-async function assertNoBody(request: Request): Promise<void> {
-  if (request.body === null) return;
+async function validateNoBody(request: Request): Promise<ApiResult<void>> {
+  if (request.body === null) return ok(undefined);
 
   const reader = request.body.getReader();
-  const first = await reader.read();
-  await reader.cancel();
-  if (first.done) return;
+  const read = await tryCatch(async () => {
+    const first = await reader.read();
+    await reader.cancel();
+    return first;
+  }, httpOperationFailed);
+  if (!read.ok) return read;
+  if (read.value.done) return ok(undefined);
 
-  throw new ApiError(
-    400,
-    "unexpected_request_body",
-    "This endpoint does not accept a request body.",
+  return err(
+    new ApiError(400, "unexpected_request_body", "This endpoint does not accept a request body."),
   );
 }
 
-function validateSmallHeaders(request: Request): void {
+function validateSmallHeaders(request: Request): ApiResult<void> {
   if ((request.headers.get("Authorization")?.length ?? 0) > MAX_AUTHORIZATION_LENGTH) {
-    throw new ApiError(431, "request_header_too_large", "A request header is too large.");
+    return err(new ApiError(431, "request_header_too_large", "A request header is too large."));
   }
   if ((request.headers.get("Content-Type")?.length ?? 0) > MAX_CONTENT_TYPE_LENGTH) {
-    throw new ApiError(431, "request_header_too_large", "A request header is too large.");
+    return err(new ApiError(431, "request_header_too_large", "A request header is too large."));
   }
   if (
     (request.headers.get("Sec-WebSocket-Protocol")?.length ?? 0) > MAX_WEBSOCKET_PROTOCOL_LENGTH
   ) {
-    throw new ApiError(431, "request_header_too_large", "A request header is too large.");
+    return err(new ApiError(431, "request_header_too_large", "A request header is too large."));
   }
+  return ok(undefined);
+}
+
+async function conversationState(
+  env: Env,
+  conversationId: string,
+): Promise<ApiResult<ConversationState | null>> {
+  const stub = env.CONVERSATION_SESSIONS.getByName(conversationId);
+  return tryCatch(
+    async (): Promise<ConversationState | null> => await stub.getState(),
+    httpOperationFailed,
+  );
+}
+
+function httpOperationFailed(cause: unknown): ApiError {
+  return new ApiError(500, "internal_error", "The request could not be completed.", {}, cause);
 }
 
 function withRequestMetadata(response: Response, requestId: string): Response {
