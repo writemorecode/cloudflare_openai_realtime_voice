@@ -242,12 +242,13 @@ async function provideLiveKitAccess(env: Env, conversationId: string): Promise<R
 
 async function receiveLiveKitWebhook(request: Request, env: Env): Promise<RouteResult> {
   const handled = await handleLiveKitWebhook(request, env);
-  const state = toConversationStateDto(handled.state);
+  if (!handled.ok) throw handled.error;
+  const state = toConversationStateDto(handled.value.state);
   return {
     response: new Response(null, { status: 204 }),
-    conversationId: handled.conversationId,
+    conversationId: handled.value.conversationId,
     state,
-    outcome: handled.outcome,
+    outcome: handled.value.outcome,
   };
 }
 

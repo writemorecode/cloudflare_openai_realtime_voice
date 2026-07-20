@@ -25,6 +25,7 @@ import type {
   LiveKitMediaObservationKind,
 } from "../../../durable-object/conversation-session";
 import { ApiError } from "../../http/api-errors";
+import { err, ok, tryCatch, type Result } from "../../try-catch";
 import { applyIntegrationEventWithRetry } from "./integration-event-retry";
 import { reconcileCompositeReadiness } from "./readiness";
 
@@ -46,133 +47,145 @@ export interface LiveKitWebhookResult {
   readonly outcome: string;
 }
 
+interface TranslatedWebhookResult {
+  readonly state: ConversationState;
+  readonly outcome: string;
+}
+
 export async function handleLiveKitWebhook(
   request: Request,
   env: Env,
-): Promise<LiveKitWebhookResult> {
-  assertWebhookRequest(request);
-  assertWebhookConfiguration(env);
+): Promise<Result<LiveKitWebhookResult, ApiError>> {
+  const validRequest = validateWebhookRequest(request);
+  if (!validRequest.ok) return validRequest;
+  const validConfiguration = validateWebhookConfiguration(env);
+  if (!validConfiguration.ok) return validConfiguration;
 
-  const body = await request.text();
-  if (new TextEncoder().encode(body).byteLength > MAX_WEBHOOK_BODY_BYTES) {
-    throw new ApiError(413, "livekit_webhook_too_large", "The webhook body is too large.");
+  const body = await tryCatch(() => request.text(), webhookOperationFailed);
+  if (!body.ok) return body;
+  if (new TextEncoder().encode(body.value).byteLength > MAX_WEBHOOK_BODY_BYTES) {
+    return err(new ApiError(413, "livekit_webhook_too_large", "The webhook body is too large."));
   }
 
-  const received = await receiveSignedWebhook(
-    new WebhookReceiver(env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET),
-    body,
-    request.headers.get("Authorization") ?? undefined,
+  const received = await tryCatch(
+    () =>
+      new WebhookReceiver(env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET).receive(
+        body.value,
+        request.headers.get("Authorization") ?? undefined,
+      ),
+    (cause) =>
+      new ApiError(
+        401,
+        "invalid_livekit_webhook",
+        "The LiveKit webhook signature is invalid.",
+        {},
+        cause,
+      ),
   );
-  if (!received.success) {
-    throw new ApiError(
-      401,
-      "invalid_livekit_webhook",
-      "The LiveKit webhook signature is invalid.",
-      {},
-      received.error,
-    );
-  }
-  const event = received.event;
+  if (!received.ok) return received;
+  const event = received.value;
 
-  validateWebhookEvent(event);
-  const conversationId = conversationIdFromEvent(event);
+  const validEvent = validateWebhookEvent(event);
+  if (!validEvent.ok) return validEvent;
+  const correlatedConversation = conversationIdFromEvent(event);
+  if (!correlatedConversation.ok) return correlatedConversation;
+  const conversationId = correlatedConversation.value;
   const stub = env.CONVERSATION_SESSIONS.getByName(conversationId);
-  const initial = await stub.getState();
-  if (initial === null) {
-    throw new ApiError(404, "conversation_not_found", "Conversation not found.");
+  const initial = await tryCatch(
+    async (): Promise<ConversationState | null> => await stub.getState(),
+    webhookOperationFailed,
+  );
+  if (!initial.ok) return initial;
+  if (initial.value === null) {
+    return err(new ApiError(404, "conversation_not_found", "Conversation not found."));
   }
-  await validateEgressCorrelation(event, stub);
+  const correlatedEgress = await validateEgressCorrelation(event, stub);
+  if (!correlatedEgress.ok) return correlatedEgress;
 
-  const result = await translateWebhookEvent(event, conversationId, initial, stub, env);
+  const result = await translateWebhookEvent(event, conversationId, initial.value, stub, env);
+  if (!result.ok) return result;
   console.log(
     JSON.stringify({
       kind: "livekit_webhook_processed",
       eventId: event.id,
       eventType: event.event,
       conversationId,
-      outcome: result.outcome,
-      resultingState: result.state.tag,
-      resultingRevision: result.state.revision,
+      outcome: result.value.outcome,
+      resultingState: result.value.state.tag,
+      resultingRevision: result.value.state.revision,
     }),
   );
-  return { conversationId, ...result };
+  return ok({ conversationId, ...result.value });
 }
 
-async function receiveSignedWebhook(
-  receiver: WebhookReceiver,
-  body: string,
-  authorization: string | undefined,
-): Promise<
-  Readonly<{ success: true; event: WebhookEvent }> | Readonly<{ success: false; error: unknown }>
-> {
-  try {
-    return { success: true, event: await receiver.receive(body, authorization) };
-  } catch (error) {
-    return { success: false, error };
-  }
-}
-
-function assertWebhookRequest(request: Request): void {
+function validateWebhookRequest(request: Request): Result<void, ApiError> {
   const contentType = request.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase();
   if (contentType !== LIVEKIT_WEBHOOK_CONTENT_TYPE) {
-    throw new ApiError(
-      415,
-      "unsupported_media_type",
-      `Content-Type must be ${LIVEKIT_WEBHOOK_CONTENT_TYPE}.`,
+    return err(
+      new ApiError(
+        415,
+        "unsupported_media_type",
+        `Content-Type must be ${LIVEKIT_WEBHOOK_CONTENT_TYPE}.`,
+      ),
     );
   }
   const authorization = request.headers.get("Authorization");
   if (authorization === null || authorization.length === 0) {
-    throw new ApiError(401, "invalid_livekit_webhook", "The LiveKit signature is required.");
+    return err(new ApiError(401, "invalid_livekit_webhook", "The LiveKit signature is required."));
   }
   if (authorization.length > MAX_AUTHORIZATION_LENGTH) {
-    throw new ApiError(431, "request_header_too_large", "A request header is too large.");
+    return err(new ApiError(431, "request_header_too_large", "A request header is too large."));
   }
   const declaredLength = request.headers.get("Content-Length");
   if (declaredLength !== null) {
     const length = Number(declaredLength);
     if (!Number.isSafeInteger(length) || length < 0) {
-      throw new ApiError(400, "invalid_content_length", "Content-Length is invalid.");
+      return err(new ApiError(400, "invalid_content_length", "Content-Length is invalid."));
     }
     if (length > MAX_WEBHOOK_BODY_BYTES) {
-      throw new ApiError(413, "livekit_webhook_too_large", "The webhook body is too large.");
+      return err(new ApiError(413, "livekit_webhook_too_large", "The webhook body is too large."));
     }
   }
+  return ok(undefined);
 }
 
-function assertWebhookConfiguration(env: Env): void {
+function validateWebhookConfiguration(env: Env): Result<void, ApiError> {
   if (env.LIVEKIT_API_KEY.length === 0 || env.LIVEKIT_API_SECRET.length === 0) {
-    throw new Error("LiveKit webhook credentials are not configured");
+    return err(
+      new ApiError(500, "livekit_webhook_not_configured", "The LiveKit webhook is not configured."),
+    );
   }
+  return ok(undefined);
 }
 
-function validateWebhookEvent(event: WebhookEvent): void {
+function validateWebhookEvent(event: WebhookEvent): Result<void, ApiError> {
   if (!LIVEKIT_EVENT_ID_PATTERN.test(event.id)) {
-    throw new ApiError(400, "invalid_livekit_event", "The LiveKit event ID is invalid.");
+    return err(new ApiError(400, "invalid_livekit_event", "The LiveKit event ID is invalid."));
   }
   if (event.event.length === 0) {
-    throw new ApiError(400, "invalid_livekit_event", "The LiveKit event type is missing.");
+    return err(new ApiError(400, "invalid_livekit_event", "The LiveKit event type is missing."));
   }
+  return ok(undefined);
 }
 
-function conversationIdFromEvent(event: WebhookEvent): string {
+function conversationIdFromEvent(event: WebhookEvent): Result<string, ApiError> {
   const roomName = event.egressInfo?.roomName || event.room?.name;
   if (roomName === undefined || roomName.length === 0) {
-    throw new ApiError(400, "livekit_room_missing", "The LiveKit room is missing.");
+    return err(new ApiError(400, "livekit_room_missing", "The LiveKit room is missing."));
   }
   if (
     event.egressInfo?.roomName !== undefined &&
     event.room?.name !== undefined &&
     event.egressInfo.roomName !== event.room.name
   ) {
-    throw new ApiError(400, "livekit_room_mismatch", "The LiveKit room does not match.");
+    return err(new ApiError(400, "livekit_room_mismatch", "The LiveKit room does not match."));
   }
   const match = LIVEKIT_ROOM_PATTERN.exec(roomName);
   const conversationId = match?.[1];
   if (conversationId === undefined) {
-    throw new ApiError(400, "invalid_livekit_room", "The LiveKit room name is invalid.");
+    return err(new ApiError(400, "invalid_livekit_room", "The LiveKit room name is invalid."));
   }
-  return conversationId;
+  return ok(conversationId);
 }
 
 async function translateWebhookEvent(
@@ -181,7 +194,7 @@ async function translateWebhookEvent(
   state: ConversationState,
   stub: DurableObjectStub<ConversationSession>,
   env: Env,
-): Promise<{ readonly state: ConversationState; readonly outcome: string }> {
+): Promise<Result<TranslatedWebhookResult, ApiError>> {
   const eventType: string = event.event;
   switch (eventType) {
     case "egress_started":
@@ -200,14 +213,12 @@ async function translateWebhookEvent(
       return handleMediaObservation(event, conversationId, state, stub);
     case "ingress_started":
     case "ingress_ended":
-      return { state, outcome: "observation_acknowledged" };
+      return ok({ state, outcome: "observation_acknowledged" });
     case "":
-      throw new ApiError(400, "invalid_livekit_event", "The LiveKit event type is missing.");
+      return err(new ApiError(400, "invalid_livekit_event", "The LiveKit event type is missing."));
     default:
-      throw new ApiError(
-        400,
-        "unsupported_livekit_event",
-        "The LiveKit event type is unsupported.",
+      return err(
+        new ApiError(400, "unsupported_livekit_event", "The LiveKit event type is unsupported."),
       );
   }
 }
@@ -216,30 +227,36 @@ async function handleEgressProgress(
   event: WebhookEvent,
   state: ConversationState,
   stub: DurableObjectStub<ConversationSession>,
-): Promise<{ readonly state: ConversationState; readonly outcome: string }> {
-  const egress = requireEgressInfo(event);
+): Promise<Result<TranslatedWebhookResult, ApiError>> {
+  const requiredEgress = requireEgressInfo(event);
+  if (!requiredEgress.ok) return requiredEgress;
+  const egress = requiredEgress.value;
   if (isFailedEgressStatus(egress.status)) {
     return failArtifact(event, state, stub, egressFailureCode(egress.status));
   }
   if (egress.status !== EgressStatus.EGRESS_ACTIVE) {
-    return { state, outcome: "egress_observation_acknowledged" };
+    return ok({ state, outcome: "egress_observation_acknowledged" });
   }
   if (state.data.artifact.status !== ArtifactStatus.Pending) {
-    return { state, outcome: "recording_already_observed" };
+    return ok({ state, outcome: "recording_already_observed" });
   }
   if (state.tag !== ConversationStateTag.Starting) {
-    throw new ApiError(409, "conversation_not_ready", "Conversation is not ready for recording.");
+    return err(
+      new ApiError(409, "conversation_not_ready", "Conversation is not ready for recording."),
+    );
   }
   const recordingId = requireEgressId(egress.egressId);
-  await applyIntegrationEvent(stub, state, {
+  if (!recordingId.ok) return recordingId;
+  const applied = await applyIntegrationEvent(stub, state, {
     type: ConversationEventType.RecordingStarted,
     eventId: domainEventId(event, "recording-started"),
     at: value.unixMillis(Date.now()),
-    recordingId: value.recordingId(recordingId),
+    recordingId: value.recordingId(recordingId.value),
   });
+  if (!applied.ok) return applied;
   const reconciled = await reconcileCompositeReadiness(stub, Date.now());
-  if (!reconciled.ok) throw reconciled.error;
-  return { state: reconciled.value, outcome: "recording_started" };
+  if (!reconciled.ok) return reconciled;
+  return ok({ state: reconciled.value, outcome: "recording_started" });
 }
 
 async function handleMediaObservation(
@@ -247,26 +264,40 @@ async function handleMediaObservation(
   conversationId: string,
   state: ConversationState,
   stub: DurableObjectStub<ConversationSession>,
-): Promise<{ readonly state: ConversationState; readonly outcome: string }> {
-  const evidence = await stub.getLiveKitTransportEvidence();
-  const kind = mediaObservationKind(
+): Promise<Result<TranslatedWebhookResult, ApiError>> {
+  const evidence = await tryCatch(() => stub.getLiveKitTransportEvidence(), webhookOperationFailed);
+  if (!evidence.ok) return evidence;
+  const observationKind = mediaObservationKind(
     event,
     conversationId,
-    evidence?.agentParticipantIdentity ?? null,
+    evidence.value?.agentParticipantIdentity ?? null,
   );
-  if (kind === null) return { state, outcome: "observation_acknowledged" };
+  if (!observationKind.ok) return observationKind;
+  const kind = observationKind.value;
+  if (kind === null) return ok({ state, outcome: "observation_acknowledged" });
   const transport = state.data.transport;
   if (transport.status === TransportStatus.Idle) {
-    return { state, outcome: "observation_before_start" };
+    return ok({ state, outcome: "observation_before_start" });
   }
-  const recorded = await stub.recordLiveKitMediaObservation({
-    eventId: event.id,
-    kind,
-    participantIdentity: requireParticipantIdentity(event),
-    roomName: requireRoomName(event),
-    transportEpoch: transport.epoch,
-  });
-  if (recorded === "rejected") return { state, outcome: "observation_uncorrelated" };
+  const participantIdentity = requireParticipantIdentity(event);
+  if (!participantIdentity.ok) return participantIdentity;
+  const roomName = requireRoomName(event);
+  if (!roomName.ok) return roomName;
+  const recorded = await tryCatch(
+    () =>
+      stub.recordLiveKitMediaObservation({
+        eventId: event.id,
+        kind,
+        participantIdentity: participantIdentity.value,
+        roomName: roomName.value,
+        transportEpoch: transport.epoch,
+      }),
+    webhookOperationFailed,
+  );
+  if (!recorded.ok) return recorded;
+  if (recorded.value === "rejected") {
+    return ok({ state, outcome: "observation_uncorrelated" });
+  }
 
   if (
     isNegativeMediaObservation(kind) &&
@@ -282,37 +313,40 @@ async function handleMediaObservation(
       errorCode: value.errorCode("transport.livekit_media_interrupted"),
       recoveryDeadlineAt: value.unixMillis(at + TRANSPORT_RECOVERY_WINDOW_MS),
     });
-    return { state: interrupted, outcome: "transport_interrupted" };
+    if (!interrupted.ok) return interrupted;
+    return ok({ state: interrupted.value, outcome: "transport_interrupted" });
   }
 
   const reconciled = await reconcileCompositeReadiness(stub, Date.now());
-  if (!reconciled.ok) throw reconciled.error;
-  return {
+  if (!reconciled.ok) return reconciled;
+  return ok({
     state: reconciled.value,
-    outcome: recorded === "duplicate" ? "observation_duplicate" : "readiness_reconciled",
-  };
+    outcome: recorded.value === "duplicate" ? "observation_duplicate" : "readiness_reconciled",
+  });
 }
 
 function mediaObservationKind(
   event: WebhookEvent,
   conversationId: string,
   knownAgentIdentity: string | null,
-): LiveKitMediaObservationKind | null {
+): Result<LiveKitMediaObservationKind | null, ApiError> {
   const participant = event.participant;
   if (participant === undefined) {
-    throw new ApiError(400, "livekit_participant_missing", "The LiveKit participant is missing.");
+    return err(
+      new ApiError(400, "livekit_participant_missing", "The LiveKit participant is missing."),
+    );
   }
   const isBrowser = participant.identity === `browser-${conversationId}`;
   const isAgent =
     participant.kind === ParticipantInfo_Kind.AGENT || participant.identity === knownAgentIdentity;
-  if (!isBrowser && !isAgent) return null;
+  if (!isBrowser && !isAgent) return ok(null);
 
   switch (event.event) {
     case "participant_joined":
-      return isBrowser ? "browser_participant_joined" : "agent_participant_joined";
+      return ok(isBrowser ? "browser_participant_joined" : "agent_participant_joined");
     case "participant_left":
     case "participant_connection_aborted":
-      return isBrowser ? "browser_participant_left" : "agent_participant_left";
+      return ok(isBrowser ? "browser_participant_left" : "agent_participant_left");
     case "track_published":
     case "track_unpublished": {
       const track = event.track;
@@ -321,39 +355,43 @@ function mediaObservationKind(
         track.type !== TrackType.AUDIO ||
         track.source !== TrackSource.MICROPHONE
       ) {
-        return null;
+        return ok(null);
       }
       const published = event.event === "track_published";
-      if (isBrowser) return published ? "browser_audio_published" : "browser_audio_unpublished";
-      return published ? "agent_audio_published" : "agent_audio_unpublished";
+      if (isBrowser) {
+        return ok(published ? "browser_audio_published" : "browser_audio_unpublished");
+      }
+      return ok(published ? "agent_audio_published" : "agent_audio_unpublished");
     }
     default:
-      return null;
+      return ok(null);
   }
 }
 
-function requireParticipantIdentity(event: WebhookEvent): string {
+function requireParticipantIdentity(event: WebhookEvent): Result<string, ApiError> {
   const identity = event.participant?.identity;
   if (identity === undefined || identity.length === 0) {
-    throw new ApiError(
-      400,
-      "livekit_participant_identity_missing",
-      "The LiveKit participant identity is missing.",
+    return err(
+      new ApiError(
+        400,
+        "livekit_participant_identity_missing",
+        "The LiveKit participant identity is missing.",
+      ),
     );
   }
-  return identity;
+  return ok(identity);
 }
 
 function isNegativeMediaObservation(kind: LiveKitMediaObservationKind): boolean {
   return kind.endsWith("_left") || kind.endsWith("_unpublished");
 }
 
-function requireRoomName(event: WebhookEvent): string {
+function requireRoomName(event: WebhookEvent): Result<string, ApiError> {
   const roomName = event.room?.name;
   if (roomName === undefined || roomName.length === 0) {
-    throw new ApiError(400, "livekit_room_missing", "The LiveKit room is missing.");
+    return err(new ApiError(400, "livekit_room_missing", "The LiveKit room is missing."));
   }
-  return roomName;
+  return ok(roomName);
 }
 
 async function handleEgressEnded(
@@ -362,8 +400,10 @@ async function handleEgressEnded(
   state: ConversationState,
   stub: DurableObjectStub<ConversationSession>,
   env: Env,
-): Promise<{ readonly state: ConversationState; readonly outcome: string }> {
-  const egress = requireEgressInfo(event);
+): Promise<Result<TranslatedWebhookResult, ApiError>> {
+  const requiredEgress = requireEgressInfo(event);
+  if (!requiredEgress.ok) return requiredEgress;
+  const egress = requiredEgress.value;
   if (isFailedEgressStatus(egress.status)) {
     return failArtifact(event, state, stub, egressFailureCode(egress.status));
   }
@@ -372,18 +412,18 @@ async function handleEgressEnded(
   }
 
   const recordingId = requireEgressId(egress.egressId);
-  let r2Key: string;
-  try {
-    r2Key = recordingObjectKey(event, conversationId);
-  } catch (error) {
-    if (error instanceof ApiError && error.code === "invalid_livekit_output") {
-      return failArtifact(event, state, stub, "artifact.livekit_output_invalid");
-    }
-    throw error;
+  if (!recordingId.ok) return recordingId;
+  const objectKey = recordingObjectKey(event, conversationId);
+  if (!objectKey.ok) {
+    return objectKey.error.code === "invalid_livekit_output"
+      ? failArtifact(event, state, stub, "artifact.livekit_output_invalid")
+      : objectKey;
   }
+  const r2Key = objectKey.value;
   let current = state;
-  const provisioning = await stub.getLiveKitProvisioning();
-  if (provisioning === null || provisioning.expectedR2Key !== r2Key) {
+  const provisioning = await tryCatch(() => stub.getLiveKitProvisioning(), webhookOperationFailed);
+  if (!provisioning.ok) return provisioning;
+  if (provisioning.value === null || provisioning.value.expectedR2Key !== r2Key) {
     return failArtifact(event, current, stub, "artifact.livekit_output_mismatch");
   }
 
@@ -395,36 +435,41 @@ async function handleEgressEnded(
     if (current.tag !== ConversationStateTag.Ending) {
       return failArtifact(event, current, stub, "artifact.livekit_egress_ended_early");
     }
-    current = await applyIntegrationEvent(stub, current, {
+    const applied = await applyIntegrationEvent(stub, current, {
       type: ConversationEventType.RecordingUploadStarted,
       eventId: domainEventId(event, "recording-upload-started"),
       at: value.unixMillis(Date.now()),
-      recordingId: value.recordingId(recordingId),
+      recordingId: value.recordingId(recordingId.value),
       expectedR2Key: value.r2ObjectKey(r2Key),
       artifactDeadlineAt: value.unixMillis(Date.now() + ARTIFACT_UPLOAD_WINDOW_MS),
     });
+    if (!applied.ok) return applied;
+    current = applied.value;
   }
 
   if (current.data.artifact.status === ArtifactStatus.Ready) {
-    return { state: current, outcome: "artifact_already_ready" };
+    return ok({ state: current, outcome: "artifact_already_ready" });
   }
   if (current.data.artifact.status !== ArtifactStatus.Uploading) {
-    return { state: current, outcome: "artifact_not_required" };
+    return ok({ state: current, outcome: "artifact_not_required" });
   }
   if (
-    current.data.artifact.recordingId !== recordingId ||
+    current.data.artifact.recordingId !== recordingId.value ||
     current.data.artifact.expectedR2Key !== r2Key
   ) {
     return failArtifact(event, current, stub, "artifact.livekit_output_mismatch");
   }
 
-  const object = await env.RECORDINGS.head(r2Key);
-  if (object === null || object.size === 0) {
-    throw new ApiError(
-      503,
-      "recording_not_available",
-      "The recording is not yet available in object storage.",
-      { "Retry-After": "2" },
+  const object = await tryCatch(() => env.RECORDINGS.head(r2Key), webhookOperationFailed);
+  if (!object.ok) return object;
+  if (object.value === null || object.value.size === 0) {
+    return err(
+      new ApiError(
+        503,
+        "recording_not_available",
+        "The recording is not yet available in object storage.",
+        { "Retry-After": "2" },
+      ),
     );
   }
 
@@ -432,36 +477,41 @@ async function handleEgressEnded(
     type: ConversationEventType.RecordingArtifactVerified,
     eventId: domainEventId(event, "recording-artifact-verified"),
     at: value.unixMillis(Date.now()),
-    recordingId: value.recordingId(recordingId),
+    recordingId: value.recordingId(recordingId.value),
     r2Key: value.r2ObjectKey(r2Key),
-    r2Etag: value.r2Etag(object.etag),
+    r2Etag: value.r2Etag(object.value.etag),
   });
-  return { state: verified, outcome: "recording_artifact_verified" };
+  if (!verified.ok) return verified;
+  return ok({ state: verified.value, outcome: "recording_artifact_verified" });
 }
 
 async function validateEgressCorrelation(
   event: WebhookEvent,
   stub: DurableObjectStub<ConversationSession>,
-): Promise<void> {
+): Promise<Result<void, ApiError>> {
   const egress = event.egressInfo;
-  if (egress === undefined) return;
-  const provisioning = await stub.getLiveKitProvisioning();
-  if (provisioning === null || provisioning.egressId !== egress.egressId) {
-    throw new ApiError(409, "livekit_egress_mismatch", "The LiveKit egress does not correlate.");
+  if (egress === undefined) return ok(undefined);
+  const provisioning = await tryCatch(() => stub.getLiveKitProvisioning(), webhookOperationFailed);
+  if (!provisioning.ok) return provisioning;
+  if (provisioning.value === null || provisioning.value.egressId !== egress.egressId) {
+    return err(
+      new ApiError(409, "livekit_egress_mismatch", "The LiveKit egress does not correlate."),
+    );
   }
+  return ok(undefined);
 }
 
 async function handleRoomFinished(
   event: WebhookEvent,
   state: ConversationState,
   stub: DurableObjectStub<ConversationSession>,
-): Promise<{ readonly state: ConversationState; readonly outcome: string }> {
+): Promise<Result<TranslatedWebhookResult, ApiError>> {
   const transport = state.data.transport;
   if (transport.status === TransportStatus.Closed || transport.status === TransportStatus.Failed) {
-    return { state, outcome: "transport_already_terminal" };
+    return ok({ state, outcome: "transport_already_terminal" });
   }
   if (transport.status === TransportStatus.Idle) {
-    return { state, outcome: "room_finished_before_start" };
+    return ok({ state, outcome: "room_finished_before_start" });
   }
   const next = await applyIntegrationEvent(stub, state, {
     type: ConversationEventType.SessionClosed,
@@ -469,7 +519,8 @@ async function handleRoomFinished(
     at: value.unixMillis(Date.now()),
     epoch: transport.epoch,
   });
-  return { state: next, outcome: "session_closed" };
+  if (!next.ok) return next;
+  return ok({ state: next.value, outcome: "session_closed" });
 }
 
 async function failArtifact(
@@ -477,7 +528,7 @@ async function failArtifact(
   state: ConversationState,
   stub: DurableObjectStub<ConversationSession>,
   errorCode: string,
-): Promise<{ readonly state: ConversationState; readonly outcome: string }> {
+): Promise<Result<TranslatedWebhookResult, ApiError>> {
   if (
     (state.tag === ConversationStateTag.Ending && state.data.target.kind === "cancel") ||
     state.data.artifact.status === ArtifactStatus.Failed ||
@@ -486,7 +537,7 @@ async function failArtifact(
     state.tag === ConversationStateTag.Cancelled ||
     state.tag === ConversationStateTag.Failed
   ) {
-    return { state, outcome: "artifact_terminal" };
+    return ok({ state, outcome: "artifact_terminal" });
   }
   const recordingId = event.egressInfo?.egressId || null;
   const next = await applyIntegrationEvent(stub, state, {
@@ -497,15 +548,16 @@ async function failArtifact(
     errorCode: value.errorCode(errorCode),
     endingDeadlineAt: value.unixMillis(Date.now() + ALARM_SHUTDOWN_GRACE_MS),
   });
-  return { state: next, outcome: "artifact_failed" };
+  if (!next.ok) return next;
+  return ok({ state: next.value, outcome: "artifact_failed" });
 }
 
 async function applyIntegrationEvent(
   stub: DurableObjectStub<ConversationSession>,
   initial: ConversationState,
   event: ConversationEvent,
-): Promise<ConversationState> {
-  const applied = await applyIntegrationEventWithRetry(stub, initial, event, {
+): Promise<Result<ConversationState, ApiError>> {
+  return applyIntegrationEventWithRetry(stub, initial, event, {
     rejected: transitionError,
     exhausted: () =>
       new ApiError(409, "conversation_revision_conflict", "Conversation state changed."),
@@ -518,8 +570,6 @@ async function applyIntegrationEvent(
         cause,
       ),
   });
-  if (!applied.ok) throw applied.error;
-  return applied.value;
 }
 
 function transitionError(result: Extract<ApplyEventResult, { outcome: "rejected" }>): ApiError {
@@ -538,26 +588,32 @@ function transitionError(result: Extract<ApplyEventResult, { outcome: "rejected"
   }
 }
 
-function requireEgressInfo(event: WebhookEvent): NonNullable<WebhookEvent["egressInfo"]> {
+function requireEgressInfo(
+  event: WebhookEvent,
+): Result<NonNullable<WebhookEvent["egressInfo"]>, ApiError> {
   if (event.egressInfo === undefined) {
-    throw new ApiError(400, "livekit_egress_missing", "The LiveKit egress payload is missing.");
+    return err(
+      new ApiError(400, "livekit_egress_missing", "The LiveKit egress payload is missing."),
+    );
   }
-  return event.egressInfo;
+  return ok(event.egressInfo);
 }
 
-function requireEgressId(egressId: string): string {
+function requireEgressId(egressId: string): Result<string, ApiError> {
   if (egressId.length === 0 || egressId.length > 256) {
-    throw new ApiError(400, "invalid_livekit_egress", "The LiveKit egress ID is invalid.");
+    return err(new ApiError(400, "invalid_livekit_egress", "The LiveKit egress ID is invalid."));
   }
-  return egressId;
+  return ok(egressId);
 }
 
-function recordingObjectKey(event: WebhookEvent, conversationId: string): string {
-  const fileResults = requireEgressInfo(event).fileResults.filter(
-    (result) => result.filename.length > 0,
-  );
+function recordingObjectKey(event: WebhookEvent, conversationId: string): Result<string, ApiError> {
+  const egress = requireEgressInfo(event);
+  if (!egress.ok) return egress;
+  const fileResults = egress.value.fileResults.filter((result) => result.filename.length > 0);
   if (fileResults.length !== 1) {
-    throw new ApiError(400, "invalid_livekit_output", "Expected one LiveKit recording output.");
+    return err(
+      new ApiError(400, "invalid_livekit_output", "Expected one LiveKit recording output."),
+    );
   }
   const key = fileResults[0]?.filename;
   const prefix = `conversations/${conversationId}/`;
@@ -568,9 +624,19 @@ function recordingObjectKey(event: WebhookEvent, conversationId: string): string
     key.includes("..") ||
     key.endsWith("/")
   ) {
-    throw new ApiError(400, "invalid_livekit_output", "The recording object key is invalid.");
+    return err(new ApiError(400, "invalid_livekit_output", "The recording object key is invalid."));
   }
-  return key;
+  return ok(key);
+}
+
+function webhookOperationFailed(cause: unknown): ApiError {
+  return new ApiError(
+    500,
+    "livekit_webhook_operation_failed",
+    "The LiveKit webhook could not be processed.",
+    {},
+    cause,
+  );
 }
 
 function domainEventId(event: WebhookEvent, suffix: string): string {
