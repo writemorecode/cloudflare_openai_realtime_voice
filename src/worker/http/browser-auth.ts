@@ -2,6 +2,7 @@
 import { pbkdf2Sync } from "node:crypto";
 
 import { ApiError } from "./api-errors";
+import { err, ok, tryCatch, type Result } from "../try-catch";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -49,159 +50,178 @@ interface AttemptRow {
   readonly attempts: number;
 }
 
-export async function login(request: Request, database: D1Database): Promise<Response> {
+export async function login(
+  request: Request,
+  database: D1Database,
+): Promise<Result<Response, ApiError>> {
   const credentials = await readCredentials(request);
-  const now = Date.now();
-  const attemptKey = await loginAttemptKey(request);
-  const attempt = await database
-    .prepare("SELECT window_started_at, attempts FROM login_attempts WHERE attempt_key = ?")
-    .bind(attemptKey)
-    .first<AttemptRow>();
+  if (!credentials.ok) return credentials;
 
-  if (
-    attempt !== null &&
-    now - attempt.window_started_at < LOGIN_WINDOW_MS &&
-    attempt.attempts >= MAX_LOGIN_ATTEMPTS
-  ) {
-    throw new ApiError(429, "login_rate_limited", "Too many login attempts. Try again later.", {
-      "Retry-After": String(
-        Math.ceil((LOGIN_WINDOW_MS - (now - attempt.window_started_at)) / 1_000),
+  const operation = await tryCatch(async (): Promise<Result<Response, ApiError>> => {
+    const now = Date.now();
+    const attemptKey = await loginAttemptKey(request);
+    const attempt = await database
+      .prepare("SELECT window_started_at, attempts FROM login_attempts WHERE attempt_key = ?")
+      .bind(attemptKey)
+      .first<AttemptRow>();
+
+    if (
+      attempt !== null &&
+      now - attempt.window_started_at < LOGIN_WINDOW_MS &&
+      attempt.attempts >= MAX_LOGIN_ATTEMPTS
+    ) {
+      return err(
+        new ApiError(429, "login_rate_limited", "Too many login attempts. Try again later.", {
+          "Retry-After": String(
+            Math.ceil((LOGIN_WINDOW_MS - (now - attempt.window_started_at)) / 1_000),
+          ),
+        }),
+      );
+    }
+
+    const user = await database
+      .prepare("SELECT id, username, password_hash FROM users WHERE username = ? COLLATE NOCASE")
+      .bind(credentials.value.username)
+      .first<UserRow>();
+    const valid = await verifyPassword(
+      credentials.value.password,
+      user?.password_hash ?? DUMMY_PASSWORD_HASH,
+    );
+    if (!valid.ok) return valid;
+
+    if (!valid.value || user === null) {
+      await recordFailedLogin(database, attemptKey, attempt, now);
+      return err(invalidCredentials());
+    }
+
+    const token = randomBase64Url(SESSION_TOKEN_BYTES);
+    const tokenHash = await sha256Base64Url(token);
+    const expiresAt = now + SESSION_TTL_SECONDS * 1_000;
+    await database.batch([
+      database.prepare("DELETE FROM login_attempts WHERE attempt_key = ?").bind(attemptKey),
+      database.prepare("DELETE FROM sessions WHERE expires_at <= ?").bind(now),
+      database.prepare("DELETE FROM sessions WHERE user_id = ?").bind(user.id),
+      database
+        .prepare(
+          "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(tokenHash, user.id, now, expiresAt),
+    ]);
+
+    return ok(
+      Response.json(
+        { username: user.username },
+        {
+          headers: {
+            "Cache-Control": "no-store",
+            "Set-Cookie": sessionCookie(token, SESSION_TTL_SECONDS),
+          },
+        },
       ),
-    });
-  }
-
-  const user = await database
-    .prepare("SELECT id, username, password_hash FROM users WHERE username = ? COLLATE NOCASE")
-    .bind(credentials.username)
-    .first<UserRow>();
-  const valid = await verifyPassword(
-    credentials.password,
-    user?.password_hash ?? DUMMY_PASSWORD_HASH,
-  );
-
-  if (!valid || user === null) {
-    await recordFailedLogin(database, attemptKey, attempt, now);
-    throw invalidCredentials();
-  }
-
-  const token = randomBase64Url(SESSION_TOKEN_BYTES);
-  const tokenHash = await sha256Base64Url(token);
-  const expiresAt = now + SESSION_TTL_SECONDS * 1_000;
-  await database.batch([
-    database.prepare("DELETE FROM login_attempts WHERE attempt_key = ?").bind(attemptKey),
-    database.prepare("DELETE FROM sessions WHERE expires_at <= ?").bind(now),
-    database.prepare("DELETE FROM sessions WHERE user_id = ?").bind(user.id),
-    database
-      .prepare(
-        "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
-      )
-      .bind(tokenHash, user.id, now, expiresAt),
-  ]);
-
-  return Response.json(
-    { username: user.username },
-    {
-      headers: {
-        "Cache-Control": "no-store",
-        "Set-Cookie": sessionCookie(token, SESSION_TTL_SECONDS),
-      },
-    },
-  );
+    );
+  }, authenticationOperationFailed);
+  return operation.ok ? operation.value : operation;
 }
 
-export async function logout(request: Request, database: D1Database): Promise<Response> {
-  const token = readSessionToken(request);
-  if (token !== null) {
-    await database
-      .prepare("DELETE FROM sessions WHERE token_hash = ?")
-      .bind(await sha256Base64Url(token))
-      .run();
-  }
-  return new Response(null, {
-    status: 204,
-    headers: {
-      "Cache-Control": "no-store",
-      "Set-Cookie": sessionCookie("", 0),
-    },
-  });
+export async function logout(
+  request: Request,
+  database: D1Database,
+): Promise<Result<Response, ApiError>> {
+  return tryCatch(async () => {
+    const token = readSessionToken(request);
+    if (token !== null) {
+      await database
+        .prepare("DELETE FROM sessions WHERE token_hash = ?")
+        .bind(await sha256Base64Url(token))
+        .run();
+    }
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Cache-Control": "no-store",
+        "Set-Cookie": sessionCookie("", 0),
+      },
+    });
+  }, authenticationOperationFailed);
 }
 
 export async function authenticateBrowserSession(
   request: Request,
   database: D1Database,
-): Promise<AuthenticatedUser> {
+): Promise<Result<AuthenticatedUser, ApiError>> {
   const token = readSessionToken(request);
-  if (token === null) throw sessionUnauthorized();
+  if (token === null) return err(sessionUnauthorized());
 
-  const row = await database
-    .prepare(
-      `SELECT users.id, users.username
-       FROM sessions JOIN users ON users.id = sessions.user_id
-       WHERE sessions.token_hash = ? AND sessions.expires_at > ?`,
-    )
-    .bind(await sha256Base64Url(token), Date.now())
-    .first<SessionRow>();
-  if (row === null) throw sessionUnauthorized();
-  return row;
+  const row = await tryCatch(
+    async () =>
+      database
+        .prepare(
+          `SELECT users.id, users.username
+           FROM sessions JOIN users ON users.id = sessions.user_id
+           WHERE sessions.token_hash = ? AND sessions.expires_at > ?`,
+        )
+        .bind(await sha256Base64Url(token), Date.now())
+        .first<SessionRow>(),
+    authenticationOperationFailed,
+  );
+  if (!row.ok) return row;
+  return row.value === null ? err(sessionUnauthorized()) : ok(row.value);
 }
 
-export async function hashPassword(password: string): Promise<string> {
-  const salt = crypto.getRandomValues(new Uint8Array(PASSWORD_SALT_BYTES));
-  const derived = await derivePassword(password, salt, PASSWORD_HASH_ITERATIONS);
-  return [
-    PASSWORD_HASH_ALGORITHM,
-    String(PASSWORD_HASH_ITERATIONS),
-    encodeBase64Url(salt),
-    encodeBase64Url(derived),
-  ].join("$");
+export async function hashPassword(password: string): Promise<Result<string, ApiError>> {
+  return tryCatch(async () => {
+    const salt = crypto.getRandomValues(new Uint8Array(PASSWORD_SALT_BYTES));
+    const derived = await derivePassword(password, salt, PASSWORD_HASH_ITERATIONS);
+    return [
+      PASSWORD_HASH_ALGORITHM,
+      String(PASSWORD_HASH_ITERATIONS),
+      encodeBase64Url(salt),
+      encodeBase64Url(derived),
+    ].join("$");
+  }, authenticationOperationFailed);
 }
 
-export async function verifyPassword(password: string, encodedHash: string): Promise<boolean> {
+export async function verifyPassword(
+  password: string,
+  encodedHash: string,
+): Promise<Result<boolean, ApiError>> {
   const parts = encodedHash.split("$");
-  if (parts.length !== 4 || parts[0] !== PASSWORD_HASH_ALGORITHM) return false;
+  if (parts.length !== 4 || parts[0] !== PASSWORD_HASH_ALGORITHM) return ok(false);
   const iterations = Number(parts[1]);
-  if (iterations !== PASSWORD_HASH_ITERATIONS) return false;
-  let salt: Uint8Array<ArrayBuffer>;
-  let expected: Uint8Array<ArrayBuffer>;
-  try {
-    salt = decodeBase64Url(parts[2] ?? "");
-    expected = decodeBase64Url(parts[3] ?? "");
-  } catch {
-    return false;
-  }
+  if (iterations !== PASSWORD_HASH_ITERATIONS) return ok(false);
+  const salt = decodeBase64Url(parts[2] ?? "");
+  const expected = decodeBase64Url(parts[3] ?? "");
+  if (salt === null || expected === null) return ok(false);
   if (salt.byteLength !== PASSWORD_SALT_BYTES || expected.byteLength !== PASSWORD_HASH_BYTES) {
-    return false;
+    return ok(false);
   }
-  let actual: Uint8Array;
-  try {
-    actual = await derivePassword(password, salt, iterations);
-  } catch (error) {
-    throw cryptoOperationError("PasswordDerivationError", error);
-  }
-  try {
-    return await passwordDigestsEqual(actual, expected);
-  } catch (error) {
-    throw cryptoOperationError("PasswordComparisonError", error);
-  }
+  return tryCatch(
+    async () => passwordDigestsEqual(await derivePassword(password, salt, iterations), expected),
+    authenticationOperationFailed,
+  );
 }
 
-async function readCredentials(request: Request): Promise<LoginCredentials> {
+async function readCredentials(request: Request): Promise<Result<LoginCredentials, ApiError>> {
   const contentType = request.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase();
   if (contentType !== "application/json") {
-    throw new ApiError(415, "unsupported_media_type", "Login requests must use application/json.");
+    return err(
+      new ApiError(415, "unsupported_media_type", "Login requests must use application/json."),
+    );
   }
   const declaredLength = Number(request.headers.get("Content-Length") ?? 0);
-  if (declaredLength > MAX_LOGIN_BODY_BYTES) throw loginBodyTooLarge();
-  const bytes = new Uint8Array(await request.arrayBuffer());
-  if (bytes.byteLength > MAX_LOGIN_BODY_BYTES) throw loginBodyTooLarge();
+  if (declaredLength > MAX_LOGIN_BODY_BYTES) return err(loginBodyTooLarge());
+  const body = await tryCatch(() => request.arrayBuffer(), authenticationOperationFailed);
+  if (!body.ok) return body;
+  const bytes = new Uint8Array(body.value);
+  if (bytes.byteLength > MAX_LOGIN_BODY_BYTES) return err(loginBodyTooLarge());
 
-  let value: unknown;
-  try {
-    value = JSON.parse(decoder.decode(bytes));
-  } catch {
-    throw new ApiError(400, "invalid_login_request", "The login request is invalid.");
-  }
-  if (typeof value !== "object" || value === null) throw invalidLoginRequest();
+  const parsed = await tryCatch(
+    () => JSON.parse(decoder.decode(bytes)) as unknown,
+    () => new ApiError(400, "invalid_login_request", "The login request is invalid."),
+  );
+  if (!parsed.ok) return parsed;
+  const value = parsed.value;
+  if (typeof value !== "object" || value === null) return err(invalidLoginRequest());
   const record = value as Record<string, unknown>;
   if (
     typeof record.username !== "string" ||
@@ -211,9 +231,9 @@ async function readCredentials(request: Request): Promise<LoginCredentials> {
     record.password.length === 0 ||
     record.password.length > MAX_PASSWORD_LENGTH
   ) {
-    throw invalidLoginRequest();
+    return err(invalidLoginRequest());
   }
-  return { username: record.username, password: record.password };
+  return ok({ username: record.username, password: record.password });
 }
 
 async function derivePassword(
@@ -231,12 +251,6 @@ async function passwordDigestsEqual(actual: Uint8Array, expected: Uint8Array): P
   ]);
   const signature = await crypto.subtle.sign("HMAC", actualKey, PASSWORD_COMPARISON_MESSAGE);
   return crypto.subtle.verify("HMAC", expectedKey, signature, PASSWORD_COMPARISON_MESSAGE);
-}
-
-function cryptoOperationError(name: string, cause: unknown): Error {
-  const error = new Error("Password verification failed in the crypto runtime.", { cause });
-  error.name = name;
-  return error;
 }
 
 async function recordFailedLogin(
@@ -296,11 +310,21 @@ function encodeBase64Url(value: Uint8Array): string {
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 }
 
-function decodeBase64Url(value: string): Uint8Array<ArrayBuffer> {
-  if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error("invalid base64url");
+function decodeBase64Url(value: string): Uint8Array<ArrayBuffer> | null {
+  if (!/^[A-Za-z0-9_-]+$/.test(value) || value.length % 4 === 1) return null;
   const base64 = value.replaceAll("-", "+").replaceAll("_", "/");
   const padding = "=".repeat((4 - (base64.length % 4)) % 4);
   return Uint8Array.from(atob(base64 + padding), (character) => character.charCodeAt(0));
+}
+
+function authenticationOperationFailed(cause: unknown): ApiError {
+  return new ApiError(
+    500,
+    "authentication_operation_failed",
+    "Authentication could not be completed.",
+    {},
+    cause,
+  );
 }
 
 function invalidLoginRequest(): ApiError {

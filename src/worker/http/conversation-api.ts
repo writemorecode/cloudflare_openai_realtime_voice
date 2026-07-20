@@ -119,7 +119,8 @@ export const conversationApi = {
           requireBrowserOrigin(origin);
         } else {
           if (requiresSameOrigin(route, request)) requireBrowserOrigin(origin);
-          await authenticateBrowserSession(request, env.AUTH_DB);
+          const authenticated = await authenticateBrowserSession(request, env.AUTH_DB);
+          if (!authenticated.ok) throw authenticated.error;
         }
         result = await dispatch(request, env, route);
       }
@@ -169,14 +170,15 @@ function assertConfigured(env: Env): void {
 async function dispatch(request: Request, env: Env, route: MatchedRoute): Promise<RouteResult> {
   switch (route.name) {
     case "login":
-      return authResult(await login(request, env.AUTH_DB), "logged_in");
+      return authRouteResult(await login(request, env.AUTH_DB), "logged_in");
     case "logout":
       await assertNoBody(request);
-      return authResult(await logout(request, env.AUTH_DB), "logged_out");
+      return authRouteResult(await logout(request, env.AUTH_DB), "logged_out");
     case "auth_session": {
       await assertNoBody(request);
       const user = await authenticateBrowserSession(request, env.AUTH_DB);
-      return authSessionResult(user);
+      if (!user.ok) throw user.error;
+      return authSessionResult(user.value);
     }
     case "create_conversation":
       await assertNoBody(request);
@@ -439,6 +441,11 @@ function matchRoute(pathname: string): MatchedRoute | null {
 
 function authResult(response: Response, outcome: string): RouteResult {
   return { response, conversationId: null, state: null, outcome };
+}
+
+function authRouteResult(result: Awaited<ReturnType<typeof login>>, outcome: string): RouteResult {
+  if (!result.ok) throw result.error;
+  return authResult(result.value, outcome);
 }
 
 function authSessionResult(user: AuthenticatedUser): RouteResult {

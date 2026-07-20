@@ -21,16 +21,28 @@ describe("browser authentication", () => {
     const encoded =
       "pbkdf2_sha256$100000$ABEiM0RVZneImaq7zN3u_w$9oIHRTR2PJCfUzwstKO7f-gw8RcJlgLsWRclYh47pLM";
 
-    await expect(verifyPassword("Codex-Newline-Proof-2026!", encoded)).resolves.toBe(true);
-    await expect(verifyPassword("Codex-Newline-Proof-2026!\n", encoded)).resolves.toBe(false);
-    await expect(verifyPassword("Codex-Newline-Proof-2026!\r", encoded)).resolves.toBe(false);
-    await expect(verifyPassword("Codex-Newline-Proof-2026!\r\n", encoded)).resolves.toBe(false);
+    await expect(verifyPassword("Codex-Newline-Proof-2026!", encoded)).resolves.toEqual({
+      ok: true,
+      value: true,
+    });
+    await expect(verifyPassword("Codex-Newline-Proof-2026!\n", encoded)).resolves.toEqual({
+      ok: true,
+      value: false,
+    });
+    await expect(verifyPassword("Codex-Newline-Proof-2026!\r", encoded)).resolves.toEqual({
+      ok: true,
+      value: false,
+    });
+    await expect(verifyPassword("Codex-Newline-Proof-2026!\r\n", encoded)).resolves.toEqual({
+      ok: true,
+      value: false,
+    });
     await expect(
       verifyPassword(
         "Codex-Newline-Proof-2026!",
         "pbkdf2_sha256$600000$ZFUEM7VvfvBmkPum5nqflA$3kHfqHaBMEgRSOUhOPPr-pF5aA5OLaCDwOmVXzq0JJ8",
       ),
-    ).resolves.toBe(false);
+    ).resolves.toEqual({ ok: true, value: false });
   });
 
   it("rejects invalid credentials without identifying the missing user", async () => {
