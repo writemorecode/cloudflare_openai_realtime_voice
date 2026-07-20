@@ -83,9 +83,11 @@ async function makeConversationLive(conversationId: string): Promise<void> {
     ["agent_participant_joined", "agent-test"],
     ["agent_audio_published", "agent-test"],
   ] as const;
-  for (const [kind, participantIdentity] of observations) {
+  const recordObservation = async ([
+    kind,
+    participantIdentity,
+  ]: (typeof observations)[number]): Promise<void> => {
     expect(
-      // oxlint-disable-next-line no-await-in-loop -- Each observation advances the durable-object state for the next one.
       await stub.recordLiveKitMediaObservation({
         eventId: crypto.randomUUID(),
         kind,
@@ -94,7 +96,11 @@ async function makeConversationLive(conversationId: string): Promise<void> {
         transportEpoch: 1,
       }),
     ).toBe("recorded");
-  }
+  };
+  await recordObservation(observations[0]);
+  await recordObservation(observations[1]);
+  await recordObservation(observations[2]);
+  await recordObservation(observations[3]);
   expect(
     (await postAgentEvent(agentEvent(conversationId, "realtime_ready", "realtime-ready"))).status,
   ).toBe(204);

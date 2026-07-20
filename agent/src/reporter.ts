@@ -82,38 +82,40 @@ export class HttpAgentLifecycleReporter implements AgentLifecycleReporter {
     event: AgentLifecycleEvent | AgentFailureEvent,
   ): Promise<void> {
     const body = JSON.stringify({ version: 1, type, ...event });
-    let failureCode = "network";
-    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
-      try {
-        // oxlint-disable-next-line no-await-in-loop -- Lifecycle-report retries must be sent one at a time.
-        const response = await this.fetch(this.endpoint, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${this.callbackToken}`,
-            "Content-Type": "application/json",
-          },
-          body,
-          signal: controller.signal,
-        });
-        if (response.ok) return;
-        failureCode = String(response.status);
-        if (!isRetryableStatus(response.status)) {
-          throw new Error(`agent.lifecycle_report_failed:${failureCode}`);
-        }
-      } catch (error) {
-        if (controller.signal.aborted) failureCode = "timeout";
-        if (isLifecycleReportFailure(error)) throw error;
-      } finally {
-        clearTimeout(timeout);
+    if (this.maxAttempts < 1) throw new Error("agent.lifecycle_report_failed:network");
+    return this.sendAttempt(body, 1, "network");
+  }
+
+  private async sendAttempt(body: string, attempt: number, failureCode: string): Promise<void> {
+    let nextFailureCode = failureCode;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+    try {
+      const response = await this.fetch(this.endpoint, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.callbackToken}`,
+          "Content-Type": "application/json",
+        },
+        body,
+        signal: controller.signal,
+      });
+      if (response.ok) return;
+      nextFailureCode = String(response.status);
+      if (!isRetryableStatus(response.status)) {
+        throw new Error(`agent.lifecycle_report_failed:${nextFailureCode}`);
       }
-      if (attempt < this.maxAttempts) {
-        // oxlint-disable-next-line no-await-in-loop -- Delay only after the preceding attempt has completed.
-        await this.sleep(this.retryBaseDelayMs * 2 ** (attempt - 1));
-      }
+    } catch (error) {
+      if (controller.signal.aborted) nextFailureCode = "timeout";
+      if (isLifecycleReportFailure(error)) throw error;
+    } finally {
+      clearTimeout(timeout);
     }
-    throw new Error(`agent.lifecycle_report_failed:${failureCode}`);
+    if (attempt >= this.maxAttempts) {
+      throw new Error(`agent.lifecycle_report_failed:${nextFailureCode}`);
+    }
+    await this.sleep(this.retryBaseDelayMs * 2 ** (attempt - 1));
+    return this.sendAttempt(body, attempt + 1, nextFailureCode);
   }
 }
 

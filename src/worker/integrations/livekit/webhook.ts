@@ -25,6 +25,7 @@ import type {
   LiveKitMediaObservationKind,
 } from "../../../durable-object/conversation-session";
 import { ApiError } from "../../http/api-errors";
+import { applyIntegrationEventWithRetry } from "./integration-event-retry";
 import { reconcileCompositeReadiness } from "./readiness";
 
 const LIVEKIT_WEBHOOK_CONTENT_TYPE = "application/webhook+json";
@@ -502,21 +503,11 @@ async function applyIntegrationEvent(
   initial: ConversationState,
   event: ConversationEvent,
 ): Promise<ConversationState> {
-  let state = initial;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    // oxlint-disable-next-line no-await-in-loop -- Each retry needs the latest revision from the prior response.
-    const result: ApplyEventResult = await stub.applyIntegrationEvent({
-      expectedRevision: state.revision,
-      event,
-    });
-    if (result.outcome === "applied" || result.outcome === "duplicate") return result.state;
-    if (result.reason === "revision_conflict" && result.state !== null) {
-      state = result.state;
-      continue;
-    }
-    throw transitionError(result);
-  }
-  throw new ApiError(409, "conversation_revision_conflict", "Conversation state changed.");
+  return applyIntegrationEventWithRetry(stub, initial, event, {
+    rejected: transitionError,
+    exhausted: () =>
+      new ApiError(409, "conversation_revision_conflict", "Conversation state changed."),
+  });
 }
 
 function transitionError(result: Extract<ApplyEventResult, { outcome: "rejected" }>): ApiError {

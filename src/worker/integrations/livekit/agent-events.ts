@@ -15,11 +15,11 @@ import {
 } from "../../../domain/conversation-deadlines";
 import type {
   AgentObservationKind,
-  ApplyEventResult,
   ConversationSession,
 } from "../../../durable-object/conversation-session";
 import { ApiError } from "../../http/api-errors";
 import { authenticateBearer } from "../../http/api-security";
+import { applyIntegrationEventWithRetry } from "./integration-event-retry";
 import { reconcileCompositeReadiness } from "./readiness";
 
 const MAX_AGENT_EVENT_BODY_BYTES = 16 * 1024;
@@ -200,19 +200,9 @@ async function applyIntegrationEvent(
   initial: ConversationState,
   event: ConversationEvent,
 ): Promise<ConversationState> {
-  let state = initial;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    // oxlint-disable-next-line no-await-in-loop -- Each retry needs the latest revision from the prior response.
-    const result: ApplyEventResult = await stub.applyIntegrationEvent({
-      expectedRevision: state.revision,
-      event,
-    });
-    if (result.outcome === "applied" || result.outcome === "duplicate") return result.state;
-    if (result.reason === "revision_conflict" && result.state !== null) {
-      state = result.state;
-      continue;
-    }
-    throw new ApiError(409, "agent_event_rejected", "The agent event was rejected.");
-  }
-  throw new ApiError(409, "agent_event_conflict", "The agent event could not be applied.");
+  return applyIntegrationEventWithRetry(stub, initial, event, {
+    rejected: () => new ApiError(409, "agent_event_rejected", "The agent event was rejected."),
+    exhausted: () =>
+      new ApiError(409, "agent_event_conflict", "The agent event could not be applied."),
+  });
 }

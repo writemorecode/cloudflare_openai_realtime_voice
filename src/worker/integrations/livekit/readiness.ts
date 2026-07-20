@@ -10,11 +10,11 @@ import {
   type ConversationState,
 } from "../../../domain/conversation-state-machine";
 import type {
-  ApplyEventResult,
   ConversationSession,
   LiveKitTransportEvidence,
 } from "../../../durable-object/conversation-session";
 import { ApiError } from "../../http/api-errors";
+import { applyIntegrationEventWithRetry } from "./integration-event-retry";
 
 export async function reconcileCompositeReadiness(
   stub: DurableObjectStub<ConversationSession>,
@@ -98,19 +98,10 @@ async function applyIntegrationEvent(
   initial: ConversationState,
   event: ConversationEvent,
 ): Promise<ConversationState> {
-  let state = initial;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    // oxlint-disable-next-line no-await-in-loop -- Each retry needs the latest revision from the prior response.
-    const result: ApplyEventResult = await stub.applyIntegrationEvent({
-      expectedRevision: state.revision,
-      event,
-    });
-    if (result.outcome === "applied" || result.outcome === "duplicate") return result.state;
-    if (result.reason === "revision_conflict" && result.state !== null) {
-      state = result.state;
-      continue;
-    }
-    throw new ApiError(409, "readiness_transition_rejected", "Readiness could not be applied.");
-  }
-  throw new ApiError(409, "readiness_transition_conflict", "Readiness could not be applied.");
+  return applyIntegrationEventWithRetry(stub, initial, event, {
+    rejected: () =>
+      new ApiError(409, "readiness_transition_rejected", "Readiness could not be applied."),
+    exhausted: () =>
+      new ApiError(409, "readiness_transition_conflict", "Readiness could not be applied."),
+  });
 }

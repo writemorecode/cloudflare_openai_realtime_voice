@@ -215,23 +215,24 @@ describe("LiveKit webhook", () => {
         participant: { identity: "agent-runtime-identity" },
         track: { sid: "TR_agent", type: "AUDIO", source: "MICROPHONE" },
       },
-    ];
+    ] as const;
 
-    for (const [index, observation] of observations.entries()) {
-      // oxlint-disable-next-line no-await-in-loop -- Each webhook observation advances the state asserted below.
+    const assertObservation = async (
+      observation: (typeof observations)[number],
+      expectedState: ConversationStateTag,
+    ): Promise<void> => {
       const response = await webhookRequest({
         ...observation,
         createdAt: String(Math.floor(Date.now() / 1000)),
       });
       expect(response.status).toBe(204);
-      // oxlint-disable-next-line no-await-in-loop -- Assert the state produced by this specific observation.
       const state = await stub.getState();
-      expect(state?.tag).toBe(
-        index === observations.length - 1
-          ? ConversationStateTag.Live
-          : ConversationStateTag.Starting,
-      );
-    }
+      expect(state?.tag).toBe(expectedState);
+    };
+    await assertObservation(observations[0], ConversationStateTag.Starting);
+    await assertObservation(observations[1], ConversationStateTag.Starting);
+    await assertObservation(observations[2], ConversationStateTag.Starting);
+    await assertObservation(observations[3], ConversationStateTag.Live);
 
     expect(await stub.getState()).toMatchObject({
       tag: ConversationStateTag.Live,
