@@ -26,22 +26,19 @@ export function validateOrigin(
 }
 
 function parseOrigin(value: string): URL | null {
-  try {
-    const url = new URL(value);
-    if (
-      (url.protocol !== "http:" && url.protocol !== "https:") ||
-      url.username.length > 0 ||
-      url.password.length > 0 ||
-      url.pathname !== "/" ||
-      url.search.length > 0 ||
-      url.hash.length > 0
-    ) {
-      return null;
-    }
-    return url;
-  } catch {
+  const url = URL.parse(value);
+  if (
+    url === null ||
+    (url.protocol !== "http:" && url.protocol !== "https:") ||
+    url.username.length > 0 ||
+    url.password.length > 0 ||
+    url.pathname !== "/" ||
+    url.search.length > 0 ||
+    url.hash.length > 0
+  ) {
     return null;
   }
+  return url;
 }
 
 export function withCors(response: Response, origin: string | null): Response {
