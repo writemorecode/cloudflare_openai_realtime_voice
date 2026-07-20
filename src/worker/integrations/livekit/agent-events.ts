@@ -118,7 +118,9 @@ export async function handleAgentEvent(request: Request, env: Env): Promise<Agen
   if (domainEvent !== null) {
     state = await applyIntegrationEvent(stub, state, domainEvent);
   }
-  state = await reconcileCompositeReadiness(stub, Date.now());
+  const readiness = await reconcileCompositeReadiness(stub, Date.now());
+  if (!readiness.ok) throw readiness.error;
+  state = readiness.value;
   console.log(
     JSON.stringify({
       kind: "livekit_agent_event_processed",
@@ -200,9 +202,19 @@ async function applyIntegrationEvent(
   initial: ConversationState,
   event: ConversationEvent,
 ): Promise<ConversationState> {
-  return applyIntegrationEventWithRetry(stub, initial, event, {
+  const applied = await applyIntegrationEventWithRetry(stub, initial, event, {
     rejected: () => new ApiError(409, "agent_event_rejected", "The agent event was rejected."),
     exhausted: () =>
       new ApiError(409, "agent_event_conflict", "The agent event could not be applied."),
+    failed: (cause) =>
+      new ApiError(
+        500,
+        "agent_event_apply_failed",
+        "The agent event could not be applied.",
+        {},
+        cause,
+      ),
   });
+  if (!applied.ok) throw applied.error;
+  return applied.value;
 }

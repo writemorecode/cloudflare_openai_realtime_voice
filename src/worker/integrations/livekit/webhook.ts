@@ -238,7 +238,8 @@ async function handleEgressProgress(
     recordingId: value.recordingId(recordingId),
   });
   const reconciled = await reconcileCompositeReadiness(stub, Date.now());
-  return { state: reconciled, outcome: "recording_started" };
+  if (!reconciled.ok) throw reconciled.error;
+  return { state: reconciled.value, outcome: "recording_started" };
 }
 
 async function handleMediaObservation(
@@ -285,8 +286,9 @@ async function handleMediaObservation(
   }
 
   const reconciled = await reconcileCompositeReadiness(stub, Date.now());
+  if (!reconciled.ok) throw reconciled.error;
   return {
-    state: reconciled,
+    state: reconciled.value,
     outcome: recorded === "duplicate" ? "observation_duplicate" : "readiness_reconciled",
   };
 }
@@ -503,11 +505,21 @@ async function applyIntegrationEvent(
   initial: ConversationState,
   event: ConversationEvent,
 ): Promise<ConversationState> {
-  return applyIntegrationEventWithRetry(stub, initial, event, {
+  const applied = await applyIntegrationEventWithRetry(stub, initial, event, {
     rejected: transitionError,
     exhausted: () =>
       new ApiError(409, "conversation_revision_conflict", "Conversation state changed."),
+    failed: (cause) =>
+      new ApiError(
+        500,
+        "livekit_event_apply_failed",
+        "The LiveKit event could not be applied.",
+        {},
+        cause,
+      ),
   });
+  if (!applied.ok) throw applied.error;
+  return applied.value;
 }
 
 function transitionError(result: Extract<ApplyEventResult, { outcome: "rejected" }>): ApiError {
