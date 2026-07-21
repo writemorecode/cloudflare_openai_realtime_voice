@@ -1,4 +1,11 @@
-import { AgentDispatch, EgressInfo, EgressStatus, TokenVerifier } from "livekit-server-sdk";
+import {
+  AccessToken,
+  AgentDispatch,
+  EgressInfo,
+  EgressStatus,
+  TrackSource,
+  TokenVerifier,
+} from "livekit-server-sdk";
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 
@@ -8,11 +15,17 @@ import {
   type LiveKitAccessServices,
   type LiveKitShutdownServices,
 } from "../src/worker/integrations/livekit/access";
-import { ConversationEventType, value } from "../src/domain/conversation-state-machine";
+import {
+  ConversationEventType,
+  ConversationStateTag,
+  value,
+} from "../src/domain/conversation-state-machine";
 import { authenticatedHeaders } from "./auth-helpers";
 
 const API_ORIGIN = "https://api.example.test";
 const BROWSER_ORIGIN = "http://localhost:5173";
+const LIVEKIT_API_KEY = "test-livekit-api-key";
+const LIVEKIT_API_SECRET = "test-livekit-api-secret-with-sufficient-entropy";
 
 async function createStartedConversation(key: string): Promise<string> {
   const created = await exports.default.fetch(
@@ -32,7 +45,11 @@ async function createStartedConversation(key: string): Promise<string> {
   return body.conversationId;
 }
 
-function fakeServices(): LiveKitAccessServices & {
+function fakeServices(
+  options: {
+    readonly onDispatchCreated?: (roomName: string) => Promise<void>;
+  } = {},
+): LiveKitAccessServices & {
   readonly createRoom: ReturnType<typeof vi.fn>;
   readonly createDispatch: ReturnType<typeof vi.fn>;
   readonly startEgress: ReturnType<typeof vi.fn>;
@@ -54,6 +71,7 @@ function fakeServices(): LiveKitAccessServices & {
         metadata,
       });
       dispatches.push(dispatch);
+      await options.onDispatchCreated?.(roomName);
       return dispatch;
     }),
     listActiveEgress: vi.fn(async () => egresses),
@@ -63,7 +81,6 @@ function fakeServices(): LiveKitAccessServices & {
       return egress;
     }),
     mintParticipantToken: vi.fn(async (roomName: string, identity: string) => {
-      const { AccessToken, TrackSource } = await import("livekit-server-sdk");
       const token = new AccessToken(
         "test-livekit-api-key",
         "test-livekit-api-secret-with-sufficient-entropy",
@@ -80,6 +97,46 @@ function fakeServices(): LiveKitAccessServices & {
       return token.toJwt();
     }),
   };
+}
+
+async function postAgentReady(conversationId: string): Promise<Response> {
+  return exports.default.fetch(
+    new Request(`${API_ORIGIN}/v1/integrations/livekit/agent-events`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test-agent-callback-token",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        version: 1,
+        type: "realtime_ready",
+        eventId: `agent:${conversationId}:1:realtime-ready`,
+        conversationId,
+        roomName: `conversation-${conversationId}`,
+        transportEpoch: 1,
+        occurredAt: new Date().toISOString(),
+      }),
+    }),
+  );
+}
+
+async function webhookRequest(payload: Record<string, unknown>): Promise<Response> {
+  const body = JSON.stringify(payload);
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", new TextEncoder().encode(body)),
+  );
+  const token = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET);
+  token.sha256 = btoa(String.fromCharCode(...digest));
+  return exports.default.fetch(
+    new Request(`${API_ORIGIN}/v1/integrations/livekit/webhook`, {
+      method: "POST",
+      headers: {
+        Authorization: await token.toJwt(),
+        "Content-Type": "application/webhook+json",
+      },
+      body,
+    }),
+  );
 }
 
 function fakeShutdownServices(
@@ -160,6 +217,132 @@ describe("LiveKit access", () => {
       canPublishSources: ["microphone"],
       canPublishData: false,
       canSubscribe: true,
+    });
+  });
+
+  it("latches agent readiness during provisioning and reaches live after browser joins", async () => {
+    const conversationId = await createStartedConversation("livekit-access-readiness-race");
+    const roomName = `conversation-${conversationId}`;
+    const stub = env.CONVERSATION_SESSIONS.getByName(conversationId);
+    const services = fakeServices({
+      onDispatchCreated: async () => {
+        expect((await postAgentReady(conversationId)).status).toBe(204);
+        expect((await postAgentReady(conversationId)).status).toBe(204);
+        expect(
+          (
+            await webhookRequest({
+              event: "participant_joined",
+              id: "EV_33333333333A",
+              createdAt: String(Math.floor(Date.now() / 1000)),
+              room: { name: roomName },
+              participant: { identity: "agent-runtime-identity", kind: "AGENT" },
+            })
+          ).status,
+        ).toBe(204);
+        expect(
+          (
+            await webhookRequest({
+              event: "track_published",
+              id: "EV_33333333333B",
+              createdAt: String(Math.floor(Date.now() / 1000)),
+              room: { name: roomName },
+              participant: { identity: "agent-runtime-identity" },
+              track: { sid: "TR_agent", type: "AUDIO", source: "MICROPHONE" },
+            })
+          ).status,
+        ).toBe(204);
+        await expect(
+          stub.recordLiveKitMediaObservation({
+            eventId: "test:wrong-room-during-provisioning",
+            kind: "agent_audio_published",
+            participantIdentity: "agent-runtime-identity",
+            roomName: "conversation-e570d451-98dc-4ba8-867b-735c652114b7",
+            transportEpoch: 1,
+          }),
+        ).resolves.toEqual({ outcome: "rejected", reason: "room_mismatch" });
+        await expect(
+          stub.recordLiveKitMediaObservation({
+            eventId: "test:wrong-epoch-during-provisioning",
+            kind: "agent_audio_published",
+            participantIdentity: "agent-runtime-identity",
+            roomName,
+            transportEpoch: 2,
+          }),
+        ).resolves.toEqual({ outcome: "rejected", reason: "epoch_mismatch" });
+      },
+    });
+
+    const access = await createLiveKitAccess(env, conversationId, services);
+    expect(access.ok).toBe(true);
+    expect(await stub.getLiveKitTransportEvidence()).toMatchObject({
+      transportEpoch: 1,
+      agentParticipantActive: true,
+      agentParticipantIdentity: "agent-runtime-identity",
+      agentAudioPublished: true,
+      realtimeReady: true,
+    });
+
+    expect(
+      (
+        await webhookRequest({
+          event: "egress_started",
+          id: "EV_33333333333C",
+          createdAt: String(Math.floor(Date.now() / 1000)),
+          egressInfo: {
+            egressId: "EG_test",
+            roomName,
+            status: "EGRESS_ACTIVE",
+            fileResults: [],
+          },
+        })
+      ).status,
+    ).toBe(204);
+    expect(
+      (
+        await webhookRequest({
+          event: "participant_joined",
+          id: "EV_33333333333D",
+          createdAt: String(Math.floor(Date.now() / 1000)),
+          room: { name: roomName },
+          participant: { identity: `browser-${conversationId}`, kind: "STANDARD" },
+        })
+      ).status,
+    ).toBe(204);
+    expect(
+      (
+        await webhookRequest({
+          event: "track_published",
+          id: "EV_33333333333E",
+          createdAt: String(Math.floor(Date.now() / 1000)),
+          room: { name: roomName },
+          participant: { identity: `browser-${conversationId}` },
+          track: { sid: "TR_browser", type: "AUDIO", source: "MICROPHONE" },
+        })
+      ).status,
+    ).toBe(204);
+
+    const live = await stub.getState();
+    expect(live).toMatchObject({
+      tag: ConversationStateTag.Live,
+      data: {
+        transport: { status: "connected", epoch: 1 },
+        artifact: { status: "recording" },
+      },
+    });
+    expect(live).not.toBeNull();
+    const ending = await stub.applyEvent({
+      expectedRevision: live!.revision,
+      event: {
+        type: ConversationEventType.EndRequested,
+        eventId: "test:end-live-after-provisioning-race",
+        at: value.unixMillis(Date.now()),
+        reason: "user_requested",
+        endingDeadlineAt: value.unixMillis(Date.now() + 30_000),
+      },
+    });
+    expect(ending).toMatchObject({
+      outcome: "applied",
+      state: { tag: ConversationStateTag.Ending, data: { target: { kind: "complete" } } },
     });
   });
 

@@ -13,7 +13,7 @@ const API_ORIGIN = "https://api.example.test";
 const BROWSER_ORIGIN = "http://localhost:5173";
 const AGENT_TOKEN = "test-agent-callback-token";
 
-async function createProvisionedConversation(key: string): Promise<string> {
+async function createStartedConversation(key: string): Promise<string> {
   const created = await exports.default.fetch(
     new Request(`${API_ORIGIN}/v1/conversations`, {
       method: "POST",
@@ -27,6 +27,11 @@ async function createProvisionedConversation(key: string): Promise<string> {
       headers: await authenticatedHeaders({ Origin: BROWSER_ORIGIN }),
     }),
   );
+  return conversationId;
+}
+
+async function createProvisionedConversation(key: string): Promise<string> {
+  const conversationId = await createStartedConversation(key);
   const stub = env.CONVERSATION_SESSIONS.getByName(conversationId);
   const roomName = `conversation-${conversationId}`;
   const claim = await stub.beginLiveKitProvisioning({
@@ -95,7 +100,7 @@ async function makeConversationLive(conversationId: string): Promise<void> {
         roomName,
         transportEpoch: 1,
       }),
-    ).toBe("recorded");
+    ).toEqual({ outcome: "recorded", reason: null });
   };
   await recordObservation(observations[0]);
   await recordObservation(observations[1]);
@@ -140,6 +145,16 @@ async function postAgentEvent(payload: Record<string, unknown>, token = AGENT_TO
 }
 
 describe("LiveKit agent lifecycle events", () => {
+  it("returns a retryable response until provisioning correlation exists", async () => {
+    const conversationId = await createStartedConversation("agent-event-before-provisioning");
+    const response = await postAgentEvent(
+      agentEvent(conversationId, "realtime_ready", "realtime-ready"),
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("1");
+  });
+
   it("authenticates, correlates, and deduplicates realtime readiness evidence", async () => {
     const conversationId = await createProvisionedConversation("agent-ready-event");
     const payload = agentEvent(conversationId, "realtime_ready", "realtime-ready");

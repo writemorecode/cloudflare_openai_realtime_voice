@@ -102,6 +102,12 @@ export type RecordObservationResult =
       reason: "not_provisioned" | "room_mismatch" | "epoch_mismatch";
     }>;
 
+/** RPC-safe representation that avoids distributing a discriminated union across DO stubs. */
+export interface RecordObservationRpcResult {
+  readonly outcome: "recorded" | "duplicate" | "rejected";
+  readonly reason: "not_provisioned" | "room_mismatch" | "epoch_mismatch" | null;
+}
+
 export interface TransitionReceipt {
   readonly eventId: string;
   readonly eventType: ConversationEventType;

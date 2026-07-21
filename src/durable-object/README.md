@@ -18,8 +18,9 @@ by responsibility while sharing the same object storage and consistency boundary
 - `ConversationAggregateStore` owns snapshots, transition receipts, revision checks, deadline
   selection, and the transactional shutdown-outbox write.
 - `LiveKitCoordinationStore` owns provisioning and shutdown leases plus retry-stable transport
-  evidence receipts. It returns explicit internal rejection reasons; the facade retains the legacy
-  RPC outcome strings.
+  evidence receipts. Matching evidence can be recorded against either an active provisioning lease
+  or completed provisioning metadata, so provider callbacks cannot outrun resource setup. It
+  returns explicit rejection reasons through the internal RPC boundary.
 - `ConversationSocketGateway` owns the hibernatable control-WebSocket protocol and snapshot
   broadcasts.
 - `ConversationAlarmRunner` applies the single earliest deadline and delivers the shutdown outbox

@@ -240,9 +240,9 @@ current aggregate.
 | Failed egress or missing/corrupt R2 object                     | `ArtifactFailed`                     | Successful lifecycle completion is no longer possible.                       |
 | Room and agent session are closed                              | `SessionClosed`                      | May arrive before or after artifact readiness.                               |
 
-LiveKit webhook UUIDs should become event IDs. Agent-originated observations need their own stable,
-retry-safe IDs. The existing event receipt store then makes duplicated webhook delivery and agent
-retries harmless.
+LiveKit webhook IDs should become event IDs. Only the current `EV_`-prefixed LiveKit ID format is
+accepted. Agent-originated observations need their own stable, retry-safe IDs. The existing event
+receipt store then makes duplicated webhook delivery and agent retries harmless.
 
 ## Proposed API and integration boundaries
 
@@ -299,6 +299,14 @@ Room creation, dispatch, egress, and token minting live beside the webhook under
 short Durable Object provisioning lease serializes concurrent access attempts and stores only the
 internal dispatch, egress, and expected-object correlations. Provider calls do not run inside the
 Durable Object or the provider-neutral start route.
+
+The provisioning lease establishes the expected room name and transport epoch before any provider
+calls begin. Matching agent lifecycle and LiveKit media observations are therefore latched while
+the lease is either `provisioning` or `ready`; they do not wait for dispatch and egress identifiers
+to be committed. This prevents callbacks caused by explicit dispatch from being lost while egress
+is still starting. Observations received before any correlation exists return a retryable response,
+while mismatched room names and epochs remain rejected. Completing provisioning preserves the
+latched evidence and its idempotency receipts.
 
 The matching `DELETE` operation is accepted only once lifecycle is `ending` or terminal. A separate
 shutdown lease serializes concurrent requests. Each provider resource is checked before deletion,

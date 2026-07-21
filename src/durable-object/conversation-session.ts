@@ -30,6 +30,8 @@ import type {
   LiveKitTransportEvidence,
   RecordAgentObservationCommand,
   RecordLiveKitMediaObservationCommand,
+  RecordObservationRpcResult,
+  RecordObservationResult,
 } from "./conversation-session-contract";
 import { LiveKitCoordinationStore } from "./livekit-coordination-store";
 import { ConversationSocketGateway } from "./conversation-socket-gateway";
@@ -44,6 +46,7 @@ export type {
   LiveKitMediaObservationKind,
   LiveKitProvisioningReady,
   LiveKitTransportEvidence,
+  RecordObservationRpcResult,
 } from "./conversation-session-contract";
 export type { AlarmTelemetryRecord, TransitionTelemetryRecord } from "./conversation-telemetry";
 export { UnsupportedSnapshotVersionError } from "./conversation-session-storage";
@@ -131,11 +134,11 @@ export class ConversationSession extends DurableObject<Env> {
     await this.liveKit.abandonShutdown(leaseId);
   }
 
-  /** Records retry-stable agent readiness evidence and preserves the legacy RPC outcome strings. */
+  /** Records retry-stable agent readiness evidence against provisioning or ready correlation. */
   async recordAgentObservation(
     command: RecordAgentObservationCommand,
-  ): Promise<"recorded" | "duplicate" | "rejected"> {
-    return (await this.liveKit.recordAgentObservation(command)).outcome;
+  ): Promise<RecordObservationRpcResult> {
+    return toObservationRpcResult(await this.liveKit.recordAgentObservation(command));
   }
 
   /** Returns the current composite transport evidence used by readiness reconciliation. */
@@ -143,11 +146,11 @@ export class ConversationSession extends DurableObject<Env> {
     return this.liveKit.getTransportEvidence();
   }
 
-  /** Records retry-stable LiveKit media evidence and preserves the legacy RPC outcome strings. */
-  async recordLiveKitMediaObservation(
+  /** Records retry-stable media evidence against provisioning or ready correlation. */
+  recordLiveKitMediaObservation(
     command: RecordLiveKitMediaObservationCommand,
-  ): Promise<"recorded" | "duplicate" | "rejected"> {
-    return (await this.liveKit.recordMediaObservation(command)).outcome;
+  ): Promise<RecordObservationRpcResult> {
+    return this.liveKit.recordMediaObservation(command).then(toObservationRpcResult);
   }
 
   /** Applies one revision-checked domain event and flushes a time-limit shutdown outbox entry. */
@@ -175,4 +178,11 @@ export class ConversationSession extends DurableObject<Env> {
   override async alarm(alarmInfo?: AlarmInvocationInfo): Promise<void> {
     await this.alarms.run(alarmInfo);
   }
+}
+
+function toObservationRpcResult(result: RecordObservationResult): RecordObservationRpcResult {
+  return {
+    outcome: result.outcome,
+    reason: result.outcome === "rejected" ? result.reason : null,
+  };
 }

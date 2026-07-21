@@ -1,12 +1,12 @@
 /** Verifies browser-page authentication, navigation, and live-conversation controls. */
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ConversationStateDto } from "../../src/worker/http/conversation-state-dto";
-import { ConversationStateTag } from "../../src/domain/conversation-state-machine";
+import { ConversationStateTag, TransportStatus } from "../../src/domain/conversation-state-machine";
 import { ConversationPage, HomePage, PostConversationPage } from "./App";
-import type { ConversationApi, ConversationRuntime, RuntimeFactory } from "./types";
+import type { ConversationApi, ConversationRuntime, RuntimeEvents, RuntimeFactory } from "./types";
 
 const ID = "12345678-1234-8234-9234-123456789abc";
 
@@ -121,5 +121,84 @@ describe("conversation pages", () => {
 
     expect(runtime.requestEnd).toHaveBeenCalledOnce();
     expect(navigate).toHaveBeenCalledWith(`/conversation/${ID}/complete`);
+  });
+
+  it("labels connecting, connected, live, reconnecting, and ending snapshots", async () => {
+    const starting = {
+      ...state(ConversationStateTag.Starting),
+      transport: { status: "connecting" as const, epoch: 1 },
+      artifact: { status: "pending" as const },
+      starting: { startDeadlineAt: 10_000 },
+    } as ConversationStateDto;
+    let events: RuntimeEvents | null = null;
+    const runtime: ConversationRuntime = {
+      connect: vi.fn().mockResolvedValue(undefined),
+      enableAudio: vi.fn().mockResolvedValue(undefined),
+      setMicrophoneEnabled: vi.fn().mockResolvedValue(undefined),
+      requestEnd: vi.fn(),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const runtimeFactory: RuntimeFactory = vi.fn((_api, _conversationId, nextEvents) => {
+      events = nextEvents;
+      return runtime;
+    });
+    render(
+      <ConversationPage
+        conversationId={ID}
+        api={api({
+          getState: vi.fn().mockResolvedValue(starting),
+          startConversation: vi.fn().mockResolvedValue(starting),
+        })}
+        runtimeFactory={runtimeFactory}
+        navigate={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("Connecting")).toBeVisible();
+    expect(events).not.toBeNull();
+    act(() =>
+      events!.onState({
+        ...starting,
+        revision: 2,
+        transport: { status: TransportStatus.Connected, epoch: 1 },
+      }),
+    );
+    expect(screen.getByText("Connected · Starting recording")).toBeVisible();
+
+    const live = {
+      ...starting,
+      state: ConversationStateTag.Live,
+      revision: 3,
+      transport: { status: TransportStatus.Connected, epoch: 1 },
+      artifact: { status: "recording" as const },
+      live: { startedAt: 2, maximumEndAt: 60_002 },
+    } as ConversationStateDto;
+    act(() => events!.onState(live));
+    expect(screen.getByText("Live · Recording")).toBeVisible();
+
+    act(() =>
+      events!.onState({
+        ...live,
+        revision: 4,
+        transport: {
+          status: TransportStatus.Reconnecting,
+          epoch: 1,
+          attempt: 1,
+          lastErrorCode: "transport.livekit_media_interrupted",
+        },
+      }),
+    );
+    expect(screen.getByText("Reconnecting")).toBeVisible();
+
+    act(() =>
+      events!.onState({
+        ...live,
+        state: ConversationStateTag.Ending,
+        revision: 5,
+        transport: { status: "closed", epoch: 1 },
+        ending: { target: "complete" },
+      } as ConversationStateDto),
+    );
+    expect(screen.getByText("Finalizing recording")).toBeVisible();
   });
 });

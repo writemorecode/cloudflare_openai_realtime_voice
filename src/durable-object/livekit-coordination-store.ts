@@ -162,7 +162,7 @@ export class LiveKitCoordinationStore {
   recordAgentObservation(command: RecordAgentObservationCommand): Promise<RecordObservationResult> {
     return this.storage.transaction(async (transaction) => {
       const provisioning = await transaction.get<LiveKitProvisioning>(LIVEKIT_PROVISIONING_KEY);
-      if (provisioning?.status !== "ready") {
+      if (provisioning === undefined) {
         return { outcome: "rejected", reason: "not_provisioned" } as const;
       }
       if (provisioning.roomName !== command.roomName) {
@@ -206,7 +206,7 @@ export class LiveKitCoordinationStore {
   ): Promise<RecordObservationResult> {
     return this.storage.transaction(async (transaction) => {
       const provisioning = await transaction.get<LiveKitProvisioning>(LIVEKIT_PROVISIONING_KEY);
-      if (provisioning?.status !== "ready") {
+      if (provisioning === undefined) {
         return { outcome: "rejected", reason: "not_provisioned" } as const;
       }
       if (provisioning.roomName !== command.roomName) {

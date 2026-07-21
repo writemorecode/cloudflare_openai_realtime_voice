@@ -445,9 +445,12 @@ function PhoneIcon() {
 }
 
 function labelForState(state: ConversationStateDto): string {
-  if (state.state === ConversationStateTag.Live) return "Live · Recording";
   if (state.state === ConversationStateTag.Ending) return "Finalizing recording";
   if (state.transport.status === TransportStatus.Reconnecting) return "Reconnecting";
+  if (state.state === ConversationStateTag.Live) return "Live · Recording";
+  if (state.transport.status === TransportStatus.Connected) {
+    return "Connected · Starting recording";
+  }
   return "Connecting";
 }
 

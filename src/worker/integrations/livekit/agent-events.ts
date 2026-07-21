@@ -130,12 +130,13 @@ export async function handleAgentEvent(
     agentOperationFailed,
   );
   if (!observation.ok) return observation;
-  if (observation.value === "rejected") {
-    return err(
-      new ApiError(409, "agent_event_correlation_failed", "The agent event did not correlate."),
-    );
+  if (observation.value.outcome === "rejected") {
+    if (observation.value.reason === null) {
+      return err(agentOperationFailed(new Error("Rejected observation omitted its reason.")));
+    }
+    return err(agentCorrelationError(observation.value.reason));
   }
-  if (observation.value === "duplicate") {
+  if (observation.value.outcome === "duplicate") {
     return ok({ conversationId: event.conversationId, state, outcome: "duplicate" });
   }
 
@@ -242,4 +243,17 @@ function agentOperationFailed(cause: unknown): ApiError {
     {},
     cause,
   );
+}
+
+function agentCorrelationError(
+  reason: "not_provisioned" | "room_mismatch" | "epoch_mismatch",
+): ApiError {
+  return reason === "not_provisioned"
+    ? new ApiError(
+        503,
+        "agent_event_provisioning_pending",
+        "Agent event correlation is not ready.",
+        { "Retry-After": "1" },
+      )
+    : new ApiError(409, "agent_event_correlation_failed", "The agent event did not correlate.");
 }

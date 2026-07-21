@@ -16,6 +16,12 @@ const LIVEKIT_API_KEY = "test-livekit-api-key";
 const LIVEKIT_API_SECRET = "test-livekit-api-secret-with-sufficient-entropy";
 
 async function createStartedConversation(key: string): Promise<string> {
+  const conversationId = await createUnprovisionedStartedConversation(key);
+  await provisionConversation(conversationId);
+  return conversationId;
+}
+
+async function createUnprovisionedStartedConversation(key: string): Promise<string> {
   const created = await exports.default.fetch(
     new Request(`${API_ORIGIN}/v1/conversations`, {
       method: "POST",
@@ -30,7 +36,6 @@ async function createStartedConversation(key: string): Promise<string> {
     }),
   );
   expect(started.status).toBe(202);
-  await provisionConversation(body.conversationId);
   return body.conversationId;
 }
 
@@ -106,6 +111,22 @@ function egressEvent(
 }
 
 describe("LiveKit webhook", () => {
+  it("returns a retryable response until provisioning correlation exists", async () => {
+    const conversationId = await createUnprovisionedStartedConversation(
+      "livekit-webhook-before-provisioning",
+    );
+    const response = await webhookRequest({
+      event: "participant_joined",
+      id: "EV_22222222222A",
+      createdAt: String(Math.floor(Date.now() / 1000)),
+      room: { name: `conversation-${conversationId}` },
+      participant: { identity: `browser-${conversationId}`, kind: "STANDARD" },
+    });
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("1");
+  });
+
   it("requires LiveKit signature verification and the webhook media type", async () => {
     const missingSignature = await exports.default.fetch(
       new Request(`${API_ORIGIN}/v1/integrations/livekit/webhook`, {
@@ -131,11 +152,25 @@ describe("LiveKit webhook", () => {
     expect(tampered.status).toBe(401);
   });
 
+  it("accepts current LiveKit event IDs but rejects malformed IDs", async () => {
+    const conversationId = await createStartedConversation("livekit-event-id-format");
+    const payload = {
+      event: "participant_joined",
+      id: "EV_22222222222B",
+      createdAt: String(Math.floor(Date.now() / 1000)),
+      room: { name: `conversation-${conversationId}` },
+      participant: { identity: `browser-${conversationId}`, kind: "STANDARD" },
+    };
+
+    expect((await webhookRequest(payload)).status).toBe(204);
+    expect((await webhookRequest({ ...payload, id: "EV_too-short" })).status).toBe(400);
+  });
+
   it("records active egress exactly once across webhook retries", async () => {
     const conversationId = await createStartedConversation("livekit-egress-started");
     const payload = egressEvent(
       "egress_started",
-      "83c6a98e-dcae-4b0d-bfa4-93e45bb90a26",
+      "EV_22222222222C",
       conversationId,
       "EGRESS_ACTIVE",
     );
@@ -159,12 +194,7 @@ describe("LiveKit webhook", () => {
     const stub = env.CONVERSATION_SESSIONS.getByName(conversationId);
 
     await webhookRequest(
-      egressEvent(
-        "egress_started",
-        "0db49ba0-b91e-4920-b54b-b1c5926a9601",
-        conversationId,
-        "EGRESS_ACTIVE",
-      ),
+      egressEvent("egress_started", "EV_22222222222D", conversationId, "EGRESS_ACTIVE"),
     );
     const ready = await exports.default.fetch(
       new Request(`${API_ORIGIN}/v1/integrations/livekit/agent-events`, {
@@ -189,13 +219,13 @@ describe("LiveKit webhook", () => {
     const observations = [
       {
         event: "participant_joined",
-        id: "9de0178d-9cd0-485c-9374-17c3f1bd4a8a",
+        id: "EV_22222222222E",
         room,
         participant: { identity: `browser-${conversationId}`, kind: "STANDARD" },
       },
       {
         event: "track_published",
-        id: "d6bf67ae-b09f-457d-8db2-4d3ea323fd89",
+        id: "EV_22222222222F",
         room,
         // LiveKit track webhooks intentionally omit participant.kind.
         participant: { identity: `browser-${conversationId}` },
@@ -203,13 +233,13 @@ describe("LiveKit webhook", () => {
       },
       {
         event: "participant_joined",
-        id: "717f3ee7-0d2d-48ff-bf3c-fb4512cf0a8b",
+        id: "EV_22222222222G",
         room,
         participant: { identity: "agent-runtime-identity", kind: "AGENT" },
       },
       {
         event: "track_published",
-        id: "feec27da-6658-4d6d-8283-f48dfb688f48",
+        id: "EV_22222222222H",
         room,
         // Agent identity must be correlated with the preceding participant_joined event.
         participant: { identity: "agent-runtime-identity" },
@@ -245,7 +275,7 @@ describe("LiveKit webhook", () => {
 
     const interrupted = await webhookRequest({
       event: "track_unpublished",
-      id: "518a1fc9-2ca5-4367-9b58-a7ed0344c6fe",
+      id: "EV_22222222222J",
       createdAt: String(Math.floor(Date.now() / 1000)),
       room,
       participant: { identity: `browser-${conversationId}`, kind: "STANDARD" },
@@ -262,12 +292,7 @@ describe("LiveKit webhook", () => {
   it("maps failed egress to a sanitized artifact failure", async () => {
     const conversationId = await createStartedConversation("livekit-egress-failed");
     const response = await webhookRequest(
-      egressEvent(
-        "egress_ended",
-        "848edda8-e631-489a-a28e-336e815474f0",
-        conversationId,
-        "EGRESS_FAILED",
-      ),
+      egressEvent("egress_ended", "EV_22222222222K", conversationId, "EGRESS_FAILED"),
     );
     const state = await env.CONVERSATION_SESSIONS.getByName(conversationId).getState();
 
@@ -291,7 +316,7 @@ describe("LiveKit webhook", () => {
     const conversationId = await createStartedConversation("livekit-egress-mismatch");
     const payload = egressEvent(
       "egress_started",
-      "2741e451-b038-45b1-a274-9822be773faf",
+      "EV_22222222222M",
       conversationId,
       "EGRESS_ACTIVE",
     );
@@ -313,12 +338,7 @@ describe("LiveKit webhook", () => {
     const conversationId = await createStartedConversation("livekit-completion");
     const stub = env.CONVERSATION_SESSIONS.getByName(conversationId);
     const startedEgress = await webhookRequest(
-      egressEvent(
-        "egress_started",
-        "fcf8d6b0-e1ee-4f81-9dc4-74bc4fdb5d2c",
-        conversationId,
-        "EGRESS_ACTIVE",
-      ),
+      egressEvent("egress_started", "EV_22222222222N", conversationId, "EGRESS_ACTIVE"),
     );
     expect(startedEgress.status).toBe(204);
 
@@ -362,13 +382,9 @@ describe("LiveKit webhook", () => {
     const objectKey = `conversations/${conversationId}/recording.ogg`;
     await env.RECORDINGS.put(objectKey, new Uint8Array([1, 2, 3, 4]));
     const egressEnded = await webhookRequest(
-      egressEvent(
-        "egress_ended",
-        "7f90dd1a-b04f-41a5-9b68-af63efc97646",
-        conversationId,
-        "EGRESS_COMPLETE",
-        [{ filename: objectKey, size: "4" }],
-      ),
+      egressEvent("egress_ended", "EV_22222222222P", conversationId, "EGRESS_COMPLETE", [
+        { filename: objectKey, size: "4" },
+      ]),
     );
     expect(egressEnded.status).toBe(204);
 
@@ -380,7 +396,7 @@ describe("LiveKit webhook", () => {
 
     const roomFinished = await webhookRequest({
       event: "room_finished",
-      id: "9603ec96-ecb3-44e9-8234-316f3a6c2aba",
+      id: "EV_22222222222Q",
       createdAt: String(Math.floor(Date.now() / 1000)),
       room: { sid: "RM_test", name: `conversation-${conversationId}` },
     });
@@ -398,12 +414,7 @@ describe("LiveKit webhook", () => {
     const conversationId = await createStartedConversation("livekit-missing-r2-object");
     const stub = env.CONVERSATION_SESSIONS.getByName(conversationId);
     await webhookRequest(
-      egressEvent(
-        "egress_started",
-        "2e598c9f-bc59-432d-b502-d77068b87461",
-        conversationId,
-        "EGRESS_ACTIVE",
-      ),
+      egressEvent("egress_started", "EV_22222222222R", conversationId, "EGRESS_ACTIVE"),
     );
     let state: ConversationState | null = await stub.getState();
     let result = await stub.applyEvent({
@@ -420,13 +431,9 @@ describe("LiveKit webhook", () => {
 
     const objectKey = `conversations/${conversationId}/recording.ogg`;
     const response = await webhookRequest(
-      egressEvent(
-        "egress_ended",
-        "285e682a-d481-4e2c-8f0b-4b18c2121753",
-        conversationId,
-        "EGRESS_COMPLETE",
-        [{ filename: objectKey, size: "10" }],
-      ),
+      egressEvent("egress_ended", "EV_22222222222S", conversationId, "EGRESS_COMPLETE", [
+        { filename: objectKey, size: "10" },
+      ]),
     );
     state = await stub.getState();
 

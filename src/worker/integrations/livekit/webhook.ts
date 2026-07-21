@@ -33,8 +33,7 @@ const LIVEKIT_WEBHOOK_CONTENT_TYPE = "application/webhook+json";
 const MAX_WEBHOOK_BODY_BYTES = 64 * 1024;
 const MAX_AUTHORIZATION_LENGTH = 4096;
 const ARTIFACT_UPLOAD_WINDOW_MS = 2 * 60_000;
-const LIVEKIT_EVENT_ID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const LIVEKIT_EVENT_ID_PATTERN = /^EV_[A-Za-z0-9]{12}$/;
 const CONVERSATION_ID_PATTERN =
   "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const LIVEKIT_ROOM_PATTERN = new RegExp(`^conversation-(${CONVERSATION_ID_PATTERN})$`);
@@ -295,8 +294,11 @@ async function handleMediaObservation(
     webhookOperationFailed,
   );
   if (!recorded.ok) return recorded;
-  if (recorded.value === "rejected") {
-    return ok({ state, outcome: "observation_uncorrelated" });
+  if (recorded.value.outcome === "rejected") {
+    if (recorded.value.reason === null) {
+      return err(webhookOperationFailed(new Error("Rejected observation omitted its reason.")));
+    }
+    return err(mediaObservationCorrelationError(recorded.value.reason));
   }
 
   if (
@@ -321,7 +323,8 @@ async function handleMediaObservation(
   if (!reconciled.ok) return reconciled;
   return ok({
     state: reconciled.value,
-    outcome: recorded.value === "duplicate" ? "observation_duplicate" : "readiness_reconciled",
+    outcome:
+      recorded.value.outcome === "duplicate" ? "observation_duplicate" : "readiness_reconciled",
   });
 }
 
@@ -637,6 +640,23 @@ function webhookOperationFailed(cause: unknown): ApiError {
     {},
     cause,
   );
+}
+
+function mediaObservationCorrelationError(
+  reason: "not_provisioned" | "room_mismatch" | "epoch_mismatch",
+): ApiError {
+  return reason === "not_provisioned"
+    ? new ApiError(
+        503,
+        "livekit_observation_provisioning_pending",
+        "LiveKit observation correlation is not ready.",
+        { "Retry-After": "1" },
+      )
+    : new ApiError(
+        409,
+        "livekit_observation_correlation_failed",
+        "The LiveKit observation did not correlate.",
+      );
 }
 
 function domainEventId(event: WebhookEvent, suffix: string): string {
