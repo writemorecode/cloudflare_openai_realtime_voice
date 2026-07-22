@@ -1,13 +1,7 @@
-/** Reconciles provider evidence into composite, provider-neutral transport readiness transitions. */
-import { MAXIMUM_LIVE_DURATION_MS } from "../../../domain/conversation-deadlines";
-import {
-  ArtifactStatus,
-  ConversationEventType,
-  ConversationStateTag,
-  TransportStatus,
-  value,
-  type ConversationEvent,
-  type ConversationState,
+/** Executes provider-neutral transitions selected by the pure composite-readiness policy. */
+import type {
+  ConversationEvent,
+  ConversationState,
 } from "../../../domain/conversation-state-machine";
 import type {
   ConversationSession,
@@ -16,6 +10,7 @@ import type {
 import { ApiError } from "../../http/api-errors";
 import { err, ok, tryCatch, type Result } from "../../try-catch";
 import { applyIntegrationEventWithRetry } from "./integration-event-retry";
+import { nextReadinessEvent } from "./readiness-decisions";
 
 export async function reconcileCompositeReadiness(
   stub: DurableObjectStub<ConversationSession>,
@@ -23,81 +18,26 @@ export async function reconcileCompositeReadiness(
 ): Promise<Result<ConversationState, ApiError>> {
   const required = await requiredState(stub);
   if (!required.ok) return required;
-  let state = required.value;
-
   const evidenceResult = await tryCatch(
     () => stub.getLiveKitTransportEvidence(),
     readinessOperationFailed,
   );
   if (!evidenceResult.ok) return evidenceResult;
-  const evidence = evidenceResult.value;
-  if (evidence === null || !isCompositeTransportReady(evidence)) return ok(state);
-
-  if (
-    state.tag === ConversationStateTag.Live &&
-    state.data.transport.status === TransportStatus.Reconnecting &&
-    evidence.transportEpoch === state.data.transport.epoch + 1
-  ) {
-    const applied = await applyIntegrationEvent(stub, state, {
-      type: ConversationEventType.TransportConnected,
-      eventId: readinessEventId(state, evidence.transportEpoch, "transport-connected"),
-      at: value.unixMillis(observedAt),
-      epoch: evidence.transportEpoch,
-    });
-    if (!applied.ok) return applied;
-    state = applied.value;
-  }
-
-  if (
-    state.tag === ConversationStateTag.Starting &&
-    state.data.transport.status === TransportStatus.Connecting &&
-    state.data.transport.epoch === evidence.transportEpoch
-  ) {
-    const applied = await applyIntegrationEvent(stub, state, {
-      type: ConversationEventType.TransportConnected,
-      eventId: readinessEventId(state, evidence.transportEpoch, "transport-connected"),
-      at: value.unixMillis(observedAt),
-      epoch: evidence.transportEpoch,
-    });
-    if (!applied.ok) return applied;
-    state = applied.value;
-  }
-
-  if (
-    state.tag === ConversationStateTag.Starting &&
-    state.data.transport.status === TransportStatus.Connected &&
-    state.data.transport.epoch === evidence.transportEpoch &&
-    state.data.artifact.status === ArtifactStatus.Recording
-  ) {
-    const applied = await applyIntegrationEvent(stub, state, {
-      type: ConversationEventType.SessionStarted,
-      eventId: readinessEventId(state, evidence.transportEpoch, "session-started"),
-      at: value.unixMillis(observedAt),
-      epoch: evidence.transportEpoch,
-      maximumEndAt: value.unixMillis(observedAt + MAXIMUM_LIVE_DURATION_MS),
-    });
-    if (!applied.ok) return applied;
-    state = applied.value;
-  }
-  return ok(state);
+  return applyReadinessTransitions(stub, required.value, evidenceResult.value, observedAt);
 }
 
-function isCompositeTransportReady(evidence: LiveKitTransportEvidence): boolean {
-  return (
-    evidence.browserParticipantActive &&
-    evidence.browserAudioPublished &&
-    evidence.agentParticipantActive &&
-    evidence.agentAudioPublished &&
-    evidence.realtimeReady
-  );
-}
-
-function readinessEventId(
+async function applyReadinessTransitions(
+  stub: DurableObjectStub<ConversationSession>,
   state: ConversationState,
-  epoch: number,
-  kind: "transport-connected" | "session-started",
-): string {
-  return `system:livekit:${state.data.sessionId}:${epoch}:${kind}`;
+  evidence: LiveKitTransportEvidence | null,
+  observedAt: number,
+): Promise<Result<ConversationState, ApiError>> {
+  const event = nextReadinessEvent(state, evidence, observedAt);
+  if (event === null) return ok(state);
+  const applied = await applyIntegrationEvent(stub, state, event);
+  return applied.ok
+    ? applyReadinessTransitions(stub, applied.value, evidence, observedAt)
+    : applied;
 }
 
 async function requiredState(
