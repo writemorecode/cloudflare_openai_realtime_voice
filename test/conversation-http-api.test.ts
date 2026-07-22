@@ -2,7 +2,11 @@ import { runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { StartConversationResponse } from "../src/worker/http/conversation-api";
+import {
+  handleConversationRequest,
+  type StartConversationResponse,
+} from "../src/worker/http/conversation-api";
+import { foundationDependencies } from "../src/worker/foundation-dependencies";
 import { authenticatedHeaders } from "./auth-helpers";
 
 const API_ORIGIN = "https://api.example.test";
@@ -30,6 +34,36 @@ async function createConversation(key: string) {
 }
 
 describe("Worker HTTP boundary", () => {
+  it("accepts deterministic foundation runtime ports", async () => {
+    const now = vi.fn(() => 1_700_000_000_000);
+    const randomUuid = vi.fn(() => "11111111-1111-4111-8111-111111111111");
+    const dependencies = {
+      ...foundationDependencies(env),
+      clock: { now },
+      ids: { randomUuid },
+    };
+    const response = await handleConversationRequest(
+      new Request(`${API_ORIGIN}/v1/conversations`, {
+        method: "POST",
+        headers: await authenticatedHeaders({
+          Origin: ALLOWED_ORIGIN,
+          "Idempotency-Key": "deterministic-runtime-ports",
+        }),
+      }),
+      env,
+      dependencies,
+    );
+
+    expect(response.status).toBe(201);
+    expect(response.headers.get("X-Request-Id")).toBe("11111111-1111-4111-8111-111111111111");
+    expect(await response.json()).toMatchObject({
+      enteredAt: 1_700_000_000_000,
+      updatedAt: 1_700_000_000_000,
+    });
+    expect(now).toHaveBeenCalled();
+    expect(randomUuid).toHaveBeenCalledOnce();
+  });
+
   it("requires a browser session and enforces the configured CORS origin", async () => {
     const missing = await exports.default.fetch(
       new Request(`${API_ORIGIN}/v1/conversations`, {

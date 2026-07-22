@@ -5,12 +5,19 @@
  * same Cloudflare deployment can bind the stateful Durable Object class.
  */
 import { ConversationSession } from "../durable-object/conversation-session";
-import { conversationApi } from "./http/conversation-api";
+import { handleConversationRequest } from "./http/conversation-api";
 import type { LiveKitShutdownMessage } from "../shared/livekit-shutdown";
+import { foundationDependencies } from "./foundation-dependencies";
+import { stopLiveKitAccess } from "./integrations/livekit/access";
 import { handleLiveKitShutdownBatch } from "./integrations/livekit/shutdown-queue";
 
 export { ConversationSession };
 export default {
-  fetch: conversationApi.fetch,
-  queue: (batch, env) => handleLiveKitShutdownBatch(batch, env),
+  fetch: (request, env) => handleConversationRequest(request, env, foundationDependencies(env)),
+  queue: (batch, env) => {
+    const dependencies = foundationDependencies(env);
+    return handleLiveKitShutdownBatch(batch, (conversationId) =>
+      stopLiveKitAccess(env, conversationId, dependencies),
+    );
+  },
 } satisfies ExportedHandler<Env, LiveKitShutdownMessage>;

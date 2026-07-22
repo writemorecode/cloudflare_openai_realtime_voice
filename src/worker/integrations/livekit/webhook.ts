@@ -6,7 +6,7 @@
  * verified before the Durable Object can mark an artifact ready.
  */
 import { ParticipantInfo_Kind, TrackSource, TrackType } from "@livekit/protocol";
-import { EgressStatus, WebhookReceiver, type WebhookEvent } from "livekit-server-sdk";
+import { EgressStatus, type WebhookEvent } from "livekit-server-sdk";
 
 import { ALARM_SHUTDOWN_GRACE_MS } from "../../../domain/conversation-deadlines";
 import { TRANSPORT_RECOVERY_WINDOW_MS } from "../../../domain/conversation-deadlines";
@@ -25,6 +25,7 @@ import type {
   LiveKitMediaObservationKind,
 } from "../../../durable-object/conversation-session";
 import { ApiError } from "../../http/api-errors";
+import type { LiveKitWebhookDependencies } from "../../ports/foundation";
 import { err, ok, tryCatch, type Result } from "../../try-catch";
 import { applyIntegrationEventWithRetry } from "./integration-event-retry";
 import { reconcileCompositeReadiness } from "./readiness";
@@ -54,6 +55,7 @@ interface TranslatedWebhookResult {
 export async function handleLiveKitWebhook(
   request: Request,
   env: Env,
+  dependencies: LiveKitWebhookDependencies,
 ): Promise<Result<LiveKitWebhookResult, ApiError>> {
   const validRequest = validateWebhookRequest(request);
   if (!validRequest.ok) return validRequest;
@@ -68,7 +70,7 @@ export async function handleLiveKitWebhook(
 
   const received = await tryCatch(
     () =>
-      new WebhookReceiver(env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET).receive(
+      dependencies.liveKitWebhook.verify(
         body.value,
         request.headers.get("Authorization") ?? undefined,
       ),
@@ -89,7 +91,7 @@ export async function handleLiveKitWebhook(
   const correlatedConversation = conversationIdFromEvent(event);
   if (!correlatedConversation.ok) return correlatedConversation;
   const conversationId = correlatedConversation.value;
-  const stub = env.CONVERSATION_SESSIONS.getByName(conversationId);
+  const stub = dependencies.conversations.get(conversationId);
   const initial = await tryCatch(
     async (): Promise<ConversationState | null> => await stub.getState(),
     webhookOperationFailed,
@@ -101,7 +103,13 @@ export async function handleLiveKitWebhook(
   const correlatedEgress = await validateEgressCorrelation(event, stub);
   if (!correlatedEgress.ok) return correlatedEgress;
 
-  const result = await translateWebhookEvent(event, conversationId, initial.value, stub, env);
+  const result = await translateWebhookEvent(
+    event,
+    conversationId,
+    initial.value,
+    stub,
+    dependencies,
+  );
   if (!result.ok) return result;
   console.log(
     JSON.stringify({
@@ -192,24 +200,24 @@ async function translateWebhookEvent(
   conversationId: string,
   state: ConversationState,
   stub: DurableObjectStub<ConversationSession>,
-  env: Env,
+  dependencies: LiveKitWebhookDependencies,
 ): Promise<Result<TranslatedWebhookResult, ApiError>> {
   const eventType: string = event.event;
   switch (eventType) {
     case "egress_started":
     case "egress_updated":
-      return handleEgressProgress(event, state, stub);
+      return handleEgressProgress(event, state, stub, dependencies);
     case "egress_ended":
-      return handleEgressEnded(event, conversationId, state, stub, env);
+      return handleEgressEnded(event, conversationId, state, stub, dependencies);
     case "room_finished":
-      return handleRoomFinished(event, state, stub);
+      return handleRoomFinished(event, state, stub, dependencies);
     case "room_started":
     case "participant_joined":
     case "participant_left":
     case "participant_connection_aborted":
     case "track_published":
     case "track_unpublished":
-      return handleMediaObservation(event, conversationId, state, stub);
+      return handleMediaObservation(event, conversationId, state, stub, dependencies);
     case "ingress_started":
     case "ingress_ended":
       return ok({ state, outcome: "observation_acknowledged" });
@@ -226,12 +234,13 @@ async function handleEgressProgress(
   event: WebhookEvent,
   state: ConversationState,
   stub: DurableObjectStub<ConversationSession>,
+  dependencies: Pick<LiveKitWebhookDependencies, "clock">,
 ): Promise<Result<TranslatedWebhookResult, ApiError>> {
   const requiredEgress = requireEgressInfo(event);
   if (!requiredEgress.ok) return requiredEgress;
   const egress = requiredEgress.value;
   if (isFailedEgressStatus(egress.status)) {
-    return failArtifact(event, state, stub, egressFailureCode(egress.status));
+    return failArtifact(event, state, stub, egressFailureCode(egress.status), dependencies.clock);
   }
   if (egress.status !== EgressStatus.EGRESS_ACTIVE) {
     return ok({ state, outcome: "egress_observation_acknowledged" });
@@ -246,14 +255,15 @@ async function handleEgressProgress(
   }
   const recordingId = requireEgressId(egress.egressId);
   if (!recordingId.ok) return recordingId;
+  const observedAt = dependencies.clock.now();
   const applied = await applyIntegrationEvent(stub, state, {
     type: ConversationEventType.RecordingStarted,
     eventId: domainEventId(event, "recording-started"),
-    at: value.unixMillis(Date.now()),
+    at: value.unixMillis(observedAt),
     recordingId: value.recordingId(recordingId.value),
   });
   if (!applied.ok) return applied;
-  const reconciled = await reconcileCompositeReadiness(stub, Date.now());
+  const reconciled = await reconcileCompositeReadiness(stub, observedAt);
   if (!reconciled.ok) return reconciled;
   return ok({ state: reconciled.value, outcome: "recording_started" });
 }
@@ -263,6 +273,7 @@ async function handleMediaObservation(
   conversationId: string,
   state: ConversationState,
   stub: DurableObjectStub<ConversationSession>,
+  dependencies: Pick<LiveKitWebhookDependencies, "clock">,
 ): Promise<Result<TranslatedWebhookResult, ApiError>> {
   const evidence = await tryCatch(() => stub.getLiveKitTransportEvidence(), webhookOperationFailed);
   if (!evidence.ok) return evidence;
@@ -306,7 +317,7 @@ async function handleMediaObservation(
     state.tag === ConversationStateTag.Live &&
     state.data.transport.status === TransportStatus.Connected
   ) {
-    const at = Date.now();
+    const at = dependencies.clock.now();
     const interrupted = await applyIntegrationEvent(stub, state, {
       type: ConversationEventType.TransportInterrupted,
       eventId: domainEventId(event, "transport-interrupted"),
@@ -319,7 +330,7 @@ async function handleMediaObservation(
     return ok({ state: interrupted.value, outcome: "transport_interrupted" });
   }
 
-  const reconciled = await reconcileCompositeReadiness(stub, Date.now());
+  const reconciled = await reconcileCompositeReadiness(stub, dependencies.clock.now());
   if (!reconciled.ok) return reconciled;
   return ok({
     state: reconciled.value,
@@ -402,16 +413,22 @@ async function handleEgressEnded(
   conversationId: string,
   state: ConversationState,
   stub: DurableObjectStub<ConversationSession>,
-  env: Env,
+  dependencies: Pick<LiveKitWebhookDependencies, "clock" | "recordings">,
 ): Promise<Result<TranslatedWebhookResult, ApiError>> {
   const requiredEgress = requireEgressInfo(event);
   if (!requiredEgress.ok) return requiredEgress;
   const egress = requiredEgress.value;
   if (isFailedEgressStatus(egress.status)) {
-    return failArtifact(event, state, stub, egressFailureCode(egress.status));
+    return failArtifact(event, state, stub, egressFailureCode(egress.status), dependencies.clock);
   }
   if (egress.status !== EgressStatus.EGRESS_COMPLETE) {
-    return failArtifact(event, state, stub, "artifact.livekit_egress_incomplete");
+    return failArtifact(
+      event,
+      state,
+      stub,
+      "artifact.livekit_egress_incomplete",
+      dependencies.clock,
+    );
   }
 
   const recordingId = requireEgressId(egress.egressId);
@@ -419,7 +436,7 @@ async function handleEgressEnded(
   const objectKey = recordingObjectKey(event, conversationId);
   if (!objectKey.ok) {
     return objectKey.error.code === "invalid_livekit_output"
-      ? failArtifact(event, state, stub, "artifact.livekit_output_invalid")
+      ? failArtifact(event, state, stub, "artifact.livekit_output_invalid", dependencies.clock)
       : objectKey;
   }
   const r2Key = objectKey.value;
@@ -427,24 +444,43 @@ async function handleEgressEnded(
   const provisioning = await tryCatch(() => stub.getLiveKitProvisioning(), webhookOperationFailed);
   if (!provisioning.ok) return provisioning;
   if (provisioning.value === null || provisioning.value.expectedR2Key !== r2Key) {
-    return failArtifact(event, current, stub, "artifact.livekit_output_mismatch");
+    return failArtifact(
+      event,
+      current,
+      stub,
+      "artifact.livekit_output_mismatch",
+      dependencies.clock,
+    );
   }
 
   if (current.data.artifact.status === ArtifactStatus.Pending) {
-    return failArtifact(event, current, stub, "artifact.livekit_recording_not_observed");
+    return failArtifact(
+      event,
+      current,
+      stub,
+      "artifact.livekit_recording_not_observed",
+      dependencies.clock,
+    );
   }
 
   if (current.data.artifact.status === ArtifactStatus.Recording) {
     if (current.tag !== ConversationStateTag.Ending) {
-      return failArtifact(event, current, stub, "artifact.livekit_egress_ended_early");
+      return failArtifact(
+        event,
+        current,
+        stub,
+        "artifact.livekit_egress_ended_early",
+        dependencies.clock,
+      );
     }
+    const uploadStartedAt = dependencies.clock.now();
     const applied = await applyIntegrationEvent(stub, current, {
       type: ConversationEventType.RecordingUploadStarted,
       eventId: domainEventId(event, "recording-upload-started"),
-      at: value.unixMillis(Date.now()),
+      at: value.unixMillis(uploadStartedAt),
       recordingId: value.recordingId(recordingId.value),
       expectedR2Key: value.r2ObjectKey(r2Key),
-      artifactDeadlineAt: value.unixMillis(Date.now() + ARTIFACT_UPLOAD_WINDOW_MS),
+      artifactDeadlineAt: value.unixMillis(uploadStartedAt + ARTIFACT_UPLOAD_WINDOW_MS),
     });
     if (!applied.ok) return applied;
     current = applied.value;
@@ -460,10 +496,16 @@ async function handleEgressEnded(
     current.data.artifact.recordingId !== recordingId.value ||
     current.data.artifact.expectedR2Key !== r2Key
   ) {
-    return failArtifact(event, current, stub, "artifact.livekit_output_mismatch");
+    return failArtifact(
+      event,
+      current,
+      stub,
+      "artifact.livekit_output_mismatch",
+      dependencies.clock,
+    );
   }
 
-  const object = await tryCatch(() => env.RECORDINGS.head(r2Key), webhookOperationFailed);
+  const object = await tryCatch(() => dependencies.recordings.head(r2Key), webhookOperationFailed);
   if (!object.ok) return object;
   if (object.value === null || object.value.size === 0) {
     return err(
@@ -479,7 +521,7 @@ async function handleEgressEnded(
   const verified = await applyIntegrationEvent(stub, current, {
     type: ConversationEventType.RecordingArtifactVerified,
     eventId: domainEventId(event, "recording-artifact-verified"),
-    at: value.unixMillis(Date.now()),
+    at: value.unixMillis(dependencies.clock.now()),
     recordingId: value.recordingId(recordingId.value),
     r2Key: value.r2ObjectKey(r2Key),
     r2Etag: value.r2Etag(object.value.etag),
@@ -508,6 +550,7 @@ async function handleRoomFinished(
   event: WebhookEvent,
   state: ConversationState,
   stub: DurableObjectStub<ConversationSession>,
+  dependencies: Pick<LiveKitWebhookDependencies, "clock">,
 ): Promise<Result<TranslatedWebhookResult, ApiError>> {
   const transport = state.data.transport;
   if (transport.status === TransportStatus.Closed || transport.status === TransportStatus.Failed) {
@@ -519,7 +562,7 @@ async function handleRoomFinished(
   const next = await applyIntegrationEvent(stub, state, {
     type: ConversationEventType.SessionClosed,
     eventId: domainEventId(event, "session-closed"),
-    at: value.unixMillis(Date.now()),
+    at: value.unixMillis(dependencies.clock.now()),
     epoch: transport.epoch,
   });
   if (!next.ok) return next;
@@ -531,6 +574,7 @@ async function failArtifact(
   state: ConversationState,
   stub: DurableObjectStub<ConversationSession>,
   errorCode: string,
+  clock: LiveKitWebhookDependencies["clock"],
 ): Promise<Result<TranslatedWebhookResult, ApiError>> {
   if (
     (state.tag === ConversationStateTag.Ending && state.data.target.kind === "cancel") ||
@@ -543,13 +587,14 @@ async function failArtifact(
     return ok({ state, outcome: "artifact_terminal" });
   }
   const recordingId = event.egressInfo?.egressId || null;
+  const observedAt = clock.now();
   const next = await applyIntegrationEvent(stub, state, {
     type: ConversationEventType.ArtifactFailed,
     eventId: domainEventId(event, "artifact-failed"),
-    at: value.unixMillis(Date.now()),
+    at: value.unixMillis(observedAt),
     recordingId: recordingId === null ? null : value.recordingId(recordingId),
     errorCode: value.errorCode(errorCode),
-    endingDeadlineAt: value.unixMillis(Date.now() + ALARM_SHUTDOWN_GRACE_MS),
+    endingDeadlineAt: value.unixMillis(observedAt + ALARM_SHUTDOWN_GRACE_MS),
   });
   if (!next.ok) return next;
   return ok({ state: next.value, outcome: "artifact_failed" });

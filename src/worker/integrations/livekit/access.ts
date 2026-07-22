@@ -1,34 +1,24 @@
 /** Provisions room-scoped LiveKit access, dispatch, and recording resources for a conversation. */
-import {
-  AccessToken,
-  AgentDispatchClient,
-  EgressClient,
-  EncodedFileOutput,
-  EncodedFileType,
-  EgressStatus,
-  RoomServiceClient,
-  S3Upload,
-  TrackSource,
-  type AgentDispatch,
-  type EgressInfo,
-} from "livekit-server-sdk";
-
 import { ConversationStateTag, TransportStatus } from "../../../domain/conversation-state-machine";
 import type {
   BeginLiveKitProvisioningResult,
   BeginLiveKitShutdownResult,
+  ConversationSession,
   LiveKitProvisioningReady,
 } from "../../../durable-object/conversation-session";
 import { ApiError } from "../../http/api-errors";
+import type {
+  LiveKitAccessDependencies,
+  LiveKitAccessPort,
+  LiveKitShutdownDependencies,
+  LiveKitShutdownPort,
+} from "../../ports/foundation";
 import { err, ok, tryCatch, type Result } from "../../try-catch";
 
 export const LIVEKIT_AGENT_NAME = "oral-exam-agent";
 export const LIVEKIT_ROOM_PREFIX = "conversation-";
-const ACCESS_TOKEN_TTL_SECONDS = 10 * 60;
 const PROVISIONING_LEASE_MS = 15_000;
 const SHUTDOWN_LEASE_MS = 15_000;
-const ROOM_EMPTY_TIMEOUT_SECONDS = 5 * 60;
-const ROOM_DEPARTURE_TIMEOUT_SECONDS = 30;
 
 export interface LiveKitAccessResponse {
   readonly roomName: string;
@@ -42,39 +32,18 @@ interface ProvisionedResources {
   readonly expectedR2Key: string;
 }
 
-export interface LiveKitAccessServices {
-  roomExists(roomName: string): Promise<boolean>;
-  createRoom(roomName: string, metadata: string): Promise<void>;
-  listDispatches(roomName: string): Promise<readonly AgentDispatch[]>;
-  createDispatch(roomName: string, metadata: string): Promise<AgentDispatch>;
-  listActiveEgress(roomName: string): Promise<readonly EgressInfo[]>;
-  startEgress(roomName: string, objectKey: string): Promise<EgressInfo>;
-  mintParticipantToken(roomName: string, identity: string): Promise<string>;
-}
-
-export interface LiveKitShutdownServices {
-  getEgress(egressId: string): Promise<EgressInfo | undefined>;
-  stopEgress(egressId: string): Promise<void>;
-  getDispatch(dispatchId: string, roomName: string): Promise<AgentDispatch | undefined>;
-  deleteDispatch(dispatchId: string, roomName: string): Promise<void>;
-  roomExists(roomName: string): Promise<boolean>;
-  deleteRoom(roomName: string): Promise<void>;
-}
+export type LiveKitAccessServices = LiveKitAccessPort;
+export type LiveKitShutdownServices = LiveKitShutdownPort;
 
 export async function createLiveKitAccess(
   env: Env,
   conversationId: string,
-  services?: LiveKitAccessServices,
+  dependencies: LiveKitAccessDependencies,
 ): Promise<Result<LiveKitAccessResponse, ApiError>> {
   const configured = validateLiveKitAccessConfiguration(env);
   if (!configured.ok) return configured;
-  const availableServices = await tryCatch(
-    () => services ?? liveKitAccessServices(env),
-    liveKitProvisioningFailed,
-  );
-  if (!availableServices.ok) return availableServices;
 
-  const stub = env.CONVERSATION_SESSIONS.getByName(conversationId);
+  const stub = dependencies.conversations.get(conversationId);
   const state = await tryCatch(
     async (): Promise<Awaited<ReturnType<typeof stub.getState>>> => await stub.getState(),
     liveKitAccessOperationFailed,
@@ -94,8 +63,8 @@ export async function createLiveKitAccess(
 
   const roomName = `${LIVEKIT_ROOM_PREFIX}${conversationId}`;
   const transportEpoch = state.value.data.transport.epoch;
-  const leaseId = crypto.randomUUID();
-  const now = Date.now();
+  const leaseId = dependencies.ids.randomUuid();
+  const now = dependencies.clock.now();
   const claim = await tryCatch(
     async (): Promise<BeginLiveKitProvisioningResult> =>
       await stub.beginLiveKitProvisioning({
@@ -124,7 +93,7 @@ export async function createLiveKitAccess(
     );
   } else {
     const resources = await provisionResources(
-      availableServices.value,
+      dependencies.liveKit,
       conversationId,
       roomName,
       transportEpoch,
@@ -159,10 +128,7 @@ export async function createLiveKitAccess(
 
   const participantToken = await tryCatch(
     () =>
-      availableServices.value.mintParticipantToken(
-        provisioning.roomName,
-        `browser-${conversationId}`,
-      ),
+      dependencies.liveKit.mintParticipantToken(provisioning.roomName, `browser-${conversationId}`),
     liveKitProvisioningFailed,
   );
   if (!participantToken.ok) return participantToken;
@@ -176,19 +142,14 @@ export async function createLiveKitAccess(
 export async function stopLiveKitAccess(
   env: Env,
   conversationId: string,
-  services?: LiveKitShutdownServices,
+  dependencies: LiveKitShutdownDependencies,
 ): Promise<Result<"stopped" | "already_stopped", ApiError>> {
   const configured = validateLiveKitAccessConfiguration(env);
   if (!configured.ok) return configured;
-  const availableServices = await tryCatch(
-    () => services ?? liveKitShutdownServices(env),
-    liveKitShutdownFailed,
-  );
-  if (!availableServices.ok) return availableServices;
 
-  const stub = env.CONVERSATION_SESSIONS.getByName(conversationId);
-  const leaseId = crypto.randomUUID();
-  const now = Date.now();
+  const stub = dependencies.conversations.get(conversationId);
+  const leaseId = dependencies.ids.randomUuid();
+  const now = dependencies.clock.now();
   const claim = await tryCatch(
     async (): Promise<BeginLiveKitShutdownResult> =>
       await stub.beginLiveKitShutdown({
@@ -222,19 +183,15 @@ export async function stopLiveKitAccess(
   const provisioning = claim.value.provisioning;
   const stopped = await tryCatch(async () => {
     const { egressId, dispatchId, roomName } = provisioning;
-    const egress = await availableServices.value.getEgress(egressId);
-    if (
-      egress !== undefined &&
-      (egress.status === EgressStatus.EGRESS_STARTING ||
-        egress.status === EgressStatus.EGRESS_ACTIVE)
-    ) {
-      await availableServices.value.stopEgress(egressId);
+    const egress = await dependencies.liveKit.getEgress(egressId);
+    if (egress?.active === true) {
+      await dependencies.liveKit.stopEgress(egressId);
     }
-    if ((await availableServices.value.getDispatch(dispatchId, roomName)) !== undefined) {
-      await availableServices.value.deleteDispatch(dispatchId, roomName);
+    if ((await dependencies.liveKit.getDispatch(dispatchId, roomName)) !== undefined) {
+      await dependencies.liveKit.deleteDispatch(dispatchId, roomName);
     }
-    if (await availableServices.value.roomExists(roomName)) {
-      await availableServices.value.deleteRoom(roomName);
+    if (await dependencies.liveKit.roomExists(roomName)) {
+      await dependencies.liveKit.deleteRoom(roomName);
     }
   }, liveKitShutdownFailed);
   if (!stopped.ok) {
@@ -243,7 +200,7 @@ export async function stopLiveKitAccess(
   }
 
   const completed = await tryCatch(
-    () => stub.completeLiveKitShutdown({ leaseId, stoppedAt: Date.now() }),
+    () => stub.completeLiveKitShutdown({ leaseId, stoppedAt: dependencies.clock.now() }),
     liveKitAccessOperationFailed,
   );
   if (!completed.ok) return abandonShutdown(stub, leaseId, completed.error);
@@ -258,7 +215,7 @@ export async function stopLiveKitAccess(
 }
 
 async function provisionResources(
-  services: LiveKitAccessServices,
+  services: LiveKitAccessPort,
   conversationId: string,
   roomName: string,
   transportEpoch: number,
@@ -330,106 +287,6 @@ async function provisionResources(
   });
 }
 
-function liveKitAccessServices(env: Env): LiveKitAccessServices {
-  const roomClient = new RoomServiceClient(
-    env.LIVEKIT_URL,
-    env.LIVEKIT_API_KEY,
-    env.LIVEKIT_API_SECRET,
-  );
-  const dispatchClient = new AgentDispatchClient(
-    env.LIVEKIT_URL,
-    env.LIVEKIT_API_KEY,
-    env.LIVEKIT_API_SECRET,
-  );
-  const egressClient = new EgressClient(
-    env.LIVEKIT_URL,
-    env.LIVEKIT_API_KEY,
-    env.LIVEKIT_API_SECRET,
-  );
-  return {
-    roomExists: async (roomName) => (await roomClient.listRooms([roomName])).length === 1,
-    createRoom: async (roomName, metadata) => {
-      await roomClient.createRoom({
-        name: roomName,
-        metadata,
-        emptyTimeout: ROOM_EMPTY_TIMEOUT_SECONDS,
-        departureTimeout: ROOM_DEPARTURE_TIMEOUT_SECONDS,
-        maxParticipants: 3,
-      });
-    },
-    listDispatches: async (roomName) => dispatchClient.listDispatch(roomName),
-    createDispatch: async (roomName, metadata) =>
-      dispatchClient.createDispatch(roomName, LIVEKIT_AGENT_NAME, { metadata }),
-    listActiveEgress: async (roomName) => egressClient.listEgress({ roomName, active: true }),
-    startEgress: async (roomName, objectKey) =>
-      egressClient.startRoomCompositeEgress(
-        roomName,
-        new EncodedFileOutput({
-          fileType: EncodedFileType.OGG,
-          filepath: objectKey,
-          output: {
-            case: "s3",
-            value: new S3Upload({
-              accessKey: env.R2_S3_ACCESS_KEY_ID,
-              secret: env.R2_S3_SECRET_ACCESS_KEY,
-              endpoint: env.R2_S3_ENDPOINT,
-              bucket: env.R2_BUCKET_NAME,
-              forcePathStyle: true,
-            }),
-          },
-        }),
-        { audioOnly: true },
-      ),
-    mintParticipantToken: async (roomName, identity) => {
-      const token = new AccessToken(env.LIVEKIT_API_KEY, env.LIVEKIT_API_SECRET, {
-        identity,
-        ttl: ACCESS_TOKEN_TTL_SECONDS,
-        metadata: JSON.stringify({ role: "candidate" }),
-      });
-      token.addGrant({
-        roomJoin: true,
-        room: roomName,
-        canPublish: true,
-        canPublishSources: [TrackSource.MICROPHONE],
-        canPublishData: false,
-        canSubscribe: true,
-        canUpdateOwnMetadata: false,
-      });
-      return token.toJwt();
-    },
-  };
-}
-
-function liveKitShutdownServices(env: Env): LiveKitShutdownServices {
-  const roomClient = new RoomServiceClient(
-    env.LIVEKIT_URL,
-    env.LIVEKIT_API_KEY,
-    env.LIVEKIT_API_SECRET,
-  );
-  const dispatchClient = new AgentDispatchClient(
-    env.LIVEKIT_URL,
-    env.LIVEKIT_API_KEY,
-    env.LIVEKIT_API_SECRET,
-  );
-  const egressClient = new EgressClient(
-    env.LIVEKIT_URL,
-    env.LIVEKIT_API_KEY,
-    env.LIVEKIT_API_SECRET,
-  );
-  return {
-    getEgress: async (egressId) => (await egressClient.listEgress({ egressId }))[0],
-    stopEgress: async (egressId) => {
-      await egressClient.stopEgress(egressId);
-    },
-    getDispatch: async (dispatchId, roomName) =>
-      (await dispatchClient.listDispatch(roomName)).find((dispatch) => dispatch.id === dispatchId),
-    deleteDispatch: async (dispatchId, roomName) =>
-      dispatchClient.deleteDispatch(dispatchId, roomName),
-    roomExists: async (roomName) => (await roomClient.listRooms([roomName])).length === 1,
-    deleteRoom: async (roomName) => roomClient.deleteRoom(roomName),
-  };
-}
-
 function validateLiveKitAccessConfiguration(env: Env): Result<void, ApiError> {
   const values = [
     env.LIVEKIT_URL,
@@ -454,7 +311,7 @@ function validateLiveKitAccessConfiguration(env: Env): Result<void, ApiError> {
 }
 
 async function abandonProvisioning(
-  stub: ReturnType<Env["CONVERSATION_SESSIONS"]["getByName"]>,
+  stub: DurableObjectStub<ConversationSession>,
   leaseId: string,
   error: ApiError,
 ): Promise<Result<never, ApiError>> {
@@ -466,7 +323,7 @@ async function abandonProvisioning(
 }
 
 async function abandonShutdown(
-  stub: ReturnType<Env["CONVERSATION_SESSIONS"]["getByName"]>,
+  stub: DurableObjectStub<ConversationSession>,
   leaseId: string,
   error: ApiError,
 ): Promise<Result<never, ApiError>> {

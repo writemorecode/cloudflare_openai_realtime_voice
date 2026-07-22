@@ -1,5 +1,4 @@
 import { createExecutionContext, createMessageBatch, getQueueResult } from "cloudflare:test";
-import { env } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../src/worker/http/api-errors";
@@ -31,10 +30,10 @@ describe("LiveKit shutdown queue", () => {
     const messages = batch(message());
     const stop = vi.fn().mockResolvedValue(ok("stopped"));
 
-    await handleLiveKitShutdownBatch(messages, env, stop);
+    await handleLiveKitShutdownBatch(messages, stop);
     const result = await getQueueResult(messages, createExecutionContext());
 
-    expect(stop).toHaveBeenCalledWith(env, CONVERSATION_ID);
+    expect(stop).toHaveBeenCalledWith(CONVERSATION_ID);
     expect(result.explicitAcks).toHaveLength(1);
     expect(result.retryMessages).toHaveLength(0);
   });
@@ -47,7 +46,7 @@ describe("LiveKit shutdown queue", () => {
         err(new ApiError(502, "livekit_shutdown_failed", "Temporary LiveKit failure.")),
       );
 
-    await handleLiveKitShutdownBatch(messages, env, stop);
+    await handleLiveKitShutdownBatch(messages, stop);
     const result = await getQueueResult(messages, createExecutionContext());
 
     expect(result.explicitAcks).toHaveLength(0);
@@ -62,7 +61,7 @@ describe("LiveKit shutdown queue", () => {
         err(new ApiError(409, "livekit_not_provisioned", "LiveKit resources cannot be stopped.")),
       );
 
-    await handleLiveKitShutdownBatch(messages, env, stop);
+    await handleLiveKitShutdownBatch(messages, stop);
     const result = await getQueueResult(messages, createExecutionContext());
 
     expect(result.explicitAcks).toHaveLength(1);
@@ -73,7 +72,7 @@ describe("LiveKit shutdown queue", () => {
     const messages = batch({ ...message(), conversationId: "not-a-conversation-id" });
     const stop = vi.fn();
 
-    await handleLiveKitShutdownBatch(messages, env, stop);
+    await handleLiveKitShutdownBatch(messages, stop);
     const result = await getQueueResult(messages, createExecutionContext());
 
     expect(stop).not.toHaveBeenCalled();

@@ -19,6 +19,7 @@ import type {
 } from "../../../durable-object/conversation-session";
 import { ApiError } from "../../http/api-errors";
 import { authenticateBearer } from "../../http/api-security";
+import type { AgentEventDependencies } from "../../ports/foundation";
 import { err, ok, tryCatch, type Result } from "../../try-catch";
 import { applyIntegrationEventWithRetry } from "./integration-event-retry";
 import { reconcileCompositeReadiness } from "./readiness";
@@ -58,6 +59,7 @@ export interface AgentEventResult {
 export async function handleAgentEvent(
   request: Request,
   env: Env,
+  dependencies: AgentEventDependencies,
 ): Promise<Result<AgentEventResult, ApiError>> {
   const authenticated = authenticateBearer(request, env.AGENT_CALLBACK_TOKEN);
   if (!authenticated.ok) return authenticated;
@@ -94,7 +96,7 @@ export async function handleAgentEvent(
     );
   }
 
-  const stub = env.CONVERSATION_SESSIONS.getByName(event.conversationId);
+  const stub = dependencies.conversations.get(event.conversationId);
   const initial = await tryCatch(
     async (): Promise<ConversationState | null> => await stub.getState(),
     agentOperationFailed,
@@ -146,7 +148,7 @@ export async function handleAgentEvent(
     if (!applied.ok) return applied;
     state = applied.value;
   }
-  const readiness = await reconcileCompositeReadiness(stub, Date.now());
+  const readiness = await reconcileCompositeReadiness(stub, dependencies.clock.now());
   if (!readiness.ok) return readiness;
   state = readiness.value;
   console.log(

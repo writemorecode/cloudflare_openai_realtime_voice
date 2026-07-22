@@ -110,6 +110,8 @@ package.
 - Verifies completed R2 objects rather than trusting an egress notification alone.
 - Consumes bounded, retryable time-limit shutdown jobs and invokes the idempotent LiveKit teardown
   adapter outside the Durable Object transaction.
+- Receives time, identifiers, Durable Object lookup, R2 lookup, webhook verification, and LiveKit
+  control through explicit ports assembled by the Worker entrypoint.
 - Does not proxy, decode, resample, or persist live audio.
 
 ### Conversation Durable Object
@@ -292,10 +294,13 @@ src/durable-object/conversation-session.ts
 src/shared/livekit-shutdown.ts            versioned Queue message contract
 packages/conversation-contract/           sanitized public state and control protocol
 packages/conversation-client/             reusable browser control and LiveKit client
-src/worker/index.ts                       Wrangler entrypoint
+src/worker/index.ts                       Wrangler entrypoint and production composition root
+src/worker/ports/foundation.ts            interfaces for all foundation external effects
+src/worker/adapters/                      Cloudflare, R2, Web Crypto, and LiveKit implementations
+src/worker/foundation-dependencies.ts     production adapter assembly
 src/worker/http/                          stateless HTTP API, security, and public DTOs
 src/worker/integrations/livekit/webhook.ts
-                                         signature verification and event translation
+                                         verified event translation
 src/worker/integrations/livekit/shutdown-queue.ts
                                          bounded retry and provider teardown consumer
 agent/                                   separately deployable LiveKit Agent application
@@ -304,10 +309,16 @@ agent/                                   separately deployable LiveKit Agent app
 Provider SDK types must stop at this boundary. The core reducer, public state DTO, and
 `conversation.v1` protocol continue to use only the lifecycle, transport, and artifact unions.
 Room creation, dispatch, egress, and token minting live beside the webhook under
-`src/worker/integrations/livekit/` and are exposed by the authenticated `livekit-access` route. A
-short Durable Object provisioning lease serializes concurrent access attempts and stores only the
-internal dispatch, egress, and expected-object correlations. Provider calls do not run inside the
-Durable Object or the provider-neutral start route.
+`src/worker/adapters/livekit.ts` and are exposed through narrow ports to the authenticated
+`livekit-access` route. A short Durable Object provisioning lease serializes concurrent access
+attempts and stores only the internal dispatch, egress, and expected-object correlations. Provider
+calls do not run inside the Durable Object or the provider-neutral start route.
+
+The same port boundary is the primary test seam. Foundation handlers accept dependency objects
+instead of constructing SDK clients or reading clocks, random IDs, Durable Object namespaces, and
+R2 buckets directly. Production adapters are assembled in `src/worker/index.ts`; tests inject fixed
+clocks and IDs plus small structural fakes. This keeps orchestration deterministic without changing
+the Durable Object's authoritative state or weakening provider verification.
 
 The provisioning lease establishes the expected room name and transport epoch before any provider
 calls begin. Matching agent lifecycle and LiveKit media observations are therefore latched while

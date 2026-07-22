@@ -24,6 +24,7 @@ import {
   type LiveKitAccessResponse,
 } from "../integrations/livekit/access";
 import { err, ok, tryCatch, type Result } from "../try-catch";
+import type { FoundationDependencies } from "../ports/foundation";
 
 const STARTING_WINDOW_MS = 60_000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -75,56 +76,75 @@ type ApiResult<T> = Result<T, ApiError>;
 
 export type StartConversationResponse = ConversationStateDto;
 
-export const conversationApi = {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    const startedAt = Date.now();
-    const requestId = crypto.randomUUID();
-    const context: { route: MatchedRoute | null; origin: string | null } = {
-      route: null,
-      origin: null,
-    };
-    const processed = await tryCatch(async (): Promise<ApiResult<RouteResult>> => {
-      const configured = validateConfiguration(env);
-      if (!configured.ok) return configured;
-      const validOrigin = validateOrigin(request, env.ALLOWED_ORIGIN);
-      if (!validOrigin.ok) return validOrigin;
-      context.origin = validOrigin.value;
-      const matchedRoute = matchRoute(new URL(request.url).pathname);
-      if (!matchedRoute.ok) return matchedRoute;
-      context.route = matchedRoute.value;
-      return processMatchedRequest(request, env, context.route, context.origin);
-    }, httpOperationFailed);
-    const handled = processed.ok ? processed.value : processed;
-    const result = handled.ok
-      ? handled.value
-      : errorRouteResult(handled.error, requestId, context.route?.conversationId ?? null);
+export async function handleConversationRequest(
+  request: Request,
+  env: Env,
+  dependencies: FoundationDependencies,
+): Promise<Response> {
+  const startedAt = dependencies.clock.now();
+  const requestId = dependencies.ids.randomUuid();
+  const context: { route: MatchedRoute | null; origin: string | null } = {
+    route: null,
+    origin: null,
+  };
+  const processed = await tryCatch(async (): Promise<ApiResult<RouteResult>> => {
+    const configured = validateConfiguration(env);
+    if (!configured.ok) return configured;
+    const validOrigin = validateOrigin(request, env.ALLOWED_ORIGIN);
+    if (!validOrigin.ok) return validOrigin;
+    context.origin = validOrigin.value;
+    const matchedRoute = matchRoute(new URL(request.url).pathname);
+    if (!matchedRoute.ok) return matchedRoute;
+    context.route = matchedRoute.value;
+    return processMatchedRequest(request, env, context.route, context.origin, dependencies);
+  }, httpOperationFailed);
+  const handled = processed.ok ? processed.value : processed;
+  const result = handled.ok
+    ? handled.value
+    : errorRouteResult(handled.error, requestId, context.route?.conversationId ?? null);
 
-    if (!handled.ok && handled.error.status >= 500 && handled.error.cause !== undefined) {
-      const cause = handled.error.cause;
-      console.error(
-        JSON.stringify({
-          kind: "conversation_http_error",
-          requestId,
-          error: cause instanceof Error ? cause.name : "unknown_error",
-        }),
-      );
-    }
+  if (!handled.ok && handled.error.status >= 500 && handled.error.cause !== undefined) {
+    const cause = handled.error.cause;
+    console.error(
+      JSON.stringify({
+        kind: "conversation_http_error",
+        requestId,
+        error: cause instanceof Error ? cause.name : "unknown_error",
+      }),
+    );
+  }
 
-    if (result.response.status === 101) {
-      emitRequestTelemetry(request, context.route, result, 101, startedAt, requestId);
-      return result.response;
-    }
-    const response = withRequestMetadata(withCors(result.response, context.origin), requestId);
-    emitRequestTelemetry(request, context.route, result, response.status, startedAt, requestId);
-    return response;
-  },
-} satisfies ExportedHandler<Env>;
+  if (result.response.status === 101) {
+    emitRequestTelemetry(
+      request,
+      context.route,
+      result,
+      101,
+      startedAt,
+      requestId,
+      dependencies.clock,
+    );
+    return result.response;
+  }
+  const response = withRequestMetadata(withCors(result.response, context.origin), requestId);
+  emitRequestTelemetry(
+    request,
+    context.route,
+    result,
+    response.status,
+    startedAt,
+    requestId,
+    dependencies.clock,
+  );
+  return response;
+}
 
 async function processMatchedRequest(
   request: Request,
   env: Env,
   route: MatchedRoute | null,
   origin: string | null,
+  dependencies: FoundationDependencies,
 ): Promise<ApiResult<RouteResult>> {
   if (route === null) {
     return err(new ApiError(404, "route_not_found", "The requested route does not exist."));
@@ -168,7 +188,7 @@ async function processMatchedRequest(
     const authenticated = await authenticateBrowserSession(request, env.AUTH_DB);
     if (!authenticated.ok) return authenticated;
   }
-  return dispatch(request, env, route);
+  return dispatch(request, env, route, dependencies);
 }
 
 function errorRouteResult(
@@ -199,6 +219,7 @@ async function dispatch(
   request: Request,
   env: Env,
   route: MatchedRoute,
+  dependencies: FoundationDependencies,
 ): Promise<ApiResult<RouteResult>> {
   switch (route.name) {
     case "login": {
@@ -220,26 +241,30 @@ async function dispatch(
     case "create_conversation": {
       const empty = await validateNoBody(request);
       if (!empty.ok) return empty;
-      return createConversation(request, env);
+      return createConversation(request, env, dependencies);
     }
     case "start_conversation": {
       const empty = await validateNoBody(request);
       if (!empty.ok) return empty;
       const conversationId = requireConversationId(route);
-      return conversationId.ok ? startConversation(env, conversationId.value) : conversationId;
+      return conversationId.ok
+        ? startConversation(conversationId.value, dependencies)
+        : conversationId;
     }
     case "get_state": {
       const empty = await validateNoBody(request);
       if (!empty.ok) return empty;
       const conversationId = requireConversationId(route);
-      return conversationId.ok ? getConversationState(env, conversationId.value) : conversationId;
+      return conversationId.ok
+        ? getConversationState(conversationId.value, dependencies)
+        : conversationId;
     }
     case "connect": {
       const empty = await validateNoBody(request);
       if (!empty.ok) return empty;
       const conversationId = requireConversationId(route);
       return conversationId.ok
-        ? connectConversation(request, env, conversationId.value)
+        ? connectConversation(request, conversationId.value, dependencies)
         : conversationId;
     }
     case "livekit_access": {
@@ -248,23 +273,24 @@ async function dispatch(
       const conversationId = requireConversationId(route);
       if (!conversationId.ok) return conversationId;
       return request.method === "DELETE"
-        ? releaseLiveKitAccess(env, conversationId.value)
-        : provideLiveKitAccess(env, conversationId.value);
+        ? releaseLiveKitAccess(env, conversationId.value, dependencies)
+        : provideLiveKitAccess(env, conversationId.value, dependencies);
     }
     case "livekit_webhook":
-      return receiveLiveKitWebhook(request, env);
+      return receiveLiveKitWebhook(request, env, dependencies);
     case "livekit_agent_event":
-      return receiveLiveKitAgentEvent(request, env);
+      return receiveLiveKitAgentEvent(request, env, dependencies);
   }
 }
 
 async function releaseLiveKitAccess(
   env: Env,
   conversationId: string,
+  dependencies: FoundationDependencies,
 ): Promise<ApiResult<RouteResult>> {
-  const outcome = await stopLiveKitAccess(env, conversationId);
+  const outcome = await stopLiveKitAccess(env, conversationId, dependencies);
   if (!outcome.ok) return outcome;
-  const state = await conversationState(env, conversationId);
+  const state = await conversationState(conversationId, dependencies);
   if (!state.ok) return state;
   if (state.value === null) {
     return err(new ApiError(404, "conversation_not_found", "Conversation not found."));
@@ -280,8 +306,9 @@ async function releaseLiveKitAccess(
 async function receiveLiveKitAgentEvent(
   request: Request,
   env: Env,
+  dependencies: FoundationDependencies,
 ): Promise<ApiResult<RouteResult>> {
-  const handled = await handleAgentEvent(request, env);
+  const handled = await handleAgentEvent(request, env, dependencies);
   if (!handled.ok) return handled;
   return ok({
     response: new Response(null, { status: 204 }),
@@ -294,10 +321,11 @@ async function receiveLiveKitAgentEvent(
 async function provideLiveKitAccess(
   env: Env,
   conversationId: string,
+  dependencies: FoundationDependencies,
 ): Promise<ApiResult<RouteResult>> {
-  const access = await createLiveKitAccess(env, conversationId);
+  const access = await createLiveKitAccess(env, conversationId, dependencies);
   if (!access.ok) return access;
-  const state = await conversationState(env, conversationId);
+  const state = await conversationState(conversationId, dependencies);
   if (!state.ok) return state;
   if (state.value === null) {
     return err(new ApiError(404, "conversation_not_found", "Conversation not found."));
@@ -312,8 +340,12 @@ async function provideLiveKitAccess(
   });
 }
 
-async function receiveLiveKitWebhook(request: Request, env: Env): Promise<ApiResult<RouteResult>> {
-  const handled = await handleLiveKitWebhook(request, env);
+async function receiveLiveKitWebhook(
+  request: Request,
+  env: Env,
+  dependencies: FoundationDependencies,
+): Promise<ApiResult<RouteResult>> {
+  const handled = await handleLiveKitWebhook(request, env, dependencies);
   if (!handled.ok) return handled;
   const state = toConversationStateDto(handled.value.state);
   return ok({
@@ -326,8 +358,8 @@ async function receiveLiveKitWebhook(request: Request, env: Env): Promise<ApiRes
 
 async function connectConversation(
   request: Request,
-  env: Env,
   conversationId: string,
+  dependencies: FoundationDependencies,
 ): Promise<ApiResult<RouteResult>> {
   if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
     return err(
@@ -344,9 +376,9 @@ async function connectConversation(
   headers.delete("Cookie");
   const response = await tryCatch(
     () =>
-      env.CONVERSATION_SESSIONS.getByName(conversationId).fetch(
-        new Request(request.url, { method: "GET", headers }),
-      ),
+      dependencies.conversations
+        .get(conversationId)
+        .fetch(new Request(request.url, { method: "GET", headers })),
     httpOperationFailed,
   );
   if (!response.ok) return response;
@@ -364,7 +396,11 @@ async function connectConversation(
   });
 }
 
-async function createConversation(request: Request, env: Env): Promise<ApiResult<RouteResult>> {
+async function createConversation(
+  request: Request,
+  env: Env,
+  dependencies: FoundationDependencies,
+): Promise<ApiResult<RouteResult>> {
   const idempotencyKey = validateIdempotencyKey(request.headers.get("Idempotency-Key"));
   if (!idempotencyKey.ok) return idempotencyKey;
   const derivedConversationId = await deriveConversationId(
@@ -373,12 +409,12 @@ async function createConversation(request: Request, env: Env): Promise<ApiResult
   );
   if (!derivedConversationId.ok) return derivedConversationId;
   const conversationId = derivedConversationId.value;
-  const stub = env.CONVERSATION_SESSIONS.getByName(conversationId);
+  const stub = dependencies.conversations.get(conversationId);
   const initialized = await tryCatch(
     async (): Promise<InitializeResult> =>
       await stub.initialize(
         value.conversationSessionId(conversationId),
-        value.unixMillis(Date.now()),
+        value.unixMillis(dependencies.clock.now()),
       ),
     httpOperationFailed,
   );
@@ -400,11 +436,11 @@ async function createConversation(request: Request, env: Env): Promise<ApiResult
 }
 
 async function startConversation(
-  env: Env,
   conversationId: string,
+  dependencies: FoundationDependencies,
 ): Promise<ApiResult<RouteResult>> {
-  const stub = env.CONVERSATION_SESSIONS.getByName(conversationId);
-  const current = await conversationState(env, conversationId);
+  const stub = dependencies.conversations.get(conversationId);
+  const current = await conversationState(conversationId, dependencies);
   if (!current.ok) return current;
   if (current.value === null) {
     return err(new ApiError(404, "conversation_not_found", "Conversation not found."));
@@ -418,7 +454,7 @@ async function startConversation(
     return err(new ApiError(409, "conversation_not_startable", "Conversation is not startable."));
   }
 
-  const now = Date.now();
+  const now = dependencies.clock.now();
   const applied = await tryCatch(
     async (): Promise<ApplyEventResult> =>
       await stub.applyEvent({
@@ -442,7 +478,7 @@ async function startConversation(
   }
 
   // A concurrent command may have won after the initial state read.
-  const latest = await conversationState(env, conversationId);
+  const latest = await conversationState(conversationId, dependencies);
   if (!latest.ok) return latest;
   if (latest.value?.tag === ConversationStateTag.Starting) {
     return ok(pendingStartResult(latest.value, "already_starting"));
@@ -467,10 +503,10 @@ function pendingStartResult(
 }
 
 async function getConversationState(
-  env: Env,
   conversationId: string,
+  dependencies: FoundationDependencies,
 ): Promise<ApiResult<RouteResult>> {
-  const state = await conversationState(env, conversationId);
+  const state = await conversationState(conversationId, dependencies);
   if (!state.ok) return state;
   if (state.value === null) {
     return err(new ApiError(404, "conversation_not_found", "Conversation not found."));
@@ -609,10 +645,10 @@ function validateSmallHeaders(request: Request): ApiResult<void> {
 }
 
 async function conversationState(
-  env: Env,
   conversationId: string,
+  dependencies: Pick<FoundationDependencies, "conversations">,
 ): Promise<ApiResult<ConversationState | null>> {
-  const stub = env.CONVERSATION_SESSIONS.getByName(conversationId);
+  const stub = dependencies.conversations.get(conversationId);
   return tryCatch(
     async (): Promise<ConversationState | null> => await stub.getState(),
     httpOperationFailed,
@@ -640,6 +676,7 @@ function emitRequestTelemetry(
   status: number,
   startedAt: number,
   requestId: string,
+  clock: FoundationDependencies["clock"],
 ): void {
   const record: RequestTelemetry = {
     kind: "conversation_http_request",
@@ -648,7 +685,7 @@ function emitRequestTelemetry(
     method: request.method,
     route: route?.name ?? "unknown",
     status,
-    durationMs: Date.now() - startedAt,
+    durationMs: clock.now() - startedAt,
     conversationId: result.conversationId,
     resultingState: result.state?.state ?? null,
     resultingRevision: result.state?.revision ?? null,

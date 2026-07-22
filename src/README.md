@@ -9,9 +9,11 @@ src/
 ├── durable-object/          Stateful ConversationSession runtime
 ├── shared/                  Internal cross-runtime messages
 └── worker/
-    ├── index.ts             Wrangler entrypoint and Durable Object export
+    ├── index.ts             Wrangler entrypoint and production composition root
+    ├── ports/               External-effect interfaces for the foundation
+    ├── adapters/            Cloudflare, Web Crypto, R2, and LiveKit implementations
     ├── http/                Stateless request routing, auth, CORS, and DTOs
-    └── integrations/livekit LiveKit SDK boundary and webhook translation
+    └── integrations/livekit Provider orchestration and event translation
 ```
 
 Dependency direction is intentional:
@@ -33,11 +35,11 @@ packages/conversation-client/    HTTP, control-WebSocket, and LiveKit browser or
 web/                             Product UI; imports only conversation-client
 ```
 
-The domain must not import Cloudflare, LiveKit, OpenAI, HTTP, storage, or protocol code. LiveKit SDK
-types must remain in `worker/integrations/livekit/`. The Durable Object may depend on domain and
-the public contract, but must not provision rooms, call OpenAI, or handle audio. The application
-must not import `src/` or the contract package directly; it consumes the foundation through the
-conversation client.
+The domain must not import Cloudflare, LiveKit, OpenAI, HTTP, storage, or protocol code. Provider
+SDK construction must remain in `worker/adapters/`; integration handlers depend on the interfaces
+in `worker/ports/`. The Durable Object may depend on domain and the public contract, but must not
+provision rooms, call OpenAI, or handle audio. The application must not import `src/` or the
+contract package directly; it consumes the foundation through the conversation client.
 
 The LiveKit Agent is intentionally absent from this tree. It is a separate Node.js application in
 [`../agent/`](../agent/README.md) and a separate deployment.

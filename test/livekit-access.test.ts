@@ -1,11 +1,4 @@
-import {
-  AccessToken,
-  AgentDispatch,
-  EgressInfo,
-  EgressStatus,
-  TrackSource,
-  TokenVerifier,
-} from "livekit-server-sdk";
+import { AccessToken, TrackSource, TokenVerifier } from "livekit-server-sdk";
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it, vi } from "vitest";
 
@@ -15,6 +8,13 @@ import {
   type LiveKitAccessServices,
   type LiveKitShutdownServices,
 } from "../src/worker/integrations/livekit/access";
+import { cloudflareConversationSessions } from "../src/worker/adapters/cloudflare";
+import type {
+  LiveKitAccessDependencies,
+  LiveKitDispatchResource,
+  LiveKitEgressResource,
+  LiveKitShutdownDependencies,
+} from "../src/worker/ports/foundation";
 import {
   ConversationEventType,
   ConversationStateTag,
@@ -26,6 +26,26 @@ const API_ORIGIN = "https://api.example.test";
 const BROWSER_ORIGIN = "http://localhost:5173";
 const LIVEKIT_API_KEY = "test-livekit-api-key";
 const LIVEKIT_API_SECRET = "test-livekit-api-secret-with-sufficient-entropy";
+const FIXED_NOW = 1_700_000_000_000;
+const FIXED_LEASE_ID = "11111111-1111-4111-8111-111111111111";
+
+function accessDependencies(liveKit: LiveKitAccessServices): LiveKitAccessDependencies {
+  return {
+    clock: { now: vi.fn(() => FIXED_NOW) },
+    ids: { randomUuid: vi.fn(() => FIXED_LEASE_ID) },
+    conversations: cloudflareConversationSessions(env),
+    liveKit,
+  };
+}
+
+function shutdownDependencies(liveKit: LiveKitShutdownServices): LiveKitShutdownDependencies {
+  return {
+    clock: { now: vi.fn(() => FIXED_NOW) },
+    ids: { randomUuid: vi.fn(() => FIXED_LEASE_ID) },
+    conversations: cloudflareConversationSessions(env),
+    liveKit,
+  };
+}
 
 async function createStartedConversation(key: string): Promise<string> {
   const created = await exports.default.fetch(
@@ -55,8 +75,8 @@ function fakeServices(
   readonly startEgress: ReturnType<typeof vi.fn>;
 } {
   let roomExists = false;
-  const dispatches: AgentDispatch[] = [];
-  const egresses: EgressInfo[] = [];
+  const dispatches: LiveKitDispatchResource[] = [];
+  const egresses: LiveKitEgressResource[] = [];
   return {
     roomExists: vi.fn(async () => roomExists),
     createRoom: vi.fn(async () => {
@@ -64,19 +84,18 @@ function fakeServices(
     }),
     listDispatches: vi.fn(async () => dispatches),
     createDispatch: vi.fn(async (roomName: string, metadata: string) => {
-      const dispatch = new AgentDispatch({
+      const dispatch = {
         id: "AD_test",
         agentName: "oral-exam-agent",
-        room: roomName,
         metadata,
-      });
+      };
       dispatches.push(dispatch);
       await options.onDispatchCreated?.(roomName);
       return dispatch;
     }),
     listActiveEgress: vi.fn(async () => egresses),
-    startEgress: vi.fn(async (roomName: string) => {
-      const egress = new EgressInfo({ egressId: "EG_test", roomName });
+    startEgress: vi.fn(async () => {
+      const egress = { egressId: "EG_test", active: true };
       egresses.push(egress);
       return egress;
     }),
@@ -153,24 +172,18 @@ function fakeShutdownServices(
   let roomDeleteAttempts = 0;
   return {
     getEgress: vi.fn(async () =>
-      egressExists
-        ? new EgressInfo({
-            egressId: "EG_test",
-            roomName,
-            status: EgressStatus.EGRESS_ACTIVE,
-          })
-        : undefined,
+      egressExists ? { egressId: "EG_test", active: true } : undefined,
     ),
     stopEgress: vi.fn(async () => {
       egressExists = false;
     }),
     getDispatch: vi.fn(async () =>
       dispatchExists
-        ? new AgentDispatch({
+        ? {
             id: "AD_test",
             agentName: "oral-exam-agent",
-            room: roomName,
-          })
+            metadata: "",
+          }
         : undefined,
     ),
     deleteDispatch: vi.fn(async () => {
@@ -191,9 +204,10 @@ describe("LiveKit access", () => {
   it("creates one room, explicit dispatch, and audio recording across retries", async () => {
     const conversationId = await createStartedConversation("livekit-access-idempotent");
     const services = fakeServices();
+    const dependencies = accessDependencies(services);
 
-    const first = await createLiveKitAccess(env, conversationId, services);
-    const repeated = await createLiveKitAccess(env, conversationId, services);
+    const first = await createLiveKitAccess(env, conversationId, dependencies);
+    const repeated = await createLiveKitAccess(env, conversationId, dependencies);
 
     expect(first).toMatchObject({ ok: true });
     expect(repeated).toMatchObject({ ok: true });
@@ -204,6 +218,8 @@ describe("LiveKit access", () => {
     expect(services.createRoom).toHaveBeenCalledTimes(1);
     expect(services.createDispatch).toHaveBeenCalledTimes(1);
     expect(services.startEgress).toHaveBeenCalledTimes(1);
+    expect(dependencies.clock.now).toHaveBeenCalled();
+    expect(dependencies.ids.randomUuid).toHaveBeenCalledTimes(2);
 
     const grants = await new TokenVerifier(
       "test-livekit-api-key",
@@ -272,7 +288,7 @@ describe("LiveKit access", () => {
       },
     });
 
-    const access = await createLiveKitAccess(env, conversationId, services);
+    const access = await createLiveKitAccess(env, conversationId, accessDependencies(services));
     expect(access.ok).toBe(true);
     expect(await stub.getLiveKitTransportEvidence()).toMatchObject({
       transportEpoch: 1,
@@ -359,7 +375,7 @@ describe("LiveKit access", () => {
     const body = await created.json<{ conversationId: string }>();
 
     await expect(
-      createLiveKitAccess(env, body.conversationId, fakeServices()),
+      createLiveKitAccess(env, body.conversationId, accessDependencies(fakeServices())),
     ).resolves.toMatchObject({
       ok: false,
       error: { status: 409, code: "conversation_not_starting" },
@@ -368,7 +384,7 @@ describe("LiveKit access", () => {
 
   it("stops recording, dispatch, and room exactly once after shutdown begins", async () => {
     const conversationId = await createStartedConversation("livekit-access-shutdown");
-    await createLiveKitAccess(env, conversationId, fakeServices());
+    await createLiveKitAccess(env, conversationId, accessDependencies(fakeServices()));
     const stub = env.CONVERSATION_SESSIONS.getByName(conversationId);
     const state = await stub.getState();
     expect(state).not.toBeNull();
@@ -385,11 +401,12 @@ describe("LiveKit access", () => {
     expect(ending.outcome).toBe("applied");
 
     const services = fakeShutdownServices(`conversation-${conversationId}`);
-    expect(await stopLiveKitAccess(env, conversationId, services)).toEqual({
+    const dependencies = shutdownDependencies(services);
+    expect(await stopLiveKitAccess(env, conversationId, dependencies)).toEqual({
       ok: true,
       value: "stopped",
     });
-    expect(await stopLiveKitAccess(env, conversationId, services)).toEqual({
+    expect(await stopLiveKitAccess(env, conversationId, dependencies)).toEqual({
       ok: true,
       value: "already_stopped",
     });
@@ -400,13 +417,13 @@ describe("LiveKit access", () => {
 
   it("rejects provider teardown while the conversation is active", async () => {
     const conversationId = await createStartedConversation("livekit-access-active-shutdown");
-    await createLiveKitAccess(env, conversationId, fakeServices());
+    await createLiveKitAccess(env, conversationId, accessDependencies(fakeServices()));
 
     await expect(
       stopLiveKitAccess(
         env,
         conversationId,
-        fakeShutdownServices(`conversation-${conversationId}`),
+        shutdownDependencies(fakeShutdownServices(`conversation-${conversationId}`)),
       ),
     ).resolves.toMatchObject({
       ok: false,
@@ -416,7 +433,7 @@ describe("LiveKit access", () => {
 
   it("converges after a partial provider teardown failure", async () => {
     const conversationId = await createStartedConversation("livekit-access-partial-shutdown");
-    await createLiveKitAccess(env, conversationId, fakeServices());
+    await createLiveKitAccess(env, conversationId, accessDependencies(fakeServices()));
     const stub = env.CONVERSATION_SESSIONS.getByName(conversationId);
     const state = await stub.getState();
     expect(state).not.toBeNull();
@@ -434,11 +451,12 @@ describe("LiveKit access", () => {
     const services = fakeShutdownServices(`conversation-${conversationId}`, {
       failFirstRoomDelete: true,
     });
-    await expect(stopLiveKitAccess(env, conversationId, services)).resolves.toMatchObject({
+    const dependencies = shutdownDependencies(services);
+    await expect(stopLiveKitAccess(env, conversationId, dependencies)).resolves.toMatchObject({
       ok: false,
       error: { status: 502, code: "livekit_shutdown_failed" },
     });
-    expect(await stopLiveKitAccess(env, conversationId, services)).toEqual({
+    expect(await stopLiveKitAccess(env, conversationId, dependencies)).toEqual({
       ok: true,
       value: "stopped",
     });

@@ -5,19 +5,16 @@ import {
   isLiveKitShutdownMessage,
   type LiveKitShutdownMessage,
 } from "../../../shared/livekit-shutdown";
-import { stopLiveKitAccess } from "./access";
 
 const MAX_RETRY_DELAY_SECONDS = 60;
 
 export type LiveKitStopOperation = (
-  env: Env,
   conversationId: string,
 ) => Promise<Result<"stopped" | "already_stopped", ApiError>>;
 
 export async function handleLiveKitShutdownBatch(
   batch: MessageBatch<LiveKitShutdownMessage>,
-  env: Env,
-  stop: LiveKitStopOperation = stopLiveKitAccess,
+  stop: LiveKitStopOperation,
 ): Promise<void> {
   await Promise.all(
     batch.messages.map(async (message) => {
@@ -33,7 +30,7 @@ export async function handleLiveKitShutdownBatch(
       }
 
       try {
-        const outcome = await stop(env, message.body.conversationId);
+        const outcome = await stop(message.body.conversationId);
         if (!outcome.ok) {
           if (outcome.error.code === "livekit_not_provisioned") {
             console.warn(
