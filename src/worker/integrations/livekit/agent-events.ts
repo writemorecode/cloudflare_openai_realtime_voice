@@ -1,54 +1,18 @@
-/** Authenticates and translates lifecycle observations emitted by the separately deployed agent. */
-import { z } from "zod";
-
-import {
-  ConversationEventType,
-  ConversationStateTag,
-  TransportStatus,
-  value,
-  type ConversationEvent,
-  type ConversationState,
-} from "../../../domain/conversation-state-machine";
-import {
-  ALARM_SHUTDOWN_GRACE_MS,
-  TRANSPORT_RECOVERY_WINDOW_MS,
-} from "../../../domain/conversation-deadlines";
+/** Authenticates and executes lifecycle observations emitted by the separately deployed agent. */
 import type {
-  AgentObservationKind,
-  ConversationSession,
-} from "../../../durable-object/conversation-session";
+  ConversationEvent,
+  ConversationState,
+} from "../../../domain/conversation-state-machine";
+import type { ConversationSession } from "../../../durable-object/conversation-session";
 import { ApiError } from "../../http/api-errors";
 import { authenticateBearer } from "../../http/api-security";
 import type { AgentEventDependencies } from "../../ports/foundation";
 import { err, ok, tryCatch, type Result } from "../../try-catch";
 import { applyIntegrationEventWithRetry } from "./integration-event-retry";
 import { reconcileCompositeReadiness } from "./readiness";
+import { decideAgentEvent, decodeAgentEvent } from "./agent-event-decisions";
 
 const MAX_AGENT_EVENT_BODY_BYTES = 16 * 1024;
-const AGENT_EVENT_ID_PATTERN = /^agent:[0-9a-f-]{36}:[1-9][0-9]*:[a-z-]+$/;
-const ERROR_CODE_PATTERN = /^[a-z][a-z0-9_.-]{0,127}$/;
-
-const baseEventSchema = z.object({
-  version: z.literal(1),
-  eventId: z.string().regex(AGENT_EVENT_ID_PATTERN),
-  conversationId: z.uuid(),
-  roomName: z.string().startsWith("conversation-"),
-  transportEpoch: z.int().positive(),
-  occurredAt: z.iso.datetime({ offset: true }),
-});
-
-const agentEventSchema = z.discriminatedUnion("type", [
-  baseEventSchema.extend({ type: z.literal("realtime_ready") }),
-  baseEventSchema.extend({ type: z.literal("realtime_interrupted") }),
-  baseEventSchema.extend({ type: z.literal("realtime_recovered") }),
-  baseEventSchema.extend({
-    type: z.literal("realtime_failed"),
-    errorCode: z.string().regex(ERROR_CODE_PATTERN),
-  }),
-  baseEventSchema.extend({ type: z.literal("session_closed") }),
-]);
-
-type AgentEvent = z.infer<typeof agentEventSchema>;
 
 export interface AgentEventResult {
   readonly conversationId: string;
@@ -80,21 +44,9 @@ export async function handleAgentEvent(
     return err(new ApiError(413, "agent_event_too_large", "The agent event body is too large."));
   }
 
-  const parsed = await tryCatch(
-    () => JSON.parse(body.value) as unknown,
-    (cause) => new ApiError(400, "invalid_agent_event", "The agent event is invalid.", {}, cause),
-  );
-  if (!parsed.ok) return parsed;
-  const result = agentEventSchema.safeParse(parsed.value);
-  if (!result.success) {
-    return err(new ApiError(400, "invalid_agent_event", "The agent event is invalid."));
-  }
-  const event = result.data;
-  if (event.roomName !== `conversation-${event.conversationId}`) {
-    return err(
-      new ApiError(400, "agent_event_room_mismatch", "The agent event room does not match."),
-    );
-  }
+  const decoded = decodeAgentEvent(body.value);
+  if (!decoded.ok) return err(agentDecodeError(decoded.error));
+  const event = decoded.value;
 
   const stub = dependencies.conversations.get(event.conversationId);
   const initial = await tryCatch(
@@ -106,29 +58,15 @@ export async function handleAgentEvent(
     return err(new ApiError(404, "conversation_not_found", "Conversation not found."));
   }
   let state: ConversationState = initial.value;
-  const transport = state.data.transport;
-  const advancesRecoveryEpoch =
-    event.type === "realtime_recovered" &&
-    state.tag === ConversationStateTag.Live &&
-    transport.status === TransportStatus.Reconnecting &&
-    event.transportEpoch === transport.epoch + 1;
-  if (
-    transport.status === TransportStatus.Idle ||
-    (transport.epoch !== event.transportEpoch && !advancesRecoveryEpoch)
-  ) {
+  const decision = decideAgentEvent(event, state);
+  if (!decision.ok) {
     return err(
       new ApiError(409, "stale_transport_epoch", "The agent event transport epoch is stale."),
     );
   }
 
   const observation = await tryCatch(
-    () =>
-      stub.recordAgentObservation({
-        eventId: event.eventId,
-        kind: event.type satisfies AgentObservationKind,
-        roomName: event.roomName,
-        transportEpoch: event.transportEpoch,
-      }),
+    () => stub.recordAgentObservation(decision.value.observation),
     agentOperationFailed,
   );
   if (!observation.ok) return observation;
@@ -142,7 +80,7 @@ export async function handleAgentEvent(
     return ok({ conversationId: event.conversationId, state, outcome: "duplicate" });
   }
 
-  const domainEvent = domainEventForAgentObservation(event, state);
+  const domainEvent = decision.value.domainEvent;
   if (domainEvent !== null) {
     const applied = await applyIntegrationEvent(stub, state, domainEvent);
     if (!applied.ok) return applied;
@@ -169,52 +107,13 @@ export async function handleAgentEvent(
   });
 }
 
-function domainEventForAgentObservation(
-  event: AgentEvent,
-  state: ConversationState,
-): ConversationEvent | null {
-  const at = value.unixMillis(Date.parse(event.occurredAt));
-  switch (event.type) {
-    case "realtime_ready":
-    case "realtime_recovered":
-      return null;
-    case "realtime_interrupted":
-      return state.tag === ConversationStateTag.Live &&
-        state.data.transport.status === TransportStatus.Connected
-        ? {
-            type: ConversationEventType.TransportInterrupted,
-            eventId: event.eventId,
-            at,
-            epoch: event.transportEpoch,
-            errorCode: value.errorCode("transport.agent_realtime_interrupted"),
-            recoveryDeadlineAt: value.unixMillis(Number(at) + TRANSPORT_RECOVERY_WINDOW_MS),
-          }
-        : null;
-    case "realtime_failed":
-      return state.tag === ConversationStateTag.Starting ||
-        state.tag === ConversationStateTag.Live ||
-        state.tag === ConversationStateTag.Ending
-        ? {
-            type: ConversationEventType.FatalTransportError,
-            eventId: event.eventId,
-            at,
-            epoch: event.transportEpoch,
-            errorCode: value.errorCode(event.errorCode),
-            endingDeadlineAt: value.unixMillis(Number(at) + ALARM_SHUTDOWN_GRACE_MS),
-          }
-        : null;
-    case "session_closed":
-      return state.tag === ConversationStateTag.Starting ||
-        state.tag === ConversationStateTag.Live ||
-        state.tag === ConversationStateTag.Ending
-        ? {
-            type: ConversationEventType.SessionClosed,
-            eventId: event.eventId,
-            at,
-            epoch: event.transportEpoch,
-          }
-        : null;
-  }
+function agentDecodeError(error: {
+  readonly code: "invalid_event" | "room_mismatch";
+  readonly cause?: unknown;
+}): ApiError {
+  return error.code === "room_mismatch"
+    ? new ApiError(400, "agent_event_room_mismatch", "The agent event room does not match.")
+    : new ApiError(400, "invalid_agent_event", "The agent event is invalid.", {}, error.cause);
 }
 
 async function applyIntegrationEvent(
