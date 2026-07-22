@@ -14,8 +14,15 @@ import type {
   LiveKitShutdownPort,
 } from "../../ports/foundation";
 import { err, ok, tryCatch, type Result } from "../../try-catch";
+import {
+  decideLiveKitDispatch,
+  decideLiveKitEgress,
+  describeLiveKitProvisioning,
+  validLiveKitDispatch,
+  validLiveKitEgress,
+  type LiveKitResourceDecisionError,
+} from "./access-decisions";
 
-export const LIVEKIT_AGENT_NAME = "oral-exam-agent";
 export const LIVEKIT_ROOM_PREFIX = "conversation-";
 const PROVISIONING_LEASE_MS = 15_000;
 const SHUTDOWN_LEASE_MS = 15_000;
@@ -220,7 +227,7 @@ async function provisionResources(
   roomName: string,
   transportEpoch: number,
 ): Promise<Result<ProvisionedResources, ApiError>> {
-  const metadata = JSON.stringify({ version: 1, conversationId, roomName, transportEpoch });
+  const descriptor = describeLiveKitProvisioning(conversationId, roomName, transportEpoch);
   const existingRoom = await tryCatch(
     () => services.roomExists(roomName),
     liveKitProvisioningFailed,
@@ -228,7 +235,7 @@ async function provisionResources(
   if (!existingRoom.ok) return existingRoom;
   if (!existingRoom.value) {
     const createdRoom = await tryCatch(
-      () => services.createRoom(roomName, metadata),
+      () => services.createRoom(roomName, descriptor.metadata),
       liveKitProvisioningFailed,
     );
     if (!createdRoom.ok) return createdRoom;
@@ -239,52 +246,58 @@ async function provisionResources(
     liveKitProvisioningFailed,
   );
   if (!dispatches.ok) return dispatches;
-  const matchingDispatches = dispatches.value.filter(
-    (dispatch) => dispatch.agentName === LIVEKIT_AGENT_NAME && dispatch.metadata === metadata,
-  );
-  if (matchingDispatches.length > 1) {
-    return err(
-      new ApiError(409, "livekit_dispatch_conflict", "Multiple matching agent dispatches exist."),
-    );
-  }
+  const dispatchDecision = decideLiveKitDispatch(dispatches.value, descriptor.metadata);
+  if (!dispatchDecision.ok) return err(resourceDecisionError(dispatchDecision.error));
   const dispatch =
-    matchingDispatches[0] === undefined
-      ? await tryCatch(() => services.createDispatch(roomName, metadata), liveKitProvisioningFailed)
-      : ok(matchingDispatches[0]);
+    dispatchDecision.value.kind === "create"
+      ? await tryCatch(
+          () => services.createDispatch(roomName, descriptor.metadata),
+          liveKitProvisioningFailed,
+        )
+      : ok(dispatchDecision.value.resource);
   if (!dispatch.ok) return dispatch;
-  if (dispatch.value.id.length === 0) {
-    return err(
-      new ApiError(502, "livekit_dispatch_invalid", "LiveKit returned an invalid dispatch."),
-    );
-  }
+  const validDispatch = validLiveKitDispatch(dispatch.value);
+  if (!validDispatch.ok) return err(resourceDecisionError(validDispatch.error));
 
-  const expectedR2Key = `conversations/${conversationId}/recording.ogg`;
   const activeEgress = await tryCatch(
     () => services.listActiveEgress(roomName),
     liveKitProvisioningFailed,
   );
   if (!activeEgress.ok) return activeEgress;
-  if (activeEgress.value.length > 1) {
-    return err(new ApiError(409, "livekit_egress_conflict", "Multiple active recordings exist."));
-  }
+  const egressDecision = decideLiveKitEgress(activeEgress.value);
+  if (!egressDecision.ok) return err(resourceDecisionError(egressDecision.error));
   const egress =
-    activeEgress.value[0] === undefined
+    egressDecision.value.kind === "create"
       ? await tryCatch(
-          () => services.startEgress(roomName, expectedR2Key),
+          () => services.startEgress(roomName, descriptor.expectedR2Key),
           liveKitProvisioningFailed,
         )
-      : ok(activeEgress.value[0]);
+      : ok(egressDecision.value.resource);
   if (!egress.ok) return egress;
-  if (egress.value.egressId.length === 0) {
-    return err(
-      new ApiError(502, "livekit_egress_invalid", "LiveKit returned an invalid recording."),
-    );
-  }
+  const validEgress = validLiveKitEgress(egress.value);
+  if (!validEgress.ok) return err(resourceDecisionError(validEgress.error));
   return ok({
-    dispatchId: dispatch.value.id,
-    egressId: egress.value.egressId,
-    expectedR2Key,
+    dispatchId: validDispatch.value.id,
+    egressId: validEgress.value.egressId,
+    expectedR2Key: descriptor.expectedR2Key,
   });
+}
+
+function resourceDecisionError(error: LiveKitResourceDecisionError): ApiError {
+  switch (error) {
+    case "dispatch_conflict":
+      return new ApiError(
+        409,
+        "livekit_dispatch_conflict",
+        "Multiple matching agent dispatches exist.",
+      );
+    case "dispatch_invalid":
+      return new ApiError(502, "livekit_dispatch_invalid", "LiveKit returned an invalid dispatch.");
+    case "egress_conflict":
+      return new ApiError(409, "livekit_egress_conflict", "Multiple active recordings exist.");
+    case "egress_invalid":
+      return new ApiError(502, "livekit_egress_invalid", "LiveKit returned an invalid recording.");
+  }
 }
 
 function validateLiveKitAccessConfiguration(env: Env): Result<void, ApiError> {
