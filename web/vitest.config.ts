@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react()],
   test: {
     environment: "jsdom",
-    include: ["web/src/**/*.test.tsx"],
+    include: ["web/src/**/*.test.tsx", "packages/conversation-client/test/**/*.test.ts"],
     setupFiles: ["./web/src/test-setup.ts"],
   },
 });

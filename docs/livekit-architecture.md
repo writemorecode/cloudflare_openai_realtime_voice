@@ -91,6 +91,14 @@ The data paths have intentionally different owners:
   and control-WebSocket authentication.
 - Never receives an OpenAI API key or LiveKit API secret.
 
+The browser implementation is split into a reusable foundation client and the product UI. The
+`@ai-oral-exam/conversation-client` package owns HTTP calls, runtime validation of public responses,
+the `conversation.v1` control socket, and LiveKit room/media orchestration. The application under
+`web/` owns only presentation, navigation, and product interaction, and imports no control-plane or
+domain internals. The provider-neutral, versioned public schemas live in
+`@ai-oral-exam/conversation-contract`; the application receives those types only through the client
+package.
+
 ### Cloudflare Worker
 
 - Authenticates application requests.
@@ -281,8 +289,9 @@ Implemented source boundaries are:
 src/domain/                              provider-neutral aggregate and deadline rules
 src/durable-object/conversation-session.ts
                                          durable state, receipts, alarms, and control sockets
-src/shared/protocol/conversation-wire.ts sanitized control protocol
 src/shared/livekit-shutdown.ts            versioned Queue message contract
+packages/conversation-contract/           sanitized public state and control protocol
+packages/conversation-client/             reusable browser control and LiveKit client
 src/worker/index.ts                       Wrangler entrypoint
 src/worker/http/                          stateless HTTP API, security, and public DTOs
 src/worker/integrations/livekit/webhook.ts

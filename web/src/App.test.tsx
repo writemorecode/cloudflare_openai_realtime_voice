@@ -3,10 +3,16 @@ import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import type { ConversationStateDto } from "../../src/worker/http/conversation-state-dto";
-import { ConversationStateTag, TransportStatus } from "../../src/domain/conversation-state-machine";
+import {
+  ConversationStateTag,
+  TransportStatus,
+  type ConversationApi,
+  type ConversationRuntime,
+  type ConversationStateDto,
+  type RuntimeEvents,
+  type RuntimeFactory,
+} from "@ai-oral-exam/conversation-client";
 import { ConversationPage, HomePage, PostConversationPage } from "./App";
-import type { ConversationApi, ConversationRuntime, RuntimeEvents, RuntimeFactory } from "./types";
 
 const ID = "12345678-1234-8234-9234-123456789abc";
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { conversationStateSchema } from "@ai-oral-exam/conversation-contract";
 
 import { toConversationStateDto } from "../src/worker/http/conversation-state-dto";
 import {
@@ -56,6 +57,7 @@ describe("sanitized conversation state DTO", () => {
     });
 
     const dto = toConversationStateDto(state);
+    expect(conversationStateSchema.parse(dto)).toEqual(dto);
     expect(dto).toMatchObject({
       state: "ending",
       transport: { status: "connected", epoch: 1 },

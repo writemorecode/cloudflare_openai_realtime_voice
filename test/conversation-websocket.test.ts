@@ -16,7 +16,7 @@ import {
   encodeWireMessage,
   type BrowserWireMessage,
   type ServerWireMessage,
-} from "../src/shared/protocol/conversation-wire";
+} from "@ai-oral-exam/conversation-contract";
 
 const ORIGIN = "https://api.example.test";
 const BROWSER_ORIGIN = "http://localhost:5173";

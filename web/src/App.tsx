@@ -1,11 +1,16 @@
 /** Renders the browser experience for authentication, a live conversation, and its completion. */
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { ConversationStateTag, TransportStatus } from "../../src/domain/conversation-state-machine";
-import type { ConversationStateDto } from "../../src/worker/http/conversation-state-dto";
-import { HttpConversationApi } from "./api";
-import { createConversationRuntime } from "./runtime";
-import type { ConversationApi, ConversationRuntime, RuntimeFactory } from "./types";
+import {
+  ConversationStateTag,
+  HttpConversationApi,
+  TransportStatus,
+  createConversationRuntime,
+  type ConversationApi,
+  type ConversationRuntime,
+  type ConversationStateDto,
+  type RuntimeFactory,
+} from "@ai-oral-exam/conversation-client";
 
 interface Services {
   readonly api: ConversationApi;
@@ -454,11 +459,11 @@ function labelForState(state: ConversationStateDto): string {
   return "Connecting";
 }
 
-function displayState(state: ConversationStateTag): string {
+function displayState(state: ConversationStateDto["state"]): string {
   return state.charAt(0).toUpperCase() + state.slice(1);
 }
 
-function isTerminal(state: ConversationStateTag): boolean {
+function isTerminal(state: ConversationStateDto["state"]): boolean {
   return (
     state === ConversationStateTag.Completed ||
     state === ConversationStateTag.Cancelled ||

@@ -8,6 +8,12 @@ importers:
 
   .:
     dependencies:
+      '@ai-oral-exam/conversation-client':
+        specifier: workspace:*
+        version: link:packages/conversation-client
+      '@ai-oral-exam/conversation-contract':
+        specifier: workspace:*
+        version: link:packages/conversation-contract
       '@livekit/protocol':
         specifier: ^1.49.0
         version: 1.49.0
@@ -100,6 +106,27 @@ importers:
       vitest:
         specifier: 4.1.10
         version: 4.1.10(@opentelemetry/api@1.9.1)(@types/node@26.1.1)(jsdom@29.1.1)(vite@8.1.4(@types/node@26.1.1)(esbuild@0.28.1))
+
+  packages/conversation-client:
+    dependencies:
+      '@ai-oral-exam/conversation-contract':
+        specifier: workspace:*
+        version: link:../conversation-contract
+      livekit-client:
+        specifier: ^2.20.1
+        version: 2.20.1(@types/dom-mediacapture-record@1.0.22)
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+
+  packages/conversation-contract:
+    dependencies:
+      '@msgpack/msgpack':
+        specifier: ^3.1.3
+        version: 3.1.3
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
 
 packages:
 

@@ -1,11 +1,9 @@
 /** Defines the browser application's API, media-runtime, and event contracts. */
-import type { ConversationStateDto } from "../../src/worker/http/conversation-state-dto";
-
-export interface LiveKitAccess {
-  readonly roomName: string;
-  readonly serverUrl: string;
-  readonly participantToken: string;
-}
+import type {
+  AuthSession,
+  ConversationStateDto,
+  LiveKitAccess,
+} from "@ai-oral-exam/conversation-contract";
 
 export interface ConversationApi {
   login(username: string, password: string): Promise<AuthSession>;
@@ -18,10 +16,6 @@ export interface ConversationApi {
   releaseLiveKitAccess(conversationId: string): Promise<void>;
   websocketUrl(conversationId: string): string;
   websocketProtocols(): string[];
-}
-
-export interface AuthSession {
-  readonly username: string;
 }
 
 export interface RuntimeEvents {

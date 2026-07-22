@@ -5,12 +5,7 @@
 import { decode, encode } from "@msgpack/msgpack";
 import { z } from "zod";
 
-import {
-  ArtifactStatus as ConversationArtifactStatus,
-  ConversationStateTag,
-  TransportStatus as ConversationTransportStatus,
-} from "../../domain/conversation-state-machine";
-import type { ConversationStateDto } from "../../worker/http/conversation-state-dto";
+import { ConversationStateTag, conversationStateSchema, type ConversationStateDto } from "./state";
 
 export const WIRE_PROTOCOL_VERSION = 1 as const;
 export const WIRE_SUBPROTOCOL = "conversation.v1";
@@ -104,37 +99,6 @@ const artifactStatusBodySchema = z.object({
 const endRequestedBodySchema = revisionEpochBodySchema;
 const clientPingBodySchema = z.object({ sentAt: finiteInt });
 
-const transportDtoSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal(ConversationTransportStatus.Idle) }),
-  z.object({ status: z.literal(ConversationTransportStatus.Connecting), epoch: positiveEpoch }),
-  z.object({ status: z.literal(ConversationTransportStatus.Connected), epoch: positiveEpoch }),
-  z.object({
-    status: z.literal(ConversationTransportStatus.Reconnecting),
-    epoch: positiveEpoch,
-    attempt: positiveEpoch,
-    lastErrorCode: errorCode,
-  }),
-  z.object({ status: z.literal(ConversationTransportStatus.Closed), epoch: positiveEpoch }),
-  z.object({ status: z.literal(ConversationTransportStatus.Failed), epoch: finiteInt, errorCode }),
-]);
-const artifactDtoSchema = z.discriminatedUnion("status", [
-  z.object({ status: z.literal(ConversationArtifactStatus.Pending) }),
-  z.object({ status: z.literal(ConversationArtifactStatus.Recording) }),
-  z.object({ status: z.literal(ConversationArtifactStatus.Uploading) }),
-  z.object({ status: z.literal(ConversationArtifactStatus.Ready) }),
-  z.object({ status: z.literal(ConversationArtifactStatus.Failed), errorCode }),
-]);
-const stateDtoSchema: z.ZodType<ConversationStateDto> = z.looseObject({
-  conversationId: z.string(),
-  state: z.enum(ConversationStateTag),
-  revision: finiteInt,
-  enteredAt: finiteInt,
-  updatedAt: finiteInt,
-  activeDeadlineAt: finiteInt.nullable(),
-  transport: transportDtoSchema,
-  artifact: artifactDtoSchema,
-}) as unknown as z.ZodType<ConversationStateDto>;
-
 export type ClientHelloBody = z.infer<typeof clientHelloBodySchema>;
 export type SessionReadyBody = z.infer<typeof sessionReadyBodySchema>;
 export type TransportStatusBody = z.infer<typeof transportStatusBodySchema>;
@@ -173,11 +137,11 @@ const serverHelloBodySchema: z.ZodType<ServerHelloBody> = z.object({
   connectionId: z.string().min(1).max(128),
   acceptedEpoch: finiteInt,
   currentRevision: finiteInt,
-  currentState: stateDtoSchema,
+  currentState: conversationStateSchema,
 });
 const stateSnapshotBodySchema: z.ZodType<StateSnapshotBody> = z.object({
   revision: finiteInt,
-  state: stateDtoSchema,
+  state: conversationStateSchema,
 });
 const messageAckBodySchema: z.ZodType<MessageAckBody> = z.object({
   acknowledgedMessageId: messageId,

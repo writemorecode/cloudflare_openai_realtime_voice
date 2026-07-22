@@ -1,5 +1,6 @@
 packages:
   - agent
+  - packages/*
 
 allowBuilds:
   "@livekit/local-inference": true

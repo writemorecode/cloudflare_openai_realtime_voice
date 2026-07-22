@@ -11,7 +11,7 @@ import {
   WireProtocolError,
   decodeBrowserMessage,
   encodeWireMessage,
-} from "../src/shared/protocol/conversation-wire";
+} from "@ai-oral-exam/conversation-contract";
 
 function buffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;

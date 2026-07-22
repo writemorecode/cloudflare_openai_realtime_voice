@@ -13,5 +13,5 @@
     "target": "ES2024",
     "types": ["vite/client", "vitest/globals", "@testing-library/jest-dom"]
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "../src/shared/**/*.ts", "../src/domain/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
 }

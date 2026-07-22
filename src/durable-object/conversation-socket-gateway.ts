@@ -20,7 +20,7 @@ import {
   type BrowserWireMessage,
   type MessageAckBody,
   type ServerWireMessage,
-} from "../shared/protocol/conversation-wire";
+} from "@ai-oral-exam/conversation-contract";
 import { toConversationStateDto } from "../worker/http/conversation-state-dto";
 import type { ApplyEventCommand, ApplyEventResult } from "./conversation-session-contract";
 

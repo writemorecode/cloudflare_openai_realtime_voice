@@ -1,7 +1,15 @@
 /** Implements the browser-facing HTTP client for authenticated conversation API operations. */
-import type { ConversationStateDto } from "../../src/worker/http/conversation-state-dto";
-import { WIRE_SUBPROTOCOL } from "../../src/shared/protocol/conversation-wire";
-import type { AuthSession, ConversationApi, LiveKitAccess } from "./types";
+import {
+  WIRE_SUBPROTOCOL,
+  authSessionSchema,
+  conversationStateSchema,
+  liveKitAccessSchema,
+  type AuthSession,
+  type ConversationStateDto,
+  type LiveKitAccess,
+} from "@ai-oral-exam/conversation-contract";
+import type { z } from "zod";
+import type { ConversationApi } from "./types";
 
 interface ProblemDetails {
   readonly detail?: string;
@@ -22,7 +30,7 @@ export class HttpConversationApi implements ConversationApi {
   constructor(private readonly config: BrowserApiConfig = browserApiConfig()) {}
 
   login(username: string, password: string): Promise<AuthSession> {
-    return this.request("/v1/auth/login", {
+    return this.request("/v1/auth/login", authSessionSchema, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password }),
@@ -30,36 +38,39 @@ export class HttpConversationApi implements ConversationApi {
   }
 
   getSession(): Promise<AuthSession> {
-    return this.request("/v1/auth/session");
+    return this.request("/v1/auth/session", authSessionSchema);
   }
 
   async logout(): Promise<void> {
-    await this.request("/v1/auth/logout", { method: "POST", expectJson: false });
+    await this.requestWithoutResponse("/v1/auth/logout", { method: "POST" });
   }
 
   createConversation(): Promise<ConversationStateDto> {
-    return this.request("/v1/conversations", {
+    return this.request("/v1/conversations", conversationStateSchema, {
       method: "POST",
       headers: { "Idempotency-Key": crypto.randomUUID() },
     });
   }
 
   startConversation(conversationId: string): Promise<ConversationStateDto> {
-    return this.request(`/v1/conversations/${conversationId}/start`, { method: "POST" });
+    return this.request(`/v1/conversations/${conversationId}/start`, conversationStateSchema, {
+      method: "POST",
+    });
   }
 
   getState(conversationId: string): Promise<ConversationStateDto> {
-    return this.request(`/v1/conversations/${conversationId}/state`);
+    return this.request(`/v1/conversations/${conversationId}/state`, conversationStateSchema);
   }
 
   getLiveKitAccess(conversationId: string): Promise<LiveKitAccess> {
-    return this.request(`/v1/conversations/${conversationId}/livekit-access`, { method: "POST" });
+    return this.request(`/v1/conversations/${conversationId}/livekit-access`, liveKitAccessSchema, {
+      method: "POST",
+    });
   }
 
   async releaseLiveKitAccess(conversationId: string): Promise<void> {
-    await this.request(`/v1/conversations/${conversationId}/livekit-access`, {
+    await this.requestWithoutResponse(`/v1/conversations/${conversationId}/livekit-access`, {
       method: "DELETE",
-      expectJson: false,
     });
   }
 
@@ -73,10 +84,20 @@ export class HttpConversationApi implements ConversationApi {
     return [WIRE_SUBPROTOCOL];
   }
 
-  private async request<T>(
+  private async request<T extends z.ZodType>(
     path: string,
-    init: RequestInit & { readonly expectJson?: boolean } = {},
-  ): Promise<T> {
+    schema: T,
+    init: RequestInit = {},
+  ): Promise<z.infer<T>> {
+    const response = await this.fetchResponse(path, init);
+    return schema.parse(await response.json());
+  }
+
+  private async requestWithoutResponse(path: string, init: RequestInit): Promise<void> {
+    await this.fetchResponse(path, init);
+  }
+
+  private async fetchResponse(path: string, init: RequestInit): Promise<Response> {
     const headers = new Headers(init.headers);
     const response = await fetch(new URL(path, this.config.baseUrl), {
       ...init,
@@ -92,7 +113,6 @@ export class HttpConversationApi implements ConversationApi {
       }
       throw new Error(details.detail ?? details.title ?? `Request failed (${response.status})`);
     }
-    if (init.expectJson === false) return undefined as T;
-    return (await response.json()) as T;
+    return response;
   }
 }

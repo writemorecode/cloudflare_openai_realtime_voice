@@ -8,16 +8,16 @@ import {
   type RemoteParticipant,
 } from "livekit-client";
 
-import { ConversationStateTag } from "../../src/domain/conversation-state-machine";
 import {
   BrowserMessageType,
+  ConversationStateTag,
   ServerMessageType,
   WIRE_PROTOCOL_VERSION,
   decodeServerMessage,
   encodeWireMessage,
   type BrowserWireMessage,
-} from "../../src/shared/protocol/conversation-wire";
-import type { ConversationStateDto } from "../../src/worker/http/conversation-state-dto";
+  type ConversationStateDto,
+} from "@ai-oral-exam/conversation-contract";
 import type { ConversationApi, ConversationRuntime, RuntimeEvents, RuntimeFactory } from "./types";
 
 const END_WAIT_MS = 8_000;
@@ -178,7 +178,7 @@ class LiveConversationRuntime implements ConversationRuntime {
   }
 }
 
-function isTerminal(state: ConversationStateTag): boolean {
+function isTerminal(state: ConversationStateDto["state"]): boolean {
   return (
     state === ConversationStateTag.Completed ||
     state === ConversationStateTag.Cancelled ||

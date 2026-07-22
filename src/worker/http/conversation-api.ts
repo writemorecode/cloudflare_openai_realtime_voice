@@ -15,7 +15,7 @@ import { preflightResponse, validateOrigin, withCors } from "./api-cors";
 import { deriveConversationId, validateIdempotencyKey } from "./api-security";
 import { authenticateBrowserSession, login, logout, type AuthenticatedUser } from "./browser-auth";
 import { toConversationStateDto, type ConversationStateDto } from "./conversation-state-dto";
-import { WIRE_SUBPROTOCOL } from "../../shared/protocol/conversation-wire";
+import { WIRE_SUBPROTOCOL } from "@ai-oral-exam/conversation-contract";
 import { handleLiveKitWebhook } from "../integrations/livekit/webhook";
 import { handleAgentEvent } from "../integrations/livekit/agent-events";
 import {
@@ -59,7 +59,7 @@ interface RequestTelemetry {
   readonly status: number;
   readonly durationMs: number;
   readonly conversationId: string | null;
-  readonly resultingState: ConversationStateTag | null;
+  readonly resultingState: ConversationStateDto["state"] | null;
   readonly resultingRevision: number | null;
   readonly outcome: string;
 }
