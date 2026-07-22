@@ -10,6 +10,8 @@ This directory is the stateless HTTP side of the Cloudflare deployment.
 - `http/` owns routing, request authentication, CORS, public DTO projection, and API errors.
 - `integrations/livekit/` owns LiveKit signature verification, provider payload validation,
   provider-to-domain translation, bounded Queue-driven teardown, and R2 recording verification.
+  Files ending in `-decisions.ts` contain synchronous decoding and policy only; adjacent executor
+  modules perform Durable Object, provider, clock, and storage effects.
 
 The Worker coordinates trusted control-plane operations. It must never proxy, decode, resample, or
 persist live audio. Provider-neutral start behavior stays in the conversation API; future room,
@@ -19,3 +21,5 @@ Foundation code receives its effects explicitly through the smallest applicable 
 therefore supply fixed clocks and identifiers, in-memory provider fakes, and controlled storage
 responses without patching globals or constructing SDK resources. `index.ts` is the only production
 composition root; integration handlers must not create provider or platform clients themselves.
+Decision modules accept complete input values and return explicit plans or errors. They must not
+read bindings, call RPC, access storage, generate identifiers, or read the system clock.

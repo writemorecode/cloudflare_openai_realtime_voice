@@ -13,7 +13,7 @@ src/
     ├── ports/               External-effect interfaces for the foundation
     ├── adapters/            Cloudflare, Web Crypto, R2, and LiveKit implementations
     ├── http/                Stateless request routing, auth, CORS, and DTOs
-    └── integrations/livekit Provider orchestration and event translation
+    └── integrations/livekit Pure decisions beside effectful orchestration executors
 ```
 
 Dependency direction is intentional:
@@ -40,6 +40,10 @@ SDK construction must remain in `worker/adapters/`; integration handlers depend 
 in `worker/ports/`. The Durable Object may depend on domain and the public contract, but must not
 provision rooms, call OpenAI, or handle audio. The application must not import `src/` or the
 contract package directly; it consumes the foundation through the conversation client.
+
+Within the LiveKit integration boundary, `*-decisions.ts` modules are synchronous and effect-free.
+They decode provider data or select the next action from supplied state. The neighboring executor
+modules obtain state through ports, apply the selected action, and handle retries and telemetry.
 
 The LiveKit Agent is intentionally absent from this tree. It is a separate Node.js application in
 [`../agent/`](../agent/README.md) and a separate deployment.

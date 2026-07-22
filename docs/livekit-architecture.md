@@ -299,8 +299,10 @@ src/worker/ports/foundation.ts            interfaces for all foundation external
 src/worker/adapters/                      Cloudflare, R2, Web Crypto, and LiveKit implementations
 src/worker/foundation-dependencies.ts     production adapter assembly
 src/worker/http/                          stateless HTTP API, security, and public DTOs
+src/worker/integrations/livekit/*-decisions.ts
+                                         pure decoding and orchestration policy
 src/worker/integrations/livekit/webhook.ts
-                                         verified event translation
+                                         verified observation executor
 src/worker/integrations/livekit/shutdown-queue.ts
                                          bounded retry and provider teardown consumer
 agent/                                   separately deployable LiveKit Agent application
@@ -319,6 +321,24 @@ instead of constructing SDK clients or reading clocks, random IDs, Durable Objec
 R2 buckets directly. Production adapters are assembled in `src/worker/index.ts`; tests inject fixed
 clocks and IDs plus small structural fakes. This keeps orchestration deterministic without changing
 the Durable Object's authoritative state or weakening provider verification.
+
+Inside the integration boundary, foundational orchestration follows a decode/decide/execute shape:
+
+```text
+verified provider input + supplied aggregate state
+                         │
+                         ▼
+           synchronous decoder/decision module
+                         │ explicit observation, action, or error
+                         ▼
+          executor using ports and Durable Object RPC
+```
+
+The decision modules contain no binding access, RPC, storage calls, provider writes, random ID
+generation, or system-clock reads. LiveKit SDK webhook types terminate in the webhook decoder; the
+executor consumes a normalized observation union. Resource reuse/conflict policy, agent event
+selection, and composite-readiness transition selection are likewise directly testable without a
+Worker runtime. Executors retain ordering, retry, correlation, telemetry, and external effects.
 
 The provisioning lease establishes the expected room name and transport epoch before any provider
 calls begin. Matching agent lifecycle and LiveKit media observations are therefore latched while
