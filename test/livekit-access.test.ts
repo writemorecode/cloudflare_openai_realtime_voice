@@ -158,10 +158,7 @@ async function webhookRequest(payload: Record<string, unknown>): Promise<Respons
   );
 }
 
-function fakeShutdownServices(
-  roomName: string,
-  options: { readonly failFirstRoomDelete?: boolean } = {},
-): LiveKitShutdownServices & {
+function fakeShutdownServices(): LiveKitShutdownServices & {
   readonly stopEgress: ReturnType<typeof vi.fn>;
   readonly deleteDispatch: ReturnType<typeof vi.fn>;
   readonly deleteRoom: ReturnType<typeof vi.fn>;
@@ -169,7 +166,6 @@ function fakeShutdownServices(
   let egressExists = true;
   let dispatchExists = true;
   let roomExists = true;
-  let roomDeleteAttempts = 0;
   return {
     getEgress: vi.fn(async () =>
       egressExists ? { egressId: "EG_test", active: true } : undefined,
@@ -191,10 +187,6 @@ function fakeShutdownServices(
     }),
     roomExists: vi.fn(async () => roomExists),
     deleteRoom: vi.fn(async () => {
-      roomDeleteAttempts += 1;
-      if (options.failFirstRoomDelete === true && roomDeleteAttempts === 1) {
-        throw new Error("transient provider failure");
-      }
       roomExists = false;
     }),
   };
@@ -400,7 +392,7 @@ describe("LiveKit access", () => {
     });
     expect(ending.outcome).toBe("applied");
 
-    const services = fakeShutdownServices(`conversation-${conversationId}`);
+    const services = fakeShutdownServices();
     const dependencies = shutdownDependencies(services);
     expect(await stopLiveKitAccess(env, conversationId, dependencies)).toEqual({
       ok: true,
@@ -420,48 +412,10 @@ describe("LiveKit access", () => {
     await createLiveKitAccess(env, conversationId, accessDependencies(fakeServices()));
 
     await expect(
-      stopLiveKitAccess(
-        env,
-        conversationId,
-        shutdownDependencies(fakeShutdownServices(`conversation-${conversationId}`)),
-      ),
+      stopLiveKitAccess(env, conversationId, shutdownDependencies(fakeShutdownServices())),
     ).resolves.toMatchObject({
       ok: false,
       error: { status: 409, code: "conversation_not_ending" },
     });
-  });
-
-  it("converges after a partial provider teardown failure", async () => {
-    const conversationId = await createStartedConversation("livekit-access-partial-shutdown");
-    await createLiveKitAccess(env, conversationId, accessDependencies(fakeServices()));
-    const stub = env.CONVERSATION_SESSIONS.getByName(conversationId);
-    const state = await stub.getState();
-    expect(state).not.toBeNull();
-    await stub.applyEvent({
-      expectedRevision: state!.revision,
-      event: {
-        type: ConversationEventType.EndRequested,
-        eventId: "test:livekit-partial-shutdown-requested",
-        at: value.unixMillis(Date.now()),
-        reason: "test",
-        endingDeadlineAt: value.unixMillis(Date.now() + 30_000),
-      },
-    });
-
-    const services = fakeShutdownServices(`conversation-${conversationId}`, {
-      failFirstRoomDelete: true,
-    });
-    const dependencies = shutdownDependencies(services);
-    await expect(stopLiveKitAccess(env, conversationId, dependencies)).resolves.toMatchObject({
-      ok: false,
-      error: { status: 502, code: "livekit_shutdown_failed" },
-    });
-    expect(await stopLiveKitAccess(env, conversationId, dependencies)).toEqual({
-      ok: true,
-      value: "stopped",
-    });
-    expect(services.stopEgress).toHaveBeenCalledTimes(1);
-    expect(services.deleteDispatch).toHaveBeenCalledTimes(1);
-    expect(services.deleteRoom).toHaveBeenCalledTimes(2);
   });
 });

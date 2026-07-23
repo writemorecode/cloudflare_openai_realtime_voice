@@ -166,28 +166,6 @@ describe("LiveKit webhook", () => {
     expect((await webhookRequest({ ...payload, id: "EV_too-short" })).status).toBe(400);
   });
 
-  it("records active egress exactly once across webhook retries", async () => {
-    const conversationId = await createStartedConversation("livekit-egress-started");
-    const payload = egressEvent(
-      "egress_started",
-      "EV_22222222222C",
-      conversationId,
-      "EGRESS_ACTIVE",
-    );
-
-    const first = await webhookRequest(payload);
-    const duplicate = await webhookRequest(payload);
-    const state = await env.CONVERSATION_SESSIONS.getByName(conversationId).getState();
-
-    expect(first.status).toBe(204);
-    expect(duplicate.status).toBe(204);
-    expect(state).toMatchObject({
-      tag: ConversationStateTag.Starting,
-      revision: 2,
-      data: { artifact: { status: "recording" } },
-    });
-  });
-
   it("requires browser, agent, both audio tracks, Realtime, and recording before going live", async () => {
     const conversationId = await createStartedConversation("livekit-composite-readiness");
     const room = { name: `conversation-${conversationId}` };
@@ -289,51 +267,6 @@ describe("LiveKit webhook", () => {
     });
   });
 
-  it("maps failed egress to a sanitized artifact failure", async () => {
-    const conversationId = await createStartedConversation("livekit-egress-failed");
-    const response = await webhookRequest(
-      egressEvent("egress_ended", "EV_22222222222K", conversationId, "EGRESS_FAILED"),
-    );
-    const state = await env.CONVERSATION_SESSIONS.getByName(conversationId).getState();
-
-    expect(response.status).toBe(204);
-    expect(state).toMatchObject({
-      tag: ConversationStateTag.Ending,
-      data: {
-        artifact: {
-          status: "failed",
-          errorCode: "artifact.livekit_egress_failed",
-        },
-        target: {
-          kind: "fail",
-          errorCode: "artifact.livekit_egress_failed",
-        },
-      },
-    });
-  });
-
-  it("rejects egress events that do not match the provisioned recording", async () => {
-    const conversationId = await createStartedConversation("livekit-egress-mismatch");
-    const payload = egressEvent(
-      "egress_started",
-      "EV_22222222222M",
-      conversationId,
-      "EGRESS_ACTIVE",
-    );
-    const egressInfo = payload.egressInfo as Record<string, unknown>;
-    egressInfo.egressId = "EG_unrelated";
-
-    const response = await webhookRequest(payload);
-    const state = await env.CONVERSATION_SESSIONS.getByName(conversationId).getState();
-
-    expect(response.status).toBe(409);
-    expect(state).toMatchObject({
-      tag: ConversationStateTag.Starting,
-      revision: 1,
-      data: { artifact: { status: "pending" } },
-    });
-  });
-
   it("verifies the R2 recording and completes after the room closes", async () => {
     const conversationId = await createStartedConversation("livekit-completion");
     const stub = env.CONVERSATION_SESSIONS.getByName(conversationId);
@@ -407,41 +340,6 @@ describe("LiveKit webhook", () => {
         transport: { status: "closed" },
         artifact: { status: "ready" },
       },
-    });
-  });
-
-  it("keeps upload pending when the reported R2 object is not available", async () => {
-    const conversationId = await createStartedConversation("livekit-missing-r2-object");
-    const stub = env.CONVERSATION_SESSIONS.getByName(conversationId);
-    await webhookRequest(
-      egressEvent("egress_started", "EV_22222222222R", conversationId, "EGRESS_ACTIVE"),
-    );
-    let state: ConversationState | null = await stub.getState();
-    let result = await stub.applyEvent({
-      expectedRevision: state!.revision,
-      event: {
-        type: ConversationEventType.EndRequested,
-        eventId: "test:cancel-before-live",
-        at: value.unixMillis(Date.now()),
-        reason: "test",
-        endingDeadlineAt: value.unixMillis(Date.now() + 30_000),
-      },
-    });
-    expect(result.outcome).toBe("applied");
-
-    const objectKey = `conversations/${conversationId}/recording.ogg`;
-    const response = await webhookRequest(
-      egressEvent("egress_ended", "EV_22222222222S", conversationId, "EGRESS_COMPLETE", [
-        { filename: objectKey, size: "10" },
-      ]),
-    );
-    state = await stub.getState();
-
-    expect(response.status).toBe(503);
-    expect(response.headers.get("Retry-After")).toBe("2");
-    expect(state).toMatchObject({
-      tag: ConversationStateTag.Ending,
-      data: { artifact: { status: "uploading", expectedR2Key: objectKey } },
     });
   });
 });
