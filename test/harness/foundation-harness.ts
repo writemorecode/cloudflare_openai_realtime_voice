@@ -6,6 +6,7 @@ import {
   type ConversationState,
 } from "../../src/domain/conversation-state-machine";
 import type { ConversationSession } from "../../src/durable-object/conversation-session";
+import type { LiveKitProvisioningReady } from "../../src/durable-object/conversation-session-contract";
 import { cloudflareConversationSessions } from "../../src/worker/adapters/cloudflare";
 import type { LiveKitAccessResponse } from "../../src/worker/integrations/livekit/access";
 import { handleConversationRequest } from "../../src/worker/http/conversation-api";
@@ -241,6 +242,12 @@ export interface FoundationHarnessOptions {
   readonly now?: number;
 }
 
+export interface SuccessfulRecording {
+  readonly objectKey: string;
+  readonly etag: string;
+  readonly size: number;
+}
+
 export class FoundationHarness {
   readonly clock: DeterministicClock;
   readonly ids = new DeterministicIdGenerator();
@@ -306,6 +313,11 @@ export class FoundationHarness {
     return responseJson(response, [202]);
   }
 
+  async getConversation(conversationId: string): Promise<ConversationStateDto> {
+    const response = await this.browserRequest(`/v1/conversations/${conversationId}/state`);
+    return responseJson(response, [200]);
+  }
+
   async createStartedConversation(idempotencyKey: string): Promise<ConversationStateDto> {
     const created = await this.createConversation(idempotencyKey);
     return this.startConversation(created.conversationId);
@@ -323,6 +335,115 @@ export class FoundationHarness {
     return this.browserRequest(`/v1/conversations/${conversationId}/livekit-access`, {
       method: "DELETE",
     });
+  }
+
+  async provisioning(conversationId: string): Promise<LiveKitProvisioningReady> {
+    const provisioning = await this.session(conversationId).getLiveKitProvisioning();
+    if (provisioning === null) throw new Error("conversation is not provisioned");
+    return provisioning;
+  }
+
+  async recordingStarted(conversationId: string): Promise<void> {
+    const provisioning = await this.provisioning(conversationId);
+    await expectStatus(
+      this.webhook({
+        event: "egress_started",
+        id: this.nextWebhookId(),
+        egressInfo: {
+          egressId: provisioning.egressId,
+          roomName: provisioning.roomName,
+          status: "EGRESS_ACTIVE",
+          fileResults: [],
+        },
+      }),
+      204,
+    );
+  }
+
+  async reachLive(
+    conversationId: string,
+    agentIdentity = "agent-foundation-harness",
+  ): Promise<void> {
+    await this.recordingStarted(conversationId);
+    await expectStatus(this.agentEvent(conversationId, "realtime_ready"), 204);
+
+    const room = { name: this.roomName(conversationId) };
+    const browserIdentity = `browser-${conversationId}`;
+    const observations = [
+      {
+        event: "participant_joined",
+        id: this.nextWebhookId(),
+        room,
+        participant: { identity: browserIdentity, kind: "STANDARD" },
+      },
+      {
+        event: "track_published",
+        id: this.nextWebhookId(),
+        room,
+        participant: { identity: browserIdentity },
+        track: { sid: "TR_harness_browser", type: "AUDIO", source: "MICROPHONE" },
+      },
+      {
+        event: "participant_joined",
+        id: this.nextWebhookId(),
+        room,
+        participant: { identity: agentIdentity, kind: "AGENT" },
+      },
+      {
+        event: "track_published",
+        id: this.nextWebhookId(),
+        room,
+        participant: { identity: agentIdentity },
+        track: { sid: "TR_harness_agent", type: "AUDIO", source: "MICROPHONE" },
+      },
+    ];
+
+    await observations.reduce(
+      (previous, observation) => previous.then(() => expectStatus(this.webhook(observation), 204)),
+      Promise.resolve(),
+    );
+  }
+
+  async completeRecording(
+    conversationId: string,
+    object: RecordingObject = { etag: "etag-foundation-harness", size: 4 },
+  ): Promise<SuccessfulRecording> {
+    const provisioning = await this.provisioning(conversationId);
+    this.recordings.put(provisioning.expectedR2Key, object);
+    await expectStatus(
+      this.webhook({
+        event: "egress_ended",
+        id: this.nextWebhookId(),
+        egressInfo: {
+          egressId: provisioning.egressId,
+          roomName: provisioning.roomName,
+          status: "EGRESS_COMPLETE",
+          fileResults: [
+            {
+              filename: provisioning.expectedR2Key,
+              size: String(object.size),
+            },
+          ],
+        },
+      }),
+      204,
+    );
+    return {
+      objectKey: provisioning.expectedR2Key,
+      etag: object.etag,
+      size: object.size,
+    };
+  }
+
+  async closeRoom(conversationId: string): Promise<void> {
+    await expectStatus(
+      this.webhook({
+        event: "room_finished",
+        id: this.nextWebhookId(),
+        room: { sid: "RM_foundation_harness", name: this.roomName(conversationId) },
+      }),
+      204,
+    );
   }
 
   async webhook(payload: Record<string, unknown>): Promise<Response> {
@@ -414,6 +535,13 @@ async function responseJson<T>(
     throw new Error(`unexpected response ${response.status}: ${await response.text()}`);
   }
   return response.json<T>();
+}
+
+async function expectStatus(response: Promise<Response>, expectedStatus: number): Promise<void> {
+  const resolved = await response;
+  if (resolved.status !== expectedStatus) {
+    throw new Error(`unexpected response ${resolved.status}: ${await resolved.text()}`);
+  }
 }
 
 function eventSuffix(type: string): string {
