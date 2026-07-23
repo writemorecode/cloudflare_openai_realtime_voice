@@ -27,7 +27,6 @@ import { authenticatedHeaders } from "../auth-helpers";
 const API_ORIGIN = "https://api.example.test";
 const BROWSER_ORIGIN = "http://localhost:5173";
 const WEBHOOK_AUTHORIZATION = "Bearer foundation-harness-webhook";
-const AGENT_AUTHORIZATION = "Bearer test-agent-callback-token";
 
 export type LiveKitOperationKind =
   | "room_exists"
@@ -473,6 +472,8 @@ export class FoundationHarness {
       readonly transportEpoch?: number;
       readonly eventId?: string;
       readonly errorCode?: string;
+      readonly roomName?: string;
+      readonly token?: string;
     } = {},
   ): Promise<Response> {
     const transportEpoch = options.transportEpoch ?? 1;
@@ -482,7 +483,7 @@ export class FoundationHarness {
     return this.request("/v1/integrations/livekit/agent-events", {
       method: "POST",
       headers: {
-        Authorization: AGENT_AUTHORIZATION,
+        Authorization: `Bearer ${options.token ?? "test-agent-callback-token"}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -490,7 +491,7 @@ export class FoundationHarness {
         type,
         eventId,
         conversationId,
-        roomName: this.roomName(conversationId),
+        roomName: options.roomName ?? this.roomName(conversationId),
         transportEpoch,
         occurredAt: this.clock.iso(),
         ...(type === "realtime_failed"
