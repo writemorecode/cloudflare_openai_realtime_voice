@@ -51,6 +51,21 @@ Prefer the high-level scenario helpers when the setup is incidental to the behav
 Use `webhook`, `agentEvent`, `session`, and the individual fake ports when exact ordering, malformed
 input, or a failure seam is the subject.
 
+Use the harness for tests whose subject crosses the HTTP, orchestration, and aggregate boundaries:
+
+- conversation lifecycle and composite readiness;
+- agent-event correlation, deduplication, interruption, recovery, and failure;
+- provider retry and partial-progress convergence;
+- recording verification and sanitized public outcomes.
+
+Keep focused fixtures when the replaced adapter is the subject of the test:
+
+- use the production Worker composition for browser authentication, CORS, and configuration;
+- use signed LiveKit requests for JWT/raw-body verification and SDK payload decoding;
+- use narrow access-adapter fakes for token grants and individual executor decisions;
+- use direct Durable Object tests for storage transactions, alarm delivery, sockets, and reducer
+  edge cases.
+
 The injected clock controls request and domain-event timestamps. Miniflare still owns actual Durable
 Object alarm delivery, so the default harness epoch is far enough in the future to prevent an alarm
 from firing accidentally. Tests specifically about alarm scheduling and delivery should continue to

@@ -11,7 +11,7 @@
     "dev": "vite",
     "check": "pnpm run typecheck && pnpm run test:boundaries && pnpm run test:auth-scripts && pnpm run test && pnpm --filter @ai-oral-exam/livekit-agent check",
     "test": "vitest run --config vitest.config.ts && vitest run --config web/vitest.config.ts",
-    "test:foundation": "vitest run --config vitest.config.ts test/harness/foundation-harness.test.ts",
+    "test:foundation": "vitest run --config vitest.config.ts test/harness/foundation-harness.test.ts test/foundation-livekit-orchestration.test.ts test/livekit-agent-events.test.ts",
     "test:auth-scripts": "node --test scripts/auth-user-utils.test.mjs",
     "test:boundaries": "node --test scripts/application-boundary.test.mjs",
     "typecheck": "tsc --noEmit && tsc --noEmit -p web/tsconfig.json",
