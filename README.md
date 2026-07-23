@@ -277,11 +277,17 @@ observations; only the user end command mutates the aggregate through this socke
 pnpm fmt
 pnpm lint
 pnpm check
+pnpm test:foundation
 pnpm --filter @ai-oral-exam/livekit-agent test:smoke # optional, credentialed
 pnpm types
 pnpm exec wrangler deploy --dry-run
 docker build -t ai-oral-exam-livekit-agent .
 ```
+
+`pnpm test:foundation` runs the deterministic control-plane harness. It sends requests through the
+real HTTP router and uses the real `ConversationSession` Durable Object while replacing external
+LiveKit, webhook-verification, R2, clock, and ID effects with controlled in-memory ports. See
+[`test/harness/README.md`](test/harness/README.md) for its scope and scenario API.
 
 The source-config dry run is `pnpm exec wrangler deploy --dry-run --config wrangler.jsonc`; keep the
 explicit config argument in CI and pre-commit verification so a different Wrangler default cannot

@@ -322,6 +322,14 @@ R2 buckets directly. Production adapters are assembled in `src/worker/index.ts`;
 clocks and IDs plus small structural fakes. This keeps orchestration deterministic without changing
 the Durable Object's authoritative state or weakening provider verification.
 
+The deterministic foundation harness under `test/harness/` composes those controlled ports with the
+real HTTP router and the real `ConversationSession` binding. A scenario therefore exercises
+authentication, routing, integration orchestration, Durable Object RPC and storage, the reducer,
+event receipts, and public DTO sanitization as one control-plane unit. The harness records provider
+operations and supports one-shot failures so retries and partial progress are inspectable. It does
+not replace focused adapter tests: signed LiveKit webhook verification, actual SDK request mapping,
+and automatic Durable Object alarm delivery remain separate integration concerns.
+
 Inside the integration boundary, foundational orchestration follows a decode/decide/execute shape:
 
 ```text
