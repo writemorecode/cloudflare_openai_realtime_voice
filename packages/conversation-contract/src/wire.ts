@@ -3,6 +3,7 @@
  * WebSocket implementation. This protocol exposes sanitized DTOs, never internal provider IDs.
  */
 import { decode, encode } from "@msgpack/msgpack";
+import { err, ok, tryCatchSync, type Result } from "@ai-oral-exam/result";
 import { z } from "zod";
 
 import { ConversationStateTag, conversationStateSchema, type ConversationStateDto } from "./state";
@@ -196,99 +197,122 @@ export class WireProtocolError extends Error {
   }
 }
 
-export const encodeWireMessage: (message: ServerWireMessage | BrowserWireMessage) => Uint8Array =
-  encode;
+export function encodeWireMessage(
+  message: ServerWireMessage | BrowserWireMessage,
+): Result<Uint8Array, WireProtocolError> {
+  return tryCatchSync(
+    () => encode(message),
+    (cause) => new WireProtocolError(ProtocolErrorCode.InternalError, null, cause),
+  );
+}
 
-export function decodeServerMessage(bytes: ArrayBuffer): ServerWireMessage {
-  const [version, type, id, body] = decodeEnvelope(bytes);
-  try {
-    switch (type) {
-      case ServerMessageType.ServerHello:
-        return [version, type, id, serverHelloBodySchema.parse(body)];
-      case ServerMessageType.StateSnapshot:
-        return [version, type, id, stateSnapshotBodySchema.parse(body)];
-      case ServerMessageType.MessageAck:
-        return [version, type, id, messageAckBodySchema.parse(body)];
-      case ServerMessageType.ProtocolError:
-        return [version, type, id, protocolErrorBodySchema.parse(body)];
-      case ServerMessageType.ServerPing:
-        return [version, type, id, serverPingBodySchema.parse(body)];
-      default:
-        throw new WireProtocolError(ProtocolErrorCode.UnknownMessageType, id);
-    }
-  } catch (error) {
-    throw asWireError(error, id);
+export function decodeServerMessage(
+  bytes: ArrayBuffer,
+): Result<ServerWireMessage, WireProtocolError> {
+  const envelope = decodeEnvelope(bytes);
+  if (!envelope.ok) return err(envelope.error);
+  const [version, type, id, body] = envelope.value;
+  switch (type) {
+    case ServerMessageType.ServerHello:
+      return serverMessage(version, type, id, body, serverHelloBodySchema);
+    case ServerMessageType.StateSnapshot:
+      return serverMessage(version, type, id, body, stateSnapshotBodySchema);
+    case ServerMessageType.MessageAck:
+      return serverMessage(version, type, id, body, messageAckBodySchema);
+    case ServerMessageType.ProtocolError:
+      return serverMessage(version, type, id, body, protocolErrorBodySchema);
+    case ServerMessageType.ServerPing:
+      return serverMessage(version, type, id, body, serverPingBodySchema);
+    default:
+      return err(new WireProtocolError(ProtocolErrorCode.UnknownMessageType, id));
   }
 }
 
-export function decodeBrowserMessage(bytes: ArrayBuffer): BrowserWireMessage {
-  const [version, type, id, body] = decodeEnvelope(bytes);
-  try {
-    switch (type) {
-      case BrowserMessageType.ClientHello:
-        return [version, type, id, clientHelloBodySchema.parse(body)];
-      case BrowserMessageType.SessionReady:
-        return [version, type, id, sessionReadyBodySchema.parse(body)];
-      case BrowserMessageType.TransportStatus:
-        return [version, type, id, transportStatusBodySchema.parse(body)];
-      case BrowserMessageType.SessionClosed:
-        return [version, type, id, sessionClosedBodySchema.parse(body)];
-      case BrowserMessageType.ArtifactStatus:
-        return [version, type, id, artifactStatusBodySchema.parse(body)];
-      case BrowserMessageType.EndRequested:
-        return [version, type, id, endRequestedBodySchema.parse(body)];
-      case BrowserMessageType.ClientPing:
-        return [version, type, id, clientPingBodySchema.parse(body)];
-      default:
-        throw new WireProtocolError(ProtocolErrorCode.UnknownMessageType, id);
-    }
-  } catch (error) {
-    throw asWireError(error, id);
+export function decodeBrowserMessage(
+  bytes: ArrayBuffer,
+): Result<BrowserWireMessage, WireProtocolError> {
+  const envelope = decodeEnvelope(bytes);
+  if (!envelope.ok) return err(envelope.error);
+  const [version, type, id, body] = envelope.value;
+  switch (type) {
+    case BrowserMessageType.ClientHello:
+      return browserMessage(version, type, id, body, clientHelloBodySchema);
+    case BrowserMessageType.SessionReady:
+      return browserMessage(version, type, id, body, sessionReadyBodySchema);
+    case BrowserMessageType.TransportStatus:
+      return browserMessage(version, type, id, body, transportStatusBodySchema);
+    case BrowserMessageType.SessionClosed:
+      return browserMessage(version, type, id, body, sessionClosedBodySchema);
+    case BrowserMessageType.ArtifactStatus:
+      return browserMessage(version, type, id, body, artifactStatusBodySchema);
+    case BrowserMessageType.EndRequested:
+      return browserMessage(version, type, id, body, endRequestedBodySchema);
+    case BrowserMessageType.ClientPing:
+      return browserMessage(version, type, id, body, clientPingBodySchema);
+    default:
+      return err(new WireProtocolError(ProtocolErrorCode.UnknownMessageType, id));
   }
 }
 
-function decodeEnvelope(bytes: ArrayBuffer): [1, number, string, unknown] {
+function decodeEnvelope(
+  bytes: ArrayBuffer,
+): Result<readonly [1, number, string, unknown], WireProtocolError> {
   if (bytes.byteLength > MAX_WIRE_MESSAGE_BYTES) {
-    throw new WireProtocolError(ProtocolErrorCode.MessageTooLarge);
+    return err(new WireProtocolError(ProtocolErrorCode.MessageTooLarge));
   }
-  const decodedResult = decodeMessagePack(bytes);
-  if (!decodedResult.success) {
-    throw new WireProtocolError(ProtocolErrorCode.MalformedEnvelope, null, decodedResult.error);
+  const decodedResult = tryCatchSync(
+    () => decode(new Uint8Array(bytes)),
+    (cause) => new WireProtocolError(ProtocolErrorCode.MalformedEnvelope, null, cause),
+  );
+  if (!decodedResult.ok) {
+    return err(decodedResult.error);
   }
   const decoded = decodedResult.value;
   if (!Array.isArray(decoded) || decoded.length !== 4) {
-    throw new WireProtocolError(ProtocolErrorCode.MalformedEnvelope);
+    return err(new WireProtocolError(ProtocolErrorCode.MalformedEnvelope));
   }
   const [version, type, id, body] = decoded;
   if (version !== WIRE_PROTOCOL_VERSION) {
-    throw new WireProtocolError(
-      ProtocolErrorCode.UnsupportedVersion,
-      typeof id === "string" ? id : null,
+    return err(
+      new WireProtocolError(
+        ProtocolErrorCode.UnsupportedVersion,
+        typeof id === "string" ? id : null,
+      ),
     );
   }
   if (!Number.isInteger(type) || typeof id !== "string" || id.length === 0 || id.length > 128) {
-    throw new WireProtocolError(
-      ProtocolErrorCode.MalformedEnvelope,
-      typeof id === "string" ? id : null,
+    return err(
+      new WireProtocolError(
+        ProtocolErrorCode.MalformedEnvelope,
+        typeof id === "string" ? id : null,
+      ),
     );
   }
-  return [version, type as number, id, body];
+  return ok([version, type as number, id, body]);
 }
 
-function decodeMessagePack(
-  bytes: ArrayBuffer,
-): Readonly<{ success: true; value: unknown }> | Readonly<{ success: false; error: unknown }> {
-  try {
-    return { success: true, value: decode(new Uint8Array(bytes)) };
-  } catch (error) {
-    return { success: false, error };
-  }
+function serverMessage<T extends ServerWireMessage[1], B>(
+  version: typeof WIRE_PROTOCOL_VERSION,
+  type: T,
+  id: string,
+  body: unknown,
+  schema: z.ZodType<B>,
+): Result<ServerWireMessage, WireProtocolError> {
+  const parsed = schema.safeParse(body);
+  return parsed.success
+    ? ok([version, type, id, parsed.data] as ServerWireMessage)
+    : err(new WireProtocolError(ProtocolErrorCode.InvalidBody, id, parsed.error));
 }
 
-function asWireError(error: unknown, id: string): WireProtocolError {
-  if (error instanceof WireProtocolError) return error;
-  if (error instanceof z.ZodError) {
-    return new WireProtocolError(ProtocolErrorCode.InvalidBody, id, error);
-  }
-  return new WireProtocolError(ProtocolErrorCode.InternalError, id, error);
+function browserMessage<T extends BrowserWireMessage[1], B>(
+  version: typeof WIRE_PROTOCOL_VERSION,
+  type: T,
+  id: string,
+  body: unknown,
+  schema: z.ZodType<B>,
+): Result<BrowserWireMessage, WireProtocolError> {
+  const parsed = schema.safeParse(body);
+  return parsed.success
+    ? ok([version, type, id, parsed.data] as BrowserWireMessage)
+    : err(new WireProtocolError(ProtocolErrorCode.InvalidBody, id, parsed.error));
 }

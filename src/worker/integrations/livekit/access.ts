@@ -13,7 +13,7 @@ import type {
   LiveKitShutdownDependencies,
   LiveKitShutdownPort,
 } from "../../ports/foundation";
-import { err, ok, tryCatch, type Result } from "../../try-catch";
+import { err, ok, tryCatch, type Result } from "@ai-oral-exam/result";
 import {
   decideLiveKitDispatch,
   decideLiveKitEgress,

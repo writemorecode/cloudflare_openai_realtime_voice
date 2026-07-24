@@ -9,7 +9,7 @@ import {
   type ConversationState,
 } from "../../../domain/conversation-state-machine";
 import type { LiveKitMediaObservationKind } from "../../../durable-object/conversation-session";
-import { err, ok, type Result } from "../../try-catch";
+import { err, ok, type Result } from "@ai-oral-exam/result";
 
 const LIVEKIT_EVENT_ID_PATTERN = /^EV_[A-Za-z0-9]{12}$/;
 const CONVERSATION_ID_PATTERN =

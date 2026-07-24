@@ -4,16 +4,20 @@ import type {
   ConversationStateDto,
   LiveKitAccess,
 } from "@ai-oral-exam/conversation-contract";
+import type { Result } from "@ai-oral-exam/result";
+import type { ConversationClientError } from "./errors";
 
 export interface ConversationApi {
-  login(username: string, password: string): Promise<AuthSession>;
-  getSession(): Promise<AuthSession>;
-  logout(): Promise<void>;
-  createConversation(): Promise<ConversationStateDto>;
-  startConversation(conversationId: string): Promise<ConversationStateDto>;
-  getState(conversationId: string): Promise<ConversationStateDto>;
-  getLiveKitAccess(conversationId: string): Promise<LiveKitAccess>;
-  releaseLiveKitAccess(conversationId: string): Promise<void>;
+  login(username: string, password: string): Promise<Result<AuthSession, ConversationClientError>>;
+  getSession(): Promise<Result<AuthSession, ConversationClientError>>;
+  logout(): Promise<Result<void, ConversationClientError>>;
+  createConversation(): Promise<Result<ConversationStateDto, ConversationClientError>>;
+  startConversation(
+    conversationId: string,
+  ): Promise<Result<ConversationStateDto, ConversationClientError>>;
+  getState(conversationId: string): Promise<Result<ConversationStateDto, ConversationClientError>>;
+  getLiveKitAccess(conversationId: string): Promise<Result<LiveKitAccess, ConversationClientError>>;
+  releaseLiveKitAccess(conversationId: string): Promise<Result<void, ConversationClientError>>;
   websocketUrl(conversationId: string): string;
   websocketProtocols(): string[];
 }
@@ -24,11 +28,14 @@ export interface RuntimeEvents {
 }
 
 export interface ConversationRuntime {
-  connect(initialState: ConversationStateDto, audioHost: HTMLElement): Promise<void>;
-  enableAudio(): Promise<void>;
-  setMicrophoneEnabled(enabled: boolean): Promise<void>;
-  requestEnd(): Promise<ConversationStateDto>;
-  close(): Promise<void>;
+  connect(
+    initialState: ConversationStateDto,
+    audioHost: HTMLElement,
+  ): Promise<Result<void, ConversationClientError>>;
+  enableAudio(): Promise<Result<void, ConversationClientError>>;
+  setMicrophoneEnabled(enabled: boolean): Promise<Result<void, ConversationClientError>>;
+  requestEnd(): Promise<Result<ConversationStateDto, ConversationClientError>>;
+  close(): Promise<Result<void, ConversationClientError>>;
 }
 
 export type RuntimeFactory = (

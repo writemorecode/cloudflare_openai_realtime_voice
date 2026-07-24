@@ -23,7 +23,7 @@ import {
   stopLiveKitAccess,
   type LiveKitAccessResponse,
 } from "../integrations/livekit/access";
-import { err, ok, tryCatch, type Result } from "../try-catch";
+import { err, ok, tryCatch, type Result } from "@ai-oral-exam/result";
 import type { FoundationDependencies } from "../ports/foundation";
 
 const STARTING_WINDOW_MS = 60_000;

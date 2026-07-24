@@ -2,7 +2,7 @@ import { createExecutionContext, createMessageBatch, getQueueResult } from "clou
 import { describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "../src/worker/http/api-errors";
-import { err, ok } from "../src/worker/try-catch";
+import { err, ok } from "@ai-oral-exam/result";
 import {
   LIVEKIT_SHUTDOWN_MESSAGE_VERSION,
   type LiveKitShutdownMessage,

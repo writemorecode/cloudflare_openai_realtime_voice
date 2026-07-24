@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { err, ok, tryCatch, type Result } from "../src/worker/try-catch";
+import { err, ok, tryCatch, tryCatchSync, type Result } from "@ai-oral-exam/result";
 
 describe("Result", () => {
   it("constructs typed success and failure variants", () => {
@@ -12,7 +12,18 @@ describe("Result", () => {
   });
 });
 
-describe("tryCatch", () => {
+describe("Result adapters", () => {
+  it("captures synchronous throws without changing the calling API to async", () => {
+    const result = tryCatchSync(
+      () => {
+        throw new TypeError("invalid input");
+      },
+      (cause) => (cause instanceof Error ? cause.name : "unknown"),
+    );
+
+    expect(result).toEqual({ ok: false, error: "TypeError" });
+  });
+
   it("captures synchronous throws", async () => {
     const result = await tryCatch(
       () => {

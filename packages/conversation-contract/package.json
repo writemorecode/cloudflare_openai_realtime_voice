@@ -7,6 +7,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@ai-oral-exam/result": "workspace:*",
     "@msgpack/msgpack": "^3.1.3",
     "zod": "^4.4.3"
   }

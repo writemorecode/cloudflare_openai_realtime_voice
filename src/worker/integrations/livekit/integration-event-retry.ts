@@ -7,7 +7,7 @@ import type {
   ApplyEventResult,
   ConversationSession,
 } from "../../../durable-object/conversation-session";
-import { err, ok, tryCatch, type Result } from "../../try-catch";
+import { err, ok, tryCatch, type Result } from "@ai-oral-exam/result";
 
 const MAX_ATTEMPTS = 3;
 

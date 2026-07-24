@@ -67,7 +67,10 @@ async function setup(name: string, start = false) {
 }
 
 function send(socket: WebSocket, message: BrowserWireMessage): void {
-  socket.send(encodeWireMessage(message));
+  const encoded = encodeWireMessage(message);
+  expect(encoded).toMatchObject({ ok: true });
+  if (!encoded.ok) throw encoded.error;
+  socket.send(encoded.value);
 }
 
 async function receive(socket: WebSocket): Promise<ServerWireMessage> {
@@ -75,12 +78,18 @@ async function receive(socket: WebSocket): Promise<ServerWireMessage> {
     socket.addEventListener("message", resolve, { once: true }),
   );
   const data = event.data;
-  if (data instanceof ArrayBuffer) return decodeServerMessage(data);
+  if (data instanceof ArrayBuffer) {
+    const decoded = decodeServerMessage(data);
+    if (!decoded.ok) throw decoded.error;
+    return decoded.value;
+  }
   if (ArrayBuffer.isView(data)) {
     const view = data as ArrayBufferView;
-    return decodeServerMessage(
+    const decoded = decodeServerMessage(
       view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength) as ArrayBuffer,
     );
+    if (!decoded.ok) throw decoded.error;
+    return decoded.value;
   }
   throw new Error("expected binary message");
 }

@@ -95,7 +95,9 @@ The browser implementation is split into a reusable foundation client and the pr
 `@ai-oral-exam/conversation-client` package owns HTTP calls, runtime validation of public responses,
 the `conversation.v1` control socket, and LiveKit room/media orchestration. The application under
 `web/` owns only presentation, navigation, and product interaction, and imports no control-plane or
-domain internals. The provider-neutral, versioned public schemas live in
+domain internals. Fallible client and wire operations return explicit `Result` values so expected
+HTTP, validation, protocol, and media failures do not cross these boundaries as exceptions. The
+provider-neutral, versioned public schemas live in
 `@ai-oral-exam/conversation-contract`; the application receives those types only through the client
 package.
 

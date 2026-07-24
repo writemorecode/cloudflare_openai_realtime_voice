@@ -1,6 +1,6 @@
 /** Pure resource-selection rules for idempotent LiveKit provisioning. */
 import type { LiveKitDispatchResource, LiveKitEgressResource } from "../../ports/foundation";
-import { err, ok, type Result } from "../../try-catch";
+import { err, ok, type Result } from "@ai-oral-exam/result";
 
 const LIVEKIT_AGENT_NAME = "oral-exam-agent";
 

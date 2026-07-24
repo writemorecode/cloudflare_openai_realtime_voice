@@ -1,4 +1,4 @@
-/** A small, explicit success-or-failure value for Worker integration boundaries. */
+/** An explicit success-or-failure value for operations that can fail. */
 export type Result<T, E> = Ok<T> | Err<E>;
 
 export interface Ok<T> {
@@ -17,6 +17,18 @@ export function ok<T>(value: T): Ok<T> {
 
 export function err<E>(error: E): Err<E> {
   return { ok: false, error };
+}
+
+/** Captures a synchronous throw and maps it to an explicit error type. */
+export function tryCatchSync<T, E>(
+  operation: () => T,
+  mapError: (cause: unknown) => E,
+): Result<T, E> {
+  try {
+    return ok(operation());
+  } catch (cause) {
+    return err(mapError(cause));
+  }
 }
 
 /** Captures synchronous throws and Promise rejections and maps them to an explicit error type. */

@@ -52,6 +52,8 @@ The target design is LiveKit-first:
 
 - Use `pnpm` for package and script commands.
 - Use `apply_patch` for hand-authored file changes.
+- Prefer explicit `Result` return types from `@ai-oral-exam/result` over throwing exceptions for
+  expected operational failures.
 - Preserve unrelated user changes in a dirty worktree.
 - Update `docs/livekit-architecture.md` and relevant tests whenever an architectural invariant or
   state transition changes.

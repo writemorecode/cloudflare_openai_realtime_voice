@@ -1,6 +1,6 @@
 /** Processes retryable queue messages that clean up provisioned LiveKit conversation resources. */
 import { ApiError } from "../../http/api-errors";
-import type { Result } from "../../try-catch";
+import type { Result } from "@ai-oral-exam/result";
 import {
   isLiveKitShutdownMessage,
   type LiveKitShutdownMessage,

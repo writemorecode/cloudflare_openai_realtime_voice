@@ -8,7 +8,7 @@ import type {
   LiveKitTransportEvidence,
 } from "../../../durable-object/conversation-session";
 import { ApiError } from "../../http/api-errors";
-import { err, ok, tryCatch, type Result } from "../../try-catch";
+import { err, ok, tryCatch, type Result } from "@ai-oral-exam/result";
 import { applyIntegrationEventWithRetry } from "./integration-event-retry";
 import { nextReadinessEvent } from "./readiness-decisions";
 

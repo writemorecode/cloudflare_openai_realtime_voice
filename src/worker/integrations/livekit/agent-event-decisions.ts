@@ -14,7 +14,7 @@ import {
   TRANSPORT_RECOVERY_WINDOW_MS,
 } from "../../../domain/conversation-deadlines";
 import type { AgentObservationKind } from "../../../durable-object/conversation-session";
-import { err, ok, type Result } from "../../try-catch";
+import { err, ok, type Result } from "@ai-oral-exam/result";
 
 const AGENT_EVENT_ID_PATTERN = /^agent:[0-9a-f-]{36}:[1-9][0-9]*:[a-z-]+$/;
 const ERROR_CODE_PATTERN = /^[a-z][a-z0-9_.-]{0,127}$/;

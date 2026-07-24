@@ -14,7 +14,6 @@ import {
   ServerMessageType,
   WIRE_PROTOCOL_VERSION,
   WIRE_SUBPROTOCOL,
-  WireProtocolError,
   decodeBrowserMessage,
   encodeWireMessage,
   type BrowserWireMessage,
@@ -86,14 +85,9 @@ export class ConversationSocketGateway {
       return;
     }
 
-    let message: BrowserWireMessage;
-    try {
-      message = decodeBrowserMessage(rawMessage);
-    } catch (error) {
-      const protocolError =
-        error instanceof WireProtocolError
-          ? error
-          : new WireProtocolError(ProtocolErrorCode.InternalError);
+    const decoded = decodeBrowserMessage(rawMessage);
+    if (!decoded.ok) {
+      const protocolError = decoded.error;
       const state = this.commands.getState();
       this.sendProtocolError(
         ws,
@@ -113,6 +107,7 @@ export class ConversationSocketGateway {
       }
       return;
     }
+    const message = decoded.value;
 
     try {
       await this.handleBrowserMessage(ws, message);
@@ -366,7 +361,19 @@ export class ConversationSocketGateway {
   }
 
   private sendWire(ws: WebSocket, message: ServerWireMessage): void {
-    ws.send(encodeWireMessage(message));
+    const encoded = encodeWireMessage(message);
+    if (!encoded.ok) {
+      console.error(
+        JSON.stringify({
+          kind: "conversation_websocket_encode_failed",
+          sessionId: this.ctx.id.name ?? null,
+          code: encoded.error.code,
+        }),
+      );
+      ws.close(1011, "Message encoding failed");
+      return;
+    }
+    ws.send(encoded.value);
   }
 }
 

@@ -2,7 +2,7 @@
 import { pbkdf2Sync } from "node:crypto";
 
 import { ApiError } from "./api-errors";
-import { err, ok, tryCatch, type Result } from "../try-catch";
+import { err, ok, tryCatch, type Result } from "@ai-oral-exam/result";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();

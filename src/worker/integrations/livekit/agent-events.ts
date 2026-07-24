@@ -7,7 +7,7 @@ import type { ConversationSession } from "../../../durable-object/conversation-s
 import { ApiError } from "../../http/api-errors";
 import { authenticateBearer } from "../../http/api-security";
 import type { AgentEventDependencies } from "../../ports/foundation";
-import { err, ok, tryCatch, type Result } from "../../try-catch";
+import { err, ok, tryCatch, type Result } from "@ai-oral-exam/result";
 import { applyIntegrationEventWithRetry } from "./integration-event-retry";
 import { reconcileCompositeReadiness } from "./readiness";
 import { decideAgentEvent, decodeAgentEvent } from "./agent-event-decisions";

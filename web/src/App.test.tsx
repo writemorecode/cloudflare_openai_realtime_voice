@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ConversationStateTag,
   TransportStatus,
+  ok,
   type ConversationApi,
   type ConversationRuntime,
   type ConversationStateDto,
@@ -34,14 +35,14 @@ function state(tag: ConversationStateTag): ConversationStateDto {
 
 function api(overrides: Partial<ConversationApi> = {}): ConversationApi {
   return {
-    login: vi.fn().mockResolvedValue({ username: "examiner" }),
-    getSession: vi.fn().mockResolvedValue({ username: "examiner" }),
-    logout: vi.fn(),
-    createConversation: vi.fn().mockResolvedValue(state(ConversationStateTag.Created)),
+    login: vi.fn().mockResolvedValue(ok({ username: "examiner" })),
+    getSession: vi.fn().mockResolvedValue(ok({ username: "examiner" })),
+    logout: vi.fn().mockResolvedValue(ok(undefined)),
+    createConversation: vi.fn().mockResolvedValue(ok(state(ConversationStateTag.Created))),
     startConversation: vi.fn(),
-    getState: vi.fn().mockResolvedValue(state(ConversationStateTag.Completed)),
+    getState: vi.fn().mockResolvedValue(ok(state(ConversationStateTag.Completed))),
     getLiveKitAccess: vi.fn(),
-    releaseLiveKitAccess: vi.fn(),
+    releaseLiveKitAccess: vi.fn().mockResolvedValue(ok(undefined)),
     websocketUrl: vi.fn(),
     websocketProtocols: vi.fn(),
     ...overrides,
@@ -58,7 +59,9 @@ describe("conversation pages", () => {
 
   it("requires and submits username and password credentials", async () => {
     const navigate = vi.fn();
-    const authenticateAndCreate = vi.fn().mockResolvedValue(state(ConversationStateTag.Created));
+    const authenticateAndCreate = vi
+      .fn()
+      .mockResolvedValue(ok(state(ConversationStateTag.Created)));
     render(
       <HomePage api={null} authenticateAndCreate={authenticateAndCreate} navigate={navigate} />,
     );
@@ -102,16 +105,16 @@ describe("conversation pages", () => {
       ending: { target: "complete" as const },
     } as ConversationStateDto;
     const runtime: ConversationRuntime = {
-      connect: vi.fn().mockResolvedValue(undefined),
-      enableAudio: vi.fn().mockResolvedValue(undefined),
-      setMicrophoneEnabled: vi.fn().mockResolvedValue(undefined),
-      requestEnd: vi.fn().mockResolvedValue(ending),
-      close: vi.fn().mockResolvedValue(undefined),
+      connect: vi.fn().mockResolvedValue(ok(undefined)),
+      enableAudio: vi.fn().mockResolvedValue(ok(undefined)),
+      setMicrophoneEnabled: vi.fn().mockResolvedValue(ok(undefined)),
+      requestEnd: vi.fn().mockResolvedValue(ok(ending)),
+      close: vi.fn().mockResolvedValue(ok(undefined)),
     };
     const runtimeFactory: RuntimeFactory = vi.fn().mockReturnValue(runtime);
     const conversationApi = api({
-      getState: vi.fn().mockResolvedValue(state(ConversationStateTag.Created)),
-      startConversation: vi.fn().mockResolvedValue(starting),
+      getState: vi.fn().mockResolvedValue(ok(state(ConversationStateTag.Created))),
+      startConversation: vi.fn().mockResolvedValue(ok(starting)),
     });
 
     render(
@@ -138,11 +141,11 @@ describe("conversation pages", () => {
     } as ConversationStateDto;
     let events: RuntimeEvents | null = null;
     const runtime: ConversationRuntime = {
-      connect: vi.fn().mockResolvedValue(undefined),
-      enableAudio: vi.fn().mockResolvedValue(undefined),
-      setMicrophoneEnabled: vi.fn().mockResolvedValue(undefined),
+      connect: vi.fn().mockResolvedValue(ok(undefined)),
+      enableAudio: vi.fn().mockResolvedValue(ok(undefined)),
+      setMicrophoneEnabled: vi.fn().mockResolvedValue(ok(undefined)),
       requestEnd: vi.fn(),
-      close: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(ok(undefined)),
     };
     const runtimeFactory: RuntimeFactory = vi.fn((_api, _conversationId, nextEvents) => {
       events = nextEvents;
@@ -152,8 +155,8 @@ describe("conversation pages", () => {
       <ConversationPage
         conversationId={ID}
         api={api({
-          getState: vi.fn().mockResolvedValue(starting),
-          startConversation: vi.fn().mockResolvedValue(starting),
+          getState: vi.fn().mockResolvedValue(ok(starting)),
+          startConversation: vi.fn().mockResolvedValue(ok(starting)),
         })}
         runtimeFactory={runtimeFactory}
         navigate={vi.fn()}

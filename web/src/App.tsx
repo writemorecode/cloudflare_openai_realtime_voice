@@ -7,8 +7,10 @@ import {
   TransportStatus,
   createConversationRuntime,
   type ConversationApi,
+  type ConversationClientError,
   type ConversationRuntime,
   type ConversationStateDto,
+  type Result,
   type RuntimeFactory,
 } from "@ai-oral-exam/conversation-client";
 
@@ -42,10 +44,9 @@ export function App({ services }: { readonly services?: Services }) {
   useEffect(() => {
     if (services !== undefined) return;
     let disposed = false;
-    void api.getSession().then(
-      () => !disposed && setAuthState("authenticated"),
-      () => !disposed && setAuthState("unauthenticated"),
-    );
+    void api
+      .getSession()
+      .then((result) => !disposed && setAuthState(result.ok ? "authenticated" : "unauthenticated"));
     return () => {
       disposed = true;
     };
@@ -54,10 +55,11 @@ export function App({ services }: { readonly services?: Services }) {
   const authenticateAndCreate = async (
     username: string,
     password: string,
-  ): Promise<ConversationStateDto> => {
-    await api.login(username, password);
+  ): Promise<Result<ConversationStateDto, ConversationClientError>> => {
+    const login = await api.login(username, password);
+    if (!login.ok) return login;
     const created = await api.createConversation();
-    setAuthState("authenticated");
+    if (created.ok) setAuthState("authenticated");
     return created;
   };
 
@@ -104,7 +106,7 @@ export function HomePage({
   readonly authenticateAndCreate?: (
     username: string,
     password: string,
-  ) => Promise<ConversationStateDto>;
+  ) => Promise<Result<ConversationStateDto, ConversationClientError>>;
 }) {
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -118,16 +120,22 @@ export function HomePage({
     }
     setStarting(true);
     setError(null);
-    try {
-      const created =
-        api === null
-          ? await requireAuthenticate(authenticateAndCreate)(username, password)
-          : await api.createConversation();
-      navigate(`/conversation/${created.conversationId}`);
-    } catch (cause) {
-      setError(messageFor(cause));
+    let created: Result<ConversationStateDto, ConversationClientError>;
+    if (api !== null) {
+      created = await api.createConversation();
+    } else if (authenticateAndCreate !== undefined) {
+      created = await authenticateAndCreate(username, password);
+    } else {
+      setError("Authentication is unavailable.");
       setStarting(false);
+      return;
     }
+    if (!created.ok) {
+      setError(messageFor(created.error));
+      setStarting(false);
+      return;
+    }
+    navigate(`/conversation/${created.value.conversationId}`);
   };
 
   return (
@@ -224,19 +232,24 @@ export function ConversationPage({
     runtime.current = instance;
 
     const connect = async () => {
-      try {
-        const current = await api.getState(conversationId);
-        const started =
-          current.state === ConversationStateTag.Created
-            ? await api.startConversation(conversationId)
-            : current;
-        if (disposed || audioHost.current === null) return;
-        setState(started);
-        setPhase(labelForState(started));
-        await instance.connect(started, audioHost.current);
-      } catch (cause) {
-        if (!disposed) setError(messageFor(cause));
+      const current = await api.getState(conversationId);
+      if (!current.ok) {
+        if (!disposed) setError(messageFor(current.error));
+        return;
       }
+      const started =
+        current.value.state === ConversationStateTag.Created
+          ? await api.startConversation(conversationId)
+          : current;
+      if (!started.ok) {
+        if (!disposed) setError(messageFor(started.error));
+        return;
+      }
+      if (disposed || audioHost.current === null) return;
+      setState(started.value);
+      setPhase(labelForState(started.value));
+      const connected = await instance.connect(started.value, audioHost.current);
+      if (!connected.ok && !disposed) setError(messageFor(connected.error));
     };
     void connect();
     return () => {
@@ -246,26 +259,33 @@ export function ConversationPage({
   }, [api, conversationId, navigate, runtimeFactory]);
 
   const toggleMute = async () => {
-    try {
-      const next = !muted;
-      await runtime.current?.setMicrophoneEnabled(!next);
-      setMuted(next);
-    } catch (cause) {
-      setError(messageFor(cause));
+    if (runtime.current === null) return;
+    const next = !muted;
+    const changed = await runtime.current.setMicrophoneEnabled(!next);
+    if (!changed.ok) {
+      setError(messageFor(changed.error));
+      return;
     }
+    setMuted(next);
   };
 
   const end = async () => {
     if (runtime.current === null) return;
     setEnding(true);
     setError(null);
-    try {
-      await runtime.current.requestEnd();
-      navigate(`/conversation/${conversationId}/complete`);
-    } catch (cause) {
-      setError(messageFor(cause));
+    const ended = await runtime.current.requestEnd();
+    if (!ended.ok) {
+      setError(messageFor(ended.error));
       setEnding(false);
+      return;
     }
+    navigate(`/conversation/${conversationId}/complete`);
+  };
+
+  const enableAudio = async () => {
+    if (runtime.current === null) return;
+    const enabled = await runtime.current.enableAudio();
+    if (!enabled.ok) setError(messageFor(enabled.error));
   };
 
   const readyToEnd =
@@ -296,11 +316,7 @@ export function ConversationPage({
           <p className="inline-status">Connection interrupted. Reconnecting…</p>
         )}
         {playbackBlocked && (
-          <button
-            className="secondary-button"
-            type="button"
-            onClick={() => void runtime.current?.enableAudio()}
-          >
+          <button className="secondary-button" type="button" onClick={() => void enableAudio()}>
             Enable examiner audio
           </button>
         )}
@@ -343,14 +359,14 @@ export function PostConversationPage({
     let disposed = false;
     let timer: number | null = null;
     const refresh = async () => {
-      try {
-        const next = await api.getState(conversationId);
-        if (disposed) return;
-        setState(next);
-        if (!isTerminal(next.state)) timer = window.setTimeout(() => void refresh(), 1_500);
-      } catch (cause) {
-        if (!disposed) setError(messageFor(cause));
+      const next = await api.getState(conversationId);
+      if (!next.ok) {
+        if (!disposed) setError(messageFor(next.error));
+        return;
       }
+      if (disposed) return;
+      setState(next.value);
+      if (!isTerminal(next.value.state)) timer = window.setTimeout(() => void refresh(), 1_500);
     };
     void refresh();
     return () => {
@@ -473,15 +489,4 @@ function isTerminal(state: ConversationStateDto["state"]): boolean {
 
 function messageFor(cause: unknown): string {
   return cause instanceof Error ? cause.message : "Something went wrong. Please try again.";
-}
-
-function requireAuthenticate(
-  authenticateAndCreate:
-    | ((username: string, password: string) => Promise<ConversationStateDto>)
-    | undefined,
-): (username: string, password: string) => Promise<ConversationStateDto> {
-  if (authenticateAndCreate === undefined) {
-    throw new Error("Authentication is unavailable.");
-  }
-  return authenticateAndCreate;
 }

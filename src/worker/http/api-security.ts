@@ -1,6 +1,6 @@
 /** Enforces HTTP authentication, idempotency, and request-integrity safeguards. */
 import { ApiError } from "./api-errors";
-import { err, ok, tryCatch, type Result } from "../try-catch";
+import { err, ok, tryCatch, type Result } from "@ai-oral-exam/result";
 
 const encoder = new TextEncoder();
 
