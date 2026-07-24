@@ -17,3 +17,5 @@ lint_files=$(printf '%s\n' "$files" | grep -E '\.(cjs|cts|js|jsx|mjs|mts|ts|tsx)
 if [ -n "$lint_files" ]; then
   pnpm exec oxlint $lint_files
 fi
+
+npx slop-scan scan . --lint
