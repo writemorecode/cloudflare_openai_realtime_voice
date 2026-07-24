@@ -66,7 +66,7 @@ export class ConversationSession extends DurableObject<Env> {
     applyEvent: (command) => this.applyEvent(command),
   });
 
-  override async fetch(request: Request): Promise<Response> {
+  override fetch(request: Request): Promise<Response> {
     return this.sockets.accept(request);
   }
 
@@ -105,17 +105,17 @@ export class ConversationSession extends DurableObject<Env> {
   }
 
   /** Commits provider identifiers only when the caller still owns the provisioning lease. */
-  async completeLiveKitProvisioning(command: CompleteLiveKitProvisioningCommand): Promise<boolean> {
+  completeLiveKitProvisioning(command: CompleteLiveKitProvisioningCommand): Promise<boolean> {
     return this.liveKit.completeProvisioning(command);
   }
 
   /** Releases a provisioning lease owned by the supplied lease ID. */
-  async abandonLiveKitProvisioning(leaseId: string): Promise<void> {
-    await this.liveKit.abandonProvisioning(leaseId);
+  abandonLiveKitProvisioning(leaseId: string): Promise<void> {
+    return this.liveKit.abandonProvisioning(leaseId);
   }
 
   /** Returns completed internal LiveKit provisioning metadata, if available. */
-  async getLiveKitProvisioning(): Promise<LiveKitProvisioningReady | null> {
+  getLiveKitProvisioning(): Promise<LiveKitProvisioningReady | null> {
     return this.liveKit.getProvisioning();
   }
 
@@ -130,8 +130,8 @@ export class ConversationSession extends DurableObject<Env> {
   }
 
   /** Releases a shutdown lease owned by the supplied lease ID. */
-  async abandonLiveKitShutdown(leaseId: string): Promise<void> {
-    await this.liveKit.abandonShutdown(leaseId);
+  abandonLiveKitShutdown(leaseId: string): Promise<void> {
+    return this.liveKit.abandonShutdown(leaseId);
   }
 
   /** Records retry-stable agent readiness evidence against provisioning or ready correlation. */
@@ -142,7 +142,7 @@ export class ConversationSession extends DurableObject<Env> {
   }
 
   /** Returns the current composite transport evidence used by readiness reconciliation. */
-  async getLiveKitTransportEvidence(): Promise<LiveKitTransportEvidence | null> {
+  getLiveKitTransportEvidence(): Promise<LiveKitTransportEvidence | null> {
     return this.liveKit.getTransportEvidence();
   }
 

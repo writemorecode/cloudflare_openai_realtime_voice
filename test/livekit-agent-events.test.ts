@@ -38,12 +38,12 @@ describe("LiveKit agent lifecycle events", () => {
     expect(unauthorized.status).toBe(401);
     expect(first.status).toBe(204);
     expect(duplicate.status).toBe(204);
-    expect(await harness.session(conversationId).getLiveKitTransportEvidence()).toMatchObject({
+    expect(await harness.transportEvidence(conversationId)).toMatchObject({
       transportEpoch: 1,
       realtimeReady: true,
       realtimeReadyEventId: eventId,
     });
-    expect((await harness.state(conversationId))?.revision).toBe(1);
+    expect((await harness.state(conversationId)).revision).toBe(1);
   });
 
   it("maps fatal agent failures without exposing provider details", async () => {
@@ -86,7 +86,7 @@ describe("LiveKit agent lifecycle events", () => {
       tag: ConversationStateTag.Live,
       data: { transport: { status: TransportStatus.Connected, epoch: 2 } },
     });
-    expect(await harness.session(conversationId).getLiveKitTransportEvidence()).toMatchObject({
+    expect(await harness.transportEvidence(conversationId)).toMatchObject({
       transportEpoch: 2,
       realtimeReady: true,
       realtimeReadyEventId: eventId,

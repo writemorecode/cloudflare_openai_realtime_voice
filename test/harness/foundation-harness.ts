@@ -5,8 +5,10 @@ import {
   value,
   type ConversationState,
 } from "../../src/domain/conversation-state-machine";
-import type { ConversationSession } from "../../src/durable-object/conversation-session";
-import type { LiveKitProvisioningReady } from "../../src/durable-object/conversation-session-contract";
+import type {
+  LiveKitProvisioningReady,
+  LiveKitTransportEvidence,
+} from "../../src/durable-object/conversation-session-contract";
 import { cloudflareConversationSessions } from "../../src/worker/adapters/cloudflare";
 import type { LiveKitAccessResponse } from "../../src/worker/integrations/livekit/access";
 import { handleConversationRequest } from "../../src/worker/http/conversation-api";
@@ -62,10 +64,6 @@ export class DeterministicClock implements Clock {
   advance(milliseconds: number): number {
     this.current += milliseconds;
     return this.current;
-  }
-
-  iso(): string {
-    return new Date(this.current).toISOString();
   }
 }
 
@@ -275,12 +273,10 @@ export class FoundationHarness {
     };
   }
 
-  session(conversationId: string): DurableObjectStub<ConversationSession> {
-    return this.dependencies.conversations.get(conversationId);
-  }
-
-  async state(conversationId: string): Promise<ConversationState | null> {
-    return this.session(conversationId).getState();
+  async state(conversationId: string): Promise<ConversationState> {
+    const state = await this.dependencies.conversations.get(conversationId).getState();
+    if (state === null) throw new Error("conversation is not initialized");
+    return state;
   }
 
   async browserRequest(path: string, init: RequestInit = {}): Promise<Response> {
@@ -337,9 +333,19 @@ export class FoundationHarness {
   }
 
   async provisioning(conversationId: string): Promise<LiveKitProvisioningReady> {
-    const provisioning = await this.session(conversationId).getLiveKitProvisioning();
+    const provisioning = await this.dependencies.conversations
+      .get(conversationId)
+      .getLiveKitProvisioning();
     if (provisioning === null) throw new Error("conversation is not provisioned");
     return provisioning;
+  }
+
+  async transportEvidence(conversationId: string): Promise<LiveKitTransportEvidence> {
+    const evidence = await this.dependencies.conversations
+      .get(conversationId)
+      .getLiveKitTransportEvidence();
+    if (evidence === null) throw new Error("conversation has no LiveKit transport evidence");
+    return evidence;
   }
 
   async recordingStarted(conversationId: string): Promise<void> {
@@ -493,7 +499,7 @@ export class FoundationHarness {
         conversationId,
         roomName: options.roomName ?? this.roomName(conversationId),
         transportEpoch,
-        occurredAt: this.clock.iso(),
+        occurredAt: new Date(this.clock.now()).toISOString(),
         ...(type === "realtime_failed"
           ? { errorCode: options.errorCode ?? "transport.agent_realtime_failed" }
           : {}),
@@ -503,8 +509,7 @@ export class FoundationHarness {
 
   async beginEnding(conversationId: string, reason = "harness_requested"): Promise<void> {
     const state = await this.state(conversationId);
-    if (state === null) throw new Error("conversation is not initialized");
-    const result = await this.session(conversationId).applyEvent({
+    const result = await this.dependencies.conversations.get(conversationId).applyEvent({
       expectedRevision: state.revision,
       event: {
         type: ConversationEventType.EndRequested,

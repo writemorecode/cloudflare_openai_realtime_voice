@@ -99,11 +99,7 @@ export async function executeD1({ database, location, sql, json = false }) {
   if (exitCode !== 0) throw new Error(`Wrangler exited with status ${exitCode}.`);
   if (!json) return undefined;
 
-  try {
-    return JSON.parse(Buffer.concat(stdout).toString("utf8"));
-  } catch (error) {
-    throw new Error("Wrangler returned invalid JSON.", { cause: error });
-  }
+  return JSON.parse(Buffer.concat(stdout).toString("utf8"));
 }
 
 export function firstStatementRows(output) {
