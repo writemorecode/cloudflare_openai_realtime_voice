@@ -6,6 +6,7 @@ import {
   type ConversationState,
 } from "../../src/domain/conversation-state-machine";
 import type {
+  ApplyEventResult,
   LiveKitProvisioningReady,
   LiveKitTransportEvidence,
 } from "../../src/durable-object/conversation-session-contract";
@@ -25,6 +26,7 @@ import type {
   RecordingStore,
 } from "../../src/worker/ports/foundation";
 import { authenticatedHeaders } from "../auth-helpers";
+import { aggregateValue } from "../aggregate-store-test-utils";
 
 const API_ORIGIN = "https://api.example.test";
 const BROWSER_ORIGIN = "http://localhost:5173";
@@ -274,7 +276,9 @@ export class FoundationHarness {
   }
 
   async state(conversationId: string): Promise<ConversationState> {
-    const state = await this.dependencies.conversations.get(conversationId).getState();
+    const state = aggregateValue<ConversationState | null>(
+      await this.dependencies.conversations.get(conversationId).getState(),
+    );
     if (state === null) throw new Error("conversation is not initialized");
     return state;
   }
@@ -509,16 +513,18 @@ export class FoundationHarness {
 
   async beginEnding(conversationId: string, reason = "harness_requested"): Promise<void> {
     const state = await this.state(conversationId);
-    const result = await this.dependencies.conversations.get(conversationId).applyEvent({
-      expectedRevision: state.revision,
-      event: {
-        type: ConversationEventType.EndRequested,
-        eventId: `harness:${conversationId}:end`,
-        at: value.unixMillis(this.clock.now()),
-        reason,
-        endingDeadlineAt: value.unixMillis(this.clock.now() + 30_000),
-      },
-    });
+    const result = aggregateValue<ApplyEventResult>(
+      await this.dependencies.conversations.get(conversationId).applyEvent({
+        expectedRevision: state.revision,
+        event: {
+          type: ConversationEventType.EndRequested,
+          eventId: `harness:${conversationId}:end`,
+          at: value.unixMillis(this.clock.now()),
+          reason,
+          endingDeadlineAt: value.unixMillis(this.clock.now() + 30_000),
+        },
+      }),
+    );
     if (result.outcome !== "applied") {
       throw new Error(`could not begin ending: ${result.outcome}`);
     }

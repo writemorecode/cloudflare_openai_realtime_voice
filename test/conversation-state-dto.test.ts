@@ -5,10 +5,10 @@ import { toConversationStateDto } from "../src/worker/http/conversation-state-dt
 import {
   ConversationEventType,
   createConversation,
-  transitionRuntime,
   value,
   type ConversationState,
 } from "../src/domain/conversation-state-machine";
+import { transitionRuntime } from "./transition-test-utils";
 
 const at = value.unixMillis;
 

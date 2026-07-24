@@ -20,6 +20,7 @@ import type {
   ApplyEventResult,
   ConversationSession,
 } from "../../../durable-object/conversation-session";
+import type { AggregateStoreResult } from "../../../durable-object/conversation-aggregate-store";
 import { ApiError } from "../../http/api-errors";
 import type { LiveKitWebhookDependencies } from "../../ports/foundation";
 import { err, ok, tryCatch, type Result } from "@ai-oral-exam/result";
@@ -97,17 +98,18 @@ export async function handleLiveKitWebhook(
   const conversationId = observation.conversationId;
   const stub = dependencies.conversations.get(conversationId);
   const initial = await tryCatch(
-    async (): Promise<ConversationState | null> => await stub.getState(),
+    async (): Promise<AggregateStoreResult<ConversationState | null>> => await stub.getState(),
     webhookOperationFailed,
   );
   if (!initial.ok) return initial;
-  if (initial.value === null) {
+  if (!initial.value.ok) return err(webhookOperationFailed(initial.value.error));
+  if (initial.value.value === null) {
     return err(new ApiError(404, "conversation_not_found", "Conversation not found."));
   }
   const correlatedEgress = await validateEgressCorrelation(observation, stub);
   if (!correlatedEgress.ok) return correlatedEgress;
 
-  const result = await translateWebhookEvent(observation, initial.value, stub, dependencies);
+  const result = await translateWebhookEvent(observation, initial.value.value, stub, dependencies);
   if (!result.ok) return result;
   console.log(
     JSON.stringify({

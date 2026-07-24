@@ -1,11 +1,16 @@
 /** Provisions room-scoped LiveKit access, dispatch, and recording resources for a conversation. */
-import { ConversationStateTag, TransportStatus } from "../../../domain/conversation-state-machine";
+import {
+  ConversationStateTag,
+  TransportStatus,
+  type ConversationState,
+} from "../../../domain/conversation-state-machine";
 import type {
   BeginLiveKitProvisioningResult,
   BeginLiveKitShutdownResult,
   ConversationSession,
   LiveKitProvisioningReady,
 } from "../../../durable-object/conversation-session";
+import type { AggregateStoreResult } from "../../../durable-object/conversation-aggregate-store";
 import { ApiError } from "../../http/api-errors";
 import type {
   LiveKitAccessDependencies,
@@ -52,24 +57,26 @@ export async function createLiveKitAccess(
 
   const stub = dependencies.conversations.get(conversationId);
   const state = await tryCatch(
-    async (): Promise<Awaited<ReturnType<typeof stub.getState>>> => await stub.getState(),
+    async (): Promise<AggregateStoreResult<ConversationState | null>> => await stub.getState(),
     liveKitAccessOperationFailed,
   );
   if (!state.ok) return state;
-  if (state.value === null) {
+  if (!state.value.ok) return err(liveKitAccessOperationFailed(state.value.error));
+  const current = state.value.value;
+  if (current === null) {
     return err(new ApiError(404, "conversation_not_found", "Conversation not found."));
   }
-  if (state.value.tag !== ConversationStateTag.Starting) {
+  if (current.tag !== ConversationStateTag.Starting) {
     return err(new ApiError(409, "conversation_not_starting", "Conversation is not starting."));
   }
-  if (state.value.data.transport.status !== TransportStatus.Connecting) {
+  if (current.data.transport.status !== TransportStatus.Connecting) {
     return err(
       new ApiError(409, "transport_not_connecting", "Conversation transport is not connecting."),
     );
   }
 
   const roomName = `${LIVEKIT_ROOM_PREFIX}${conversationId}`;
-  const transportEpoch = state.value.data.transport.epoch;
+  const transportEpoch = current.data.transport.epoch;
   const leaseId = dependencies.ids.randomUuid();
   const now = dependencies.clock.now();
   const claim = await tryCatch(

@@ -20,7 +20,10 @@ export type BeginLiveKitShutdownResult =
   | Readonly<{ outcome: "owner"; provisioning: LiveKitProvisioningReady }>
   | Readonly<{ outcome: "stopped" }>
   | Readonly<{ outcome: "in_progress"; retryAt: number }>
-  | Readonly<{ outcome: "rejected"; reason: "not_provisioned" | "conversation_active" }>;
+  | Readonly<{
+      outcome: "rejected";
+      reason: "not_provisioned" | "conversation_active" | "storage_corrupt";
+    }>;
 
 export interface LiveKitTransportEvidence {
   readonly transportEpoch: number;
@@ -54,7 +57,10 @@ export type BeginLiveKitProvisioningResult =
   | Readonly<{ outcome: "owner"; leaseId: string }>
   | Readonly<{ outcome: "ready"; provisioning: LiveKitProvisioningReady }>
   | Readonly<{ outcome: "in_progress"; retryAt: number }>
-  | Readonly<{ outcome: "rejected"; reason: "not_starting" | "epoch_mismatch" }>;
+  | Readonly<{
+      outcome: "rejected";
+      reason: "not_starting" | "epoch_mismatch" | "storage_corrupt";
+    }>;
 
 export interface BeginLiveKitProvisioningCommand {
   readonly roomName: string;
@@ -161,6 +167,7 @@ export type AlarmOutcome =
   | "rescheduled_early"
   | "no_state"
   | "no_deadline"
+  | "transition_rejected"
   | "failed";
 
 export interface AlarmExecution {

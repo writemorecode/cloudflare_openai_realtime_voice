@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { ConversationEventType, value } from "../src/domain/conversation-state-machine";
 import { deriveConversationId } from "../src/worker/http/api-security";
+import { aggregateValue } from "./aggregate-store-test-utils";
 import { testSessionCookie } from "./auth-helpers";
 import {
   ArtifactStatusCode,
@@ -51,17 +52,24 @@ async function derivedConversationId(name: string): Promise<string> {
 async function setup(name: string, start = false) {
   const conversationId = await derivedConversationId(name);
   const stub = env.CONVERSATION_SESSIONS.getByName(conversationId);
-  await stub.initialize(value.conversationSessionId(conversationId), value.unixMillis(Date.now()));
+  aggregateValue(
+    await stub.initialize(
+      value.conversationSessionId(conversationId),
+      value.unixMillis(Date.now()),
+    ),
+  );
   if (start) {
-    await stub.applyEvent({
-      expectedRevision: 0,
-      event: {
-        type: ConversationEventType.StartRequested,
-        eventId: `${name}:start`,
-        at: value.unixMillis(Date.now()),
-        startDeadlineAt: value.unixMillis(Date.now() + 60_000),
-      },
-    });
+    aggregateValue(
+      await stub.applyEvent({
+        expectedRevision: 0,
+        event: {
+          type: ConversationEventType.StartRequested,
+          eventId: `${name}:start`,
+          at: value.unixMillis(Date.now()),
+          startDeadlineAt: value.unixMillis(Date.now() + 60_000),
+        },
+      }),
+    );
   }
   return { conversationId, stub, socket: await connect(conversationId) };
 }
@@ -190,7 +198,7 @@ describe("generic conversation WebSocket", () => {
       { expectedRevision: 1, epoch: 1, observedAt: Date.now() },
     ]);
     await accepted(socket);
-    expect(await stub.getState()).toMatchObject({ tag: "starting", revision: 1 });
+    expect(aggregateValue(await stub.getState())).toMatchObject({ tag: "starting", revision: 1 });
 
     send(socket, [
       1,
@@ -233,7 +241,7 @@ describe("generic conversation WebSocket", () => {
       { expectedRevision: 2, epoch: 1, observedAt: Date.now() },
     ]);
     await accepted(socket);
-    expect(await stub.getState()).toMatchObject({ tag: "ending", revision: 2 });
+    expect(aggregateValue(await stub.getState())).toMatchObject({ tag: "ending", revision: 2 });
     socket.close(1000, "done");
   });
 });

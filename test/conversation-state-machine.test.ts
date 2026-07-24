@@ -6,16 +6,16 @@ import {
   ConversationStateTag,
   FailureStage,
   StopReason,
-  TransitionGuardError,
   TransportStatus,
   createConversation,
-  transition,
-  transitionRuntime,
+  transition as transitionResult,
+  transitionRuntime as transitionRuntimeResult,
   value,
   type CompletedState,
   type LiveState,
   type StartingState,
 } from "../src/domain/conversation-state-machine";
+import { transition, transitionRuntime } from "./transition-test-utils";
 
 const at = value.unixMillis;
 const sessionId = value.conversationSessionId("conversation-1");
@@ -77,15 +77,17 @@ describe("conversation aggregate transitions", () => {
 
   it("requires connected transport and active recording before going live", () => {
     const initial = starting();
-    expect(() =>
-      transition(initial, {
-        type: ConversationEventType.SessionStarted,
-        eventId: "too-early",
-        at: at(2),
-        epoch: 1,
-        maximumEndAt: at(100),
-      }),
-    ).toThrow(TransitionGuardError);
+    const tooEarly = transitionResult(initial, {
+      type: ConversationEventType.SessionStarted,
+      eventId: "too-early",
+      at: at(2),
+      epoch: 1,
+      maximumEndAt: at(100),
+    });
+    expect(tooEarly).toMatchObject({
+      ok: false,
+      error: { kind: "guard_failed", reason: "transport must be connected at the supplied epoch" },
+    });
 
     const connected = transition(initial, {
       type: ConversationEventType.TransportConnected,
@@ -93,15 +95,17 @@ describe("conversation aggregate transitions", () => {
       at: at(2),
       epoch: 1,
     });
-    expect(() =>
-      transition(connected, {
-        type: ConversationEventType.SessionStarted,
-        eventId: "no-recording",
-        at: at(3),
-        epoch: 1,
-        maximumEndAt: at(100),
-      }),
-    ).toThrow(/artifact must be recording/);
+    const noRecording = transitionResult(connected, {
+      type: ConversationEventType.SessionStarted,
+      eventId: "no-recording",
+      at: at(3),
+      epoch: 1,
+      maximumEndAt: at(100),
+    });
+    expect(noRecording).toMatchObject({
+      ok: false,
+      error: { kind: "guard_failed", reason: "artifact must be recording" },
+    });
 
     expect(live()).toMatchObject({
       tag: ConversationStateTag.Live,
@@ -137,14 +141,16 @@ describe("conversation aggregate transitions", () => {
       deadlineAt: at(20_010),
     });
 
-    expect(() =>
-      transition(observedAgain, {
-        type: ConversationEventType.TransportConnected,
-        eventId: "bad-epoch",
-        at: at(12),
-        epoch: 1,
-      }),
-    ).toThrow(/increment by one/);
+    const badEpoch = transitionResult(observedAgain, {
+      type: ConversationEventType.TransportConnected,
+      eventId: "bad-epoch",
+      at: at(12),
+      epoch: 1,
+    });
+    expect(badEpoch).toMatchObject({
+      ok: false,
+      error: { kind: "guard_failed", reason: "reconnect epoch must increment by one" },
+    });
     const restored = transition(observedAgain, {
       type: ConversationEventType.TransportConnected,
       eventId: "restored",
@@ -293,13 +299,12 @@ describe("conversation aggregate transitions", () => {
       reason: "never_started",
       endingDeadlineAt: at(10),
     });
-    expect(() =>
-      transitionRuntime(cancelled, {
-        type: ConversationEventType.StartRequested,
-        eventId: "too-late",
-        at: at(2),
-        startDeadlineAt: at(10),
-      }),
-    ).toThrow(/illegal/);
+    const rejected = transitionRuntimeResult(cancelled, {
+      type: ConversationEventType.StartRequested,
+      eventId: "too-late",
+      at: at(2),
+      startDeadlineAt: at(10),
+    });
+    expect(rejected).toMatchObject({ ok: false, error: { kind: "illegal_transition" } });
   });
 });

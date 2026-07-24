@@ -4,10 +4,10 @@ import { deadlineEventForState, deadlineForState } from "../src/domain/conversat
 import {
   ConversationEventType,
   createConversation,
-  transitionRuntime,
   value,
   type ConversationState,
 } from "../src/domain/conversation-state-machine";
+import { transitionRuntime } from "./transition-test-utils";
 
 const at = value.unixMillis;
 const apply = transitionRuntime;

@@ -13,7 +13,10 @@ import {
   type ConversationState,
   type UnixMillis,
 } from "../domain/conversation-state-machine";
-import { ConversationAggregateStore } from "./conversation-aggregate-store";
+import {
+  ConversationAggregateStore,
+  type AggregateStoreResult,
+} from "./conversation-aggregate-store";
 import { ConversationAlarmRunner } from "./conversation-alarm-runner";
 import { emitTransitionTelemetry } from "./conversation-telemetry";
 import type {
@@ -49,7 +52,7 @@ export type {
   RecordObservationRpcResult,
 } from "./conversation-session-contract";
 export type { AlarmTelemetryRecord, TransitionTelemetryRecord } from "./conversation-telemetry";
-export { UnsupportedSnapshotVersionError } from "./conversation-session-storage";
+export type { UnsupportedSnapshotVersionError } from "./conversation-session-storage";
 
 /** One named Durable Object instance owns one conversation aggregate. */
 export class ConversationSession extends DurableObject<Env> {
@@ -88,12 +91,15 @@ export class ConversationSession extends DurableObject<Env> {
   }
 
   /** Initializes this named object once; rejects identity mismatches without mutating storage. */
-  async initialize(sessionId: ConversationSessionId, at: UnixMillis): Promise<InitializeResult> {
+  async initialize(
+    sessionId: ConversationSessionId,
+    at: UnixMillis,
+  ): Promise<AggregateStoreResult<InitializeResult>> {
     return this.aggregate.initialize(this.ctx.id.name, sessionId, at);
   }
 
   /** Returns the authoritative snapshot, or null before initialization. */
-  getState(): ConversationState | null {
+  getState(): AggregateStoreResult<ConversationState | null> {
     return this.aggregate.getState();
   }
 
@@ -154,8 +160,10 @@ export class ConversationSession extends DurableObject<Env> {
   }
 
   /** Applies one revision-checked domain event and flushes a time-limit shutdown outbox entry. */
-  async applyEvent(command: ApplyEventCommand): Promise<ApplyEventResult> {
-    const result = await this.aggregate.applyEvent(command);
+  async applyEvent(command: ApplyEventCommand): Promise<AggregateStoreResult<ApplyEventResult>> {
+    const stored = await this.aggregate.applyEvent(command);
+    if (!stored.ok) return stored;
+    const result = stored.value;
     emitTransitionTelemetry(command, result, "rpc", this.ctx.id.name ?? null);
     if (
       result.outcome !== "rejected" &&
@@ -163,16 +171,20 @@ export class ConversationSession extends DurableObject<Env> {
     ) {
       await this.alarms.flushShutdownOutbox();
     }
-    return result;
+    return stored;
   }
 
   /** Applies a trusted server-side integration event and publishes the new snapshot to clients. */
-  async applyIntegrationEvent(command: ApplyEventCommand): Promise<ApplyEventResult> {
-    const result = await this.applyEvent(command);
+  async applyIntegrationEvent(
+    command: ApplyEventCommand,
+  ): Promise<AggregateStoreResult<ApplyEventResult>> {
+    const stored = await this.applyEvent(command);
+    if (!stored.ok) return stored;
+    const result = stored.value;
     if (result.outcome === "applied") {
       this.sockets.broadcastStateSnapshot(result.state);
     }
-    return result;
+    return stored;
   }
 
   override async alarm(alarmInfo?: AlarmInvocationInfo): Promise<void> {

@@ -7,6 +7,7 @@ import type {
   ApplyEventResult,
   ConversationSession,
 } from "../../../durable-object/conversation-session";
+import type { AggregateStoreResult } from "../../../durable-object/conversation-aggregate-store";
 import { err, ok, tryCatch, type Result } from "@ai-oral-exam/result";
 
 const MAX_ATTEMPTS = 3;
@@ -36,7 +37,7 @@ async function applyAttempt<E>(
   attemptsRemaining: number,
 ): Promise<Result<ConversationState, E>> {
   const applied = await tryCatch(
-    async (): Promise<ApplyEventResult> =>
+    async (): Promise<AggregateStoreResult<ApplyEventResult>> =>
       await stub.applyIntegrationEvent({
         expectedRevision: state.revision,
         event,
@@ -44,8 +45,9 @@ async function applyAttempt<E>(
     errors.failed,
   );
   if (!applied.ok) return applied;
+  if (!applied.value.ok) return err(errors.failed(applied.value.error));
 
-  const result = applied.value;
+  const result = applied.value.value;
   if (result.outcome === "applied" || result.outcome === "duplicate") return ok(result.state);
   if (result.reason !== "revision_conflict" || result.state === null) {
     return err(errors.rejected(result));

@@ -19,7 +19,10 @@ import {
   ConversationEventType,
   ConversationStateTag,
   value,
+  type ConversationState,
 } from "../src/domain/conversation-state-machine";
+import type { ApplyEventResult } from "../src/durable-object/conversation-session";
+import { aggregateValue } from "./aggregate-store-test-utils";
 import { authenticatedHeaders } from "./auth-helpers";
 
 const API_ORIGIN = "https://api.example.test";
@@ -329,7 +332,7 @@ describe("LiveKit access", () => {
       ).status,
     ).toBe(204);
 
-    const live = await stub.getState();
+    const live = aggregateValue<ConversationState | null>(await stub.getState());
     expect(live).toMatchObject({
       tag: ConversationStateTag.Live,
       data: {
@@ -338,16 +341,18 @@ describe("LiveKit access", () => {
       },
     });
     expect(live).not.toBeNull();
-    const ending = await stub.applyEvent({
-      expectedRevision: live!.revision,
-      event: {
-        type: ConversationEventType.EndRequested,
-        eventId: "test:end-live-after-provisioning-race",
-        at: value.unixMillis(Date.now()),
-        reason: "user_requested",
-        endingDeadlineAt: value.unixMillis(Date.now() + 30_000),
-      },
-    });
+    const ending = aggregateValue<ApplyEventResult>(
+      await stub.applyEvent({
+        expectedRevision: live!.revision,
+        event: {
+          type: ConversationEventType.EndRequested,
+          eventId: "test:end-live-after-provisioning-race",
+          at: value.unixMillis(Date.now()),
+          reason: "user_requested",
+          endingDeadlineAt: value.unixMillis(Date.now() + 30_000),
+        },
+      }),
+    );
     expect(ending).toMatchObject({
       outcome: "applied",
       state: { tag: ConversationStateTag.Ending, data: { target: { kind: "complete" } } },
@@ -378,18 +383,20 @@ describe("LiveKit access", () => {
     const conversationId = await createStartedConversation("livekit-access-shutdown");
     await createLiveKitAccess(env, conversationId, accessDependencies(fakeServices()));
     const stub = env.CONVERSATION_SESSIONS.getByName(conversationId);
-    const state = await stub.getState();
+    const state = aggregateValue<ConversationState | null>(await stub.getState());
     expect(state).not.toBeNull();
-    const ending = await stub.applyEvent({
-      expectedRevision: state!.revision,
-      event: {
-        type: ConversationEventType.EndRequested,
-        eventId: "test:livekit-shutdown-requested",
-        at: value.unixMillis(Date.now()),
-        reason: "test",
-        endingDeadlineAt: value.unixMillis(Date.now() + 30_000),
-      },
-    });
+    const ending = aggregateValue<ApplyEventResult>(
+      await stub.applyEvent({
+        expectedRevision: state!.revision,
+        event: {
+          type: ConversationEventType.EndRequested,
+          eventId: "test:livekit-shutdown-requested",
+          at: value.unixMillis(Date.now()),
+          reason: "test",
+          endingDeadlineAt: value.unixMillis(Date.now() + 30_000),
+        },
+      }),
+    );
     expect(ending.outcome).toBe("applied");
 
     const services = fakeShutdownServices();

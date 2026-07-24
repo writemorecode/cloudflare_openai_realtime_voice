@@ -11,6 +11,11 @@ import {
   type ConversationEvent,
 } from "../src/domain/conversation-state-machine";
 import type { ConversationSession } from "../src/durable-object/conversation-session";
+import type {
+  ApplyEventResult,
+  InitializeResult,
+} from "../src/durable-object/conversation-session";
+import { aggregateValue } from "./aggregate-store-test-utils";
 
 const at = value.unixMillis;
 
@@ -21,16 +26,21 @@ afterEach(() => {
 
 async function initialize(name: string) {
   const stub = env.CONVERSATION_SESSIONS.getByName(name);
-  expect((await stub.initialize(value.conversationSessionId(name), at(Date.now()))).status).toBe(
-    "initialized",
+  const initialized = aggregateValue<InitializeResult>(
+    await stub.initialize(value.conversationSessionId(name), at(Date.now())),
   );
+  expect(initialized.status).toBe("initialized");
   return stub;
 }
 
 async function apply(stub: DurableObjectStub<ConversationSession>, event: ConversationEvent) {
-  const current = await stub.getState();
+  const current = aggregateValue<
+    import("../src/domain/conversation-state-machine").ConversationState | null
+  >(await stub.getState());
   if (current === null) throw new Error("missing state");
-  const result = await stub.applyEvent({ expectedRevision: current.revision, event });
+  const result = aggregateValue<ApplyEventResult>(
+    await stub.applyEvent({ expectedRevision: current.revision, event }),
+  );
   if (result.outcome !== "applied") throw new Error(`unexpected ${result.outcome}`);
   return result.state;
 }
@@ -128,7 +138,7 @@ describe("single Durable Object alarm", () => {
     });
     await evictDurableObject(stub);
     await runAt(stub, deadline + 1);
-    expect(await stub.getState()).toMatchObject({
+    expect(aggregateValue(await stub.getState())).toMatchObject({
       tag: ConversationStateTag.Failed,
       revision: 2,
       data: { stage: FailureStage.Starting, transport: { status: TransportStatus.Failed } },
@@ -141,7 +151,7 @@ describe("single Durable Object alarm", () => {
     const queuedBefore = (await env.LIVEKIT_SHUTDOWN_QUEUE.metrics()).backlogCount;
     const stub = await toLive("12345678-1234-8234-9234-123456789abc", deadline);
     await runAt(stub, deadline + 1);
-    expect(await stub.getState()).toMatchObject({
+    expect(aggregateValue(await stub.getState())).toMatchObject({
       tag: ConversationStateTag.Ending,
       data: { target: { kind: "complete", reason: "time_limit_reached" } },
     });
@@ -161,7 +171,7 @@ describe("single Durable Object alarm", () => {
     });
     expect(await alarmTime(stub)).toBe(now + 20_000);
     await runAt(stub, now + 20_001);
-    expect(await stub.getState()).toMatchObject({
+    expect(aggregateValue(await stub.getState())).toMatchObject({
       tag: ConversationStateTag.Failed,
       data: { stage: FailureStage.Transport },
     });
@@ -178,7 +188,7 @@ describe("single Durable Object alarm", () => {
       endingDeadlineAt: at(now + 1_000),
     });
     await runAt(stub, now + 1_001);
-    expect(await stub.getState()).toMatchObject({
+    expect(aggregateValue(await stub.getState())).toMatchObject({
       tag: ConversationStateTag.Failed,
       data: { stage: FailureStage.Ending },
     });

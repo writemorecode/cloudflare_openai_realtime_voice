@@ -4,11 +4,11 @@ import { describe, expect, it } from "vitest";
 import {
   ConversationEventType,
   createConversation,
-  transition,
   value,
   type CreatedState,
   type StartingState,
 } from "../src/domain/conversation-state-machine";
+import { transition } from "./transition-test-utils";
 import {
   completedEgressRecording,
   decideArtifactFailure,

@@ -123,6 +123,9 @@ package.
 - Owns start, duration, reconnection, ending, and artifact-upload deadlines through one alarm.
 - Transactionally records a LiveKit shutdown outbox message when the duration deadline applies
   `TimeLimitReached`, then hands it to Cloudflare Queues after the state transaction commits.
+- Returns explicit `Result` values for reducer, snapshot, aggregate-storage, and alarm failures.
+  Failed alarm work is logged and explicitly rescheduled rather than retried through a thrown
+  handler exception.
 - Stores internal provider identifiers only when needed for correlation; public DTOs remain
   provider-neutral and sanitized.
 - Does not call OpenAI or process media.

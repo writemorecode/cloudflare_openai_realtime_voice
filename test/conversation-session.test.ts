@@ -9,8 +9,10 @@ import {
 } from "../src/domain/conversation-state-machine";
 import type {
   ApplyEventResult,
+  InitializeResult,
   TransitionTelemetryRecord,
 } from "../src/durable-object/conversation-session";
+import { aggregateValue } from "./aggregate-store-test-utils";
 
 const at = value.unixMillis;
 
@@ -19,6 +21,29 @@ function session(name: string) {
     sessionId: value.conversationSessionId(name),
     stub: env.CONVERSATION_SESSIONS.getByName(name),
   };
+}
+
+type SessionStub = ReturnType<typeof session>["stub"];
+
+async function initializeStub(
+  stub: SessionStub,
+  sessionId: ReturnType<typeof value.conversationSessionId>,
+  timestamp: ReturnType<typeof at>,
+): Promise<InitializeResult> {
+  return aggregateValue(await stub.initialize(sessionId, timestamp));
+}
+
+async function applyStub(
+  stub: SessionStub,
+  command: Parameters<SessionStub["applyEvent"]>[0],
+): Promise<ApplyEventResult> {
+  return aggregateValue(await stub.applyEvent(command));
+}
+
+async function stateStub(stub: SessionStub) {
+  return aggregateValue<
+    import("../src/domain/conversation-state-machine").ConversationState | null
+  >(await stub.getState());
 }
 
 function startEvent(eventId = "event-start") {
@@ -32,28 +57,30 @@ function startEvent(eventId = "event-start") {
 
 async function initialize(name: string) {
   const target = session(name);
-  expect((await target.stub.initialize(target.sessionId, at(0))).status).toBe("initialized");
+  expect((await initializeStub(target.stub, target.sessionId, at(0))).status).toBe("initialized");
   return target;
 }
 
 describe("ConversationSession persistence and concurrency", () => {
   it("initializes once and rejects an identity mismatch", async () => {
     const target = session("session-init");
-    expect((await target.stub.initialize(target.sessionId, at(100))).status).toBe("initialized");
-    const existing = await target.stub.initialize(target.sessionId, at(999));
+    expect((await initializeStub(target.stub, target.sessionId, at(100))).status).toBe(
+      "initialized",
+    );
+    const existing = await initializeStub(target.stub, target.sessionId, at(999));
     expect(existing).toMatchObject({ status: "existing", state: { revision: 0, enteredAt: 100 } });
 
     const wrong = session("session-correct");
     expect(
-      await wrong.stub.initialize(value.conversationSessionId("session-wrong"), at(0)),
+      await initializeStub(wrong.stub, value.conversationSessionId("session-wrong"), at(0)),
     ).toEqual({ status: "rejected", reason: "identity_mismatch", state: null });
   });
 
   it("survives eviction and preserves the aggregate revision", async () => {
     const { stub } = await initialize("session-eviction");
-    await stub.applyEvent({ expectedRevision: 0, event: startEvent() });
+    await applyStub(stub, { expectedRevision: 0, event: startEvent() });
     await evictDurableObject(stub);
-    expect(await env.CONVERSATION_SESSIONS.getByName("session-eviction").getState()).toMatchObject({
+    expect(await stateStub(env.CONVERSATION_SESSIONS.getByName("session-eviction"))).toMatchObject({
       tag: ConversationStateTag.Starting,
       revision: 1,
     });
@@ -62,8 +89,8 @@ describe("ConversationSession persistence and concurrency", () => {
   it("deduplicates receipts before checking the stale expected revision", async () => {
     const { stub } = await initialize("session-duplicate");
     const event = startEvent();
-    const applied = await stub.applyEvent({ expectedRevision: 0, event });
-    const duplicate = await stub.applyEvent({ expectedRevision: 999, event });
+    const applied = await applyStub(stub, { expectedRevision: 0, event });
+    const duplicate = await applyStub(stub, { expectedRevision: 999, event });
     expect(applied.outcome).toBe("applied");
     expect(duplicate.outcome).toBe("duplicate");
     if (applied.outcome === "applied" && duplicate.outcome === "duplicate") {
@@ -74,8 +101,8 @@ describe("ConversationSession persistence and concurrency", () => {
 
   it("rejects revision conflicts, illegal transitions, and failed guards without persisting", async () => {
     const { stub } = await initialize("session-rejections");
-    await stub.applyEvent({ expectedRevision: 0, event: startEvent() });
-    const stale = await stub.applyEvent({
+    await applyStub(stub, { expectedRevision: 0, event: startEvent() });
+    const stale = await applyStub(stub, {
       expectedRevision: 0,
       event: {
         type: ConversationEventType.EndRequested,
@@ -85,7 +112,7 @@ describe("ConversationSession persistence and concurrency", () => {
         endingDeadlineAt: at(5_000),
       },
     });
-    const guarded = await stub.applyEvent({
+    const guarded = await applyStub(stub, {
       expectedRevision: 1,
       event: {
         type: ConversationEventType.SessionStarted,
@@ -97,7 +124,7 @@ describe("ConversationSession persistence and concurrency", () => {
     });
 
     const other = await initialize("session-illegal");
-    const illegal = await other.stub.applyEvent({
+    const illegal = await applyStub(other.stub, {
       expectedRevision: 0,
       event: {
         type: ConversationEventType.TransportConnected,
@@ -109,14 +136,14 @@ describe("ConversationSession persistence and concurrency", () => {
     expect(stale).toMatchObject({ outcome: "rejected", reason: "revision_conflict" });
     expect(guarded).toMatchObject({ outcome: "rejected", reason: "guard_failed" });
     expect(illegal).toMatchObject({ outcome: "rejected", reason: "illegal_transition" });
-    expect((await stub.getState())?.revision).toBe(1);
+    expect((await stateStub(stub))?.revision).toBe(1);
   });
 
   it("allows only one command to win a revision", async () => {
     const { stub } = await initialize("session-concurrent");
     const results = await Promise.all([
-      stub.applyEvent({ expectedRevision: 0, event: startEvent("start-a") }),
-      stub.applyEvent({
+      applyStub(stub, { expectedRevision: 0, event: startEvent("start-a") }),
+      applyStub(stub, {
         expectedRevision: 0,
         event: {
           type: ConversationEventType.EndRequested,
@@ -139,9 +166,9 @@ describe("ConversationSession transition telemetry", () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const { stub } = await initialize("session-telemetry");
     const event = startEvent();
-    await stub.applyEvent({ expectedRevision: 0, event });
-    await stub.applyEvent({ expectedRevision: 0, event });
-    await stub.applyEvent({
+    await applyStub(stub, { expectedRevision: 0, event });
+    await applyStub(stub, { expectedRevision: 0, event });
+    await applyStub(stub, {
       expectedRevision: 0,
       event: {
         type: ConversationEventType.EndRequested,
@@ -151,7 +178,7 @@ describe("ConversationSession transition telemetry", () => {
         endingDeadlineAt: at(20),
       },
     });
-    await stub.applyEvent({
+    await applyStub(stub, {
       expectedRevision: 1,
       event: {
         type: ConversationEventType.SessionStarted,
@@ -162,7 +189,7 @@ describe("ConversationSession transition telemetry", () => {
       },
     });
     const illegal = await initialize("session-telemetry-illegal");
-    await illegal.stub.applyEvent({
+    await applyStub(illegal.stub, {
       expectedRevision: 0,
       event: {
         type: ConversationEventType.TransportConnected,

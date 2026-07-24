@@ -37,7 +37,11 @@ export class LiveKitCoordinationStore {
     command: BeginLiveKitProvisioningCommand,
   ): Promise<BeginLiveKitProvisioningResult> {
     return this.storage.transaction(async (transaction) => {
-      const state = decodeSnapshot(await transaction.get<PersistedSnapshot>(SNAPSHOT_KEY));
+      const decoded = decodeSnapshot(await transaction.get<PersistedSnapshot>(SNAPSHOT_KEY));
+      if (!decoded.ok) {
+        return { outcome: "rejected", reason: "storage_corrupt" } as const;
+      }
+      const state = decoded.value;
       if (state?.tag !== ConversationStateTag.Starting) {
         return { outcome: "rejected", reason: "not_starting" } as const;
       }
@@ -111,7 +115,11 @@ export class LiveKitCoordinationStore {
 
   beginShutdown(command: BeginLiveKitShutdownCommand): Promise<BeginLiveKitShutdownResult> {
     return this.storage.transaction(async (transaction) => {
-      const state = decodeSnapshot(await transaction.get<PersistedSnapshot>(SNAPSHOT_KEY));
+      const decoded = decodeSnapshot(await transaction.get<PersistedSnapshot>(SNAPSHOT_KEY));
+      if (!decoded.ok) {
+        return { outcome: "rejected", reason: "storage_corrupt" } as const;
+      }
+      const state = decoded.value;
       if (
         state === null ||
         state.tag === ConversationStateTag.Created ||

@@ -3,11 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   ConversationEventType,
   createConversation,
-  transition,
   value,
   type LiveState,
   type StartingState,
 } from "../src/domain/conversation-state-machine";
+import { transition } from "./transition-test-utils";
 import type { LiveKitTransportEvidence } from "../src/durable-object/conversation-session";
 import {
   isCompositeTransportReady,

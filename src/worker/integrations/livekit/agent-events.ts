@@ -4,6 +4,7 @@ import type {
   ConversationState,
 } from "../../../domain/conversation-state-machine";
 import type { ConversationSession } from "../../../durable-object/conversation-session";
+import type { AggregateStoreResult } from "../../../durable-object/conversation-aggregate-store";
 import { ApiError } from "../../http/api-errors";
 import { authenticateBearer } from "../../http/api-security";
 import type { AgentEventDependencies } from "../../ports/foundation";
@@ -50,14 +51,15 @@ export async function handleAgentEvent(
 
   const stub = dependencies.conversations.get(event.conversationId);
   const initial = await tryCatch(
-    async (): Promise<ConversationState | null> => await stub.getState(),
+    async (): Promise<AggregateStoreResult<ConversationState | null>> => await stub.getState(),
     agentOperationFailed,
   );
   if (!initial.ok) return initial;
-  if (initial.value === null) {
+  if (!initial.value.ok) return err(agentOperationFailed(initial.value.error));
+  if (initial.value.value === null) {
     return err(new ApiError(404, "conversation_not_found", "Conversation not found."));
   }
-  let state: ConversationState = initial.value;
+  let state: ConversationState = initial.value.value;
   const decision = decideAgentEvent(event, state);
   if (!decision.ok) {
     return err(

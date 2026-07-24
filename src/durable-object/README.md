@@ -26,6 +26,8 @@ by responsibility while sharing the same object storage and consistency boundary
 - `ConversationAlarmRunner` applies the single earliest deadline and delivers the shutdown outbox
   after the aggregate transaction commits.
 
-Expected lifecycle and concurrency rejections use discriminated result types. Corrupt persisted
-state and storage, queue, encoding, or runtime failures throw. Callers must therefore handle both
-the documented result union and infrastructure exceptions from RPC.
+Expected lifecycle and concurrency rejections use discriminated result types. Domain transitions,
+snapshot decoding, aggregate storage operations, and alarm execution use
+`@ai-oral-exam/result`. Durable Object RPC callers unwrap the aggregate result before interpreting
+the operation-specific result union. Alarm failures are logged and explicitly rescheduled, so
+retries do not depend on throwing from the platform alarm handler.

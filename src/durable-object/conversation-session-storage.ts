@@ -1,5 +1,6 @@
 import type { ConversationState } from "../domain/conversation-state-machine";
 import type { LiveKitProvisioningReady } from "./conversation-session-contract";
+import { err, ok, type Result } from "@ai-oral-exam/result";
 
 export const SNAPSHOT_KEY = "conversation:snapshot:v1";
 export const RECEIPT_KEY_PREFIX = "conversation:receipt:v1:";
@@ -13,6 +14,11 @@ export const LIVEKIT_SHUTDOWN_OUTBOX_KEY = "conversation:livekit-shutdown-outbox
 
 export interface PersistedSnapshot {
   readonly schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION;
+  readonly state: ConversationState;
+}
+
+export interface SnapshotEnvelope {
+  readonly schemaVersion: unknown;
   readonly state: ConversationState;
 }
 
@@ -39,19 +45,22 @@ export interface LiveKitShutdownComplete {
 
 export type LiveKitShutdown = LiveKitShutdownLease | LiveKitShutdownComplete;
 
-export class UnsupportedSnapshotVersionError extends Error {
-  constructor(readonly schemaVersion: unknown) {
-    super(`Unsupported conversation snapshot schema version: ${String(schemaVersion)}`);
-    this.name = "UnsupportedSnapshotVersionError";
-  }
+export interface UnsupportedSnapshotVersionError {
+  readonly kind: "unsupported_snapshot_version";
+  readonly schemaVersion: unknown;
 }
 
-export function decodeSnapshot(snapshot: PersistedSnapshot | undefined): ConversationState | null {
-  if (snapshot === undefined) return null;
+export function decodeSnapshot(
+  snapshot: SnapshotEnvelope | undefined,
+): Result<ConversationState | null, UnsupportedSnapshotVersionError> {
+  if (snapshot === undefined) return ok(null);
   if (snapshot.schemaVersion !== SNAPSHOT_SCHEMA_VERSION) {
-    throw new UnsupportedSnapshotVersionError(snapshot.schemaVersion);
+    return err({
+      kind: "unsupported_snapshot_version",
+      schemaVersion: snapshot.schemaVersion,
+    });
   }
-  return snapshot.state;
+  return ok(snapshot.state);
 }
 
 export function receiptKey(eventId: string): string {

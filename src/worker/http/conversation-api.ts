@@ -5,11 +5,8 @@ import {
   value,
   type ConversationState,
 } from "../../domain/conversation-state-machine";
-import type {
-  ApplyEventResult,
-  ConversationSession,
-  InitializeResult,
-} from "../../durable-object/conversation-session";
+import type { ApplyEventResult, InitializeResult } from "../../durable-object/conversation-session";
+import type { AggregateStoreResult } from "../../durable-object/conversation-aggregate-store";
 import { ApiError, problemResponse } from "./api-errors";
 import { preflightResponse, validateOrigin, withCors } from "./api-cors";
 import { deriveConversationId, validateIdempotencyKey } from "./api-security";
@@ -411,7 +408,7 @@ async function createConversation(
   const conversationId = derivedConversationId.value;
   const stub = dependencies.conversations.get(conversationId);
   const initialized = await tryCatch(
-    async (): Promise<InitializeResult> =>
+    async (): Promise<AggregateStoreResult<InitializeResult>> =>
       await stub.initialize(
         value.conversationSessionId(conversationId),
         value.unixMillis(dependencies.clock.now()),
@@ -419,19 +416,21 @@ async function createConversation(
     httpOperationFailed,
   );
   if (!initialized.ok) return initialized;
-  if (initialized.value.status === "rejected") {
+  if (!initialized.value.ok) return err(httpOperationFailed(initialized.value.error));
+  const initialization = initialized.value.value;
+  if (initialization.status === "rejected") {
     return err(
       new ApiError(409, "conversation_identity_conflict", "Conversation identity conflict."),
     );
   }
-  const state = toConversationStateDto(initialized.value.state);
+  const state = toConversationStateDto(initialization.state);
   return ok({
     response: Response.json(state, {
-      status: initialized.value.status === "initialized" ? 201 : 200,
+      status: initialization.status === "initialized" ? 201 : 200,
     }),
     conversationId,
     state,
-    outcome: initialized.value.status,
+    outcome: initialization.status,
   });
 }
 
@@ -456,7 +455,7 @@ async function startConversation(
 
   const now = dependencies.clock.now();
   const applied = await tryCatch(
-    async (): Promise<ApplyEventResult> =>
+    async (): Promise<AggregateStoreResult<ApplyEventResult>> =>
       await stub.applyEvent({
         expectedRevision: currentState.revision,
         event: {
@@ -469,12 +468,14 @@ async function startConversation(
     httpOperationFailed,
   );
   if (!applied.ok) return applied;
+  if (!applied.value.ok) return err(httpOperationFailed(applied.value.error));
+  const transition = applied.value.value;
 
-  if (applied.value.outcome === "duplicate") {
-    return ok(pendingStartResult(applied.value.state, "already_starting"));
+  if (transition.outcome === "duplicate") {
+    return ok(pendingStartResult(transition.state, "already_starting"));
   }
-  if (applied.value.outcome === "applied") {
-    return ok(pendingStartResult(applied.value.state, "start_requested"));
+  if (transition.outcome === "applied") {
+    return ok(pendingStartResult(transition.state, "start_requested"));
   }
 
   // A concurrent command may have won after the initial state read.
@@ -486,10 +487,7 @@ async function startConversation(
   return err(new ApiError(409, "conversation_not_startable", "Conversation is not startable."));
 }
 
-function pendingStartResult(
-  state: NonNullable<Awaited<ReturnType<ConversationSession["getState"]>>>,
-  outcome: string,
-): RouteResult {
+function pendingStartResult(state: ConversationState, outcome: string): RouteResult {
   const dto = toConversationStateDto(state);
   return {
     response: Response.json(dto satisfies StartConversationResponse, {
@@ -514,10 +512,7 @@ async function getConversationState(
   return ok(stateResult(state.value, "state_returned"));
 }
 
-function stateResult(
-  state: NonNullable<Awaited<ReturnType<ConversationSession["getState"]>>>,
-  outcome: string,
-): RouteResult {
+function stateResult(state: ConversationState, outcome: string): RouteResult {
   const dto = toConversationStateDto(state);
   return {
     response: Response.json(dto),
@@ -649,10 +644,12 @@ async function conversationState(
   dependencies: Pick<FoundationDependencies, "conversations">,
 ): Promise<ApiResult<ConversationState | null>> {
   const stub = dependencies.conversations.get(conversationId);
-  return tryCatch(
-    async (): Promise<ConversationState | null> => await stub.getState(),
+  const stored = await tryCatch(
+    async (): Promise<AggregateStoreResult<ConversationState | null>> => await stub.getState(),
     httpOperationFailed,
   );
+  if (!stored.ok) return stored;
+  return stored.value.ok ? ok(stored.value.value) : err(httpOperationFailed(stored.value.error));
 }
 
 function httpOperationFailed(cause: unknown): ApiError {

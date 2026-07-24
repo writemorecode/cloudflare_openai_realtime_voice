@@ -21,6 +21,7 @@ import {
   type ServerWireMessage,
 } from "@ai-oral-exam/conversation-contract";
 import { toConversationStateDto } from "../worker/http/conversation-state-dto";
+import type { AggregateStoreResult } from "./conversation-aggregate-store";
 import type { ApplyEventCommand, ApplyEventResult } from "./conversation-session-contract";
 
 const INTERNAL_CONVERSATION_HEADER = "X-Conversation-Id";
@@ -35,8 +36,8 @@ interface ClientSocketAttachment {
 }
 
 export interface ConversationSocketCommands {
-  getState(): ConversationState | null;
-  applyEvent(command: ApplyEventCommand): Promise<ApplyEventResult>;
+  getState(): AggregateStoreResult<ConversationState | null>;
+  applyEvent(command: ApplyEventCommand): Promise<AggregateStoreResult<ApplyEventResult>>;
 }
 
 /** Hosts the hibernatable control-WebSocket protocol for one conversation. */
@@ -55,7 +56,11 @@ export class ConversationSocketGateway {
     ) {
       return new Response("WebSocket upgrade required", { status: 426 });
     }
-    if (this.commands.getState() === null) {
+    const stored = this.commands.getState();
+    if (!stored.ok) {
+      return new Response("Conversation storage is unavailable", { status: 500 });
+    }
+    if (stored.value === null) {
       return new Response("Conversation not found", { status: 404 });
     }
 
@@ -88,7 +93,7 @@ export class ConversationSocketGateway {
     const decoded = decodeBrowserMessage(rawMessage);
     if (!decoded.ok) {
       const protocolError = decoded.error;
-      const state = this.commands.getState();
+      const state = this.stateOrNull();
       this.sendProtocolError(
         ws,
         protocolError.messageId,
@@ -120,7 +125,7 @@ export class ConversationSocketGateway {
           error: error instanceof Error ? error.name : "UnknownError",
         }),
       );
-      const state = this.commands.getState();
+      const state = this.stateOrNull();
       this.sendProtocolError(
         ws,
         message[2],
@@ -204,7 +209,7 @@ export class ConversationSocketGateway {
         });
         return;
       case BrowserMessageType.ClientPing: {
-        const state = this.commands.getState();
+        const state = this.stateOrNull();
         this.sendWire(ws, [
           WIRE_PROTOCOL_VERSION,
           ServerMessageType.ServerPing,
@@ -225,7 +230,7 @@ export class ConversationSocketGateway {
       readonly [1, BrowserMessageType.ClientHello, string, unknown]
     >[3],
   ): Promise<void> {
-    const state = this.commands.getState();
+    const state = this.stateOrNull();
     if (
       state === null ||
       body.conversationId !== state.data.sessionId ||
@@ -273,7 +278,7 @@ export class ConversationSocketGateway {
   }
 
   private acknowledgeBrowserObservation(ws: WebSocket, messageId: string): void {
-    const state = this.commands.getState();
+    const state = this.stateOrNull();
     if (state === null) {
       this.sendProtocolError(ws, messageId, ProtocolErrorCode.InternalError, null);
       return;
@@ -288,7 +293,12 @@ export class ConversationSocketGateway {
     expectedRevision: number,
     event: ConversationEvent,
   ): Promise<void> {
-    const result = await this.commands.applyEvent({ expectedRevision, event });
+    const stored = await this.commands.applyEvent({ expectedRevision, event });
+    if (!stored.ok) {
+      this.sendProtocolError(ws, messageId, ProtocolErrorCode.InternalError, null);
+      return;
+    }
+    const result = stored.value;
     this.sendApplyResult(ws, messageId, result);
     if (result.outcome !== "rejected") {
       const attachment = socketAttachment(ws);
@@ -374,6 +384,23 @@ export class ConversationSocketGateway {
       return;
     }
     ws.send(encoded.value);
+  }
+
+  private stateOrNull(): ConversationState | null {
+    const stored = this.commands.getState();
+    if (stored.ok) return stored.value;
+    console.error(
+      JSON.stringify({
+        kind: "conversation_snapshot_decode_failed",
+        sessionId: this.ctx.id.name ?? null,
+        error: stored.error.kind,
+        schemaVersion:
+          stored.error.kind === "unsupported_snapshot_version"
+            ? stored.error.schemaVersion
+            : undefined,
+      }),
+    );
+    return null;
   }
 }
 

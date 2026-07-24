@@ -4,6 +4,8 @@
  * This module has no Cloudflare, LiveKit, OpenAI, storage, or transport dependencies. Provider
  * payloads must be translated into these events before they enter the conversation aggregate.
  */
+import { err, ok, type Result } from "@ai-oral-exam/result";
+
 const opaqueBrand: unique symbol = Symbol("opaqueBrand");
 
 type Opaque<Name extends string, Value> = Value & { readonly [opaqueBrand]: Name };
@@ -340,26 +342,18 @@ export type NextState<
 type IsUnion<T, Whole = T> = T extends unknown ? ([Whole] extends [T] ? false : true) : never;
 type RequireSingleState<S extends TransitionableState> = true extends IsUnion<S["tag"]> ? never : S;
 
-export class IllegalTransitionError extends Error {
-  constructor(
-    readonly state: ConversationStateTag,
-    readonly event: ConversationEventType,
-  ) {
-    super(`Event ${event} is illegal from state ${state}`);
-    this.name = "IllegalTransitionError";
-  }
-}
-
-export class TransitionGuardError extends Error {
-  constructor(
-    readonly state: ConversationStateTag,
-    readonly event: ConversationEventType,
-    readonly reason: string,
-  ) {
-    super(`Transition ${state} + ${event} failed guard: ${reason}`);
-    this.name = "TransitionGuardError";
-  }
-}
+export type TransitionError =
+  | Readonly<{
+      kind: "illegal_transition";
+      state: ConversationStateTag;
+      event: ConversationEventType;
+    }>
+  | Readonly<{
+      kind: "guard_failed";
+      state: ConversationStateTag;
+      event: ConversationEventType;
+      reason: string;
+    }>;
 
 export function createConversation(sessionId: ConversationSessionId, at: UnixMillis): CreatedState {
   return {
@@ -378,14 +372,14 @@ export function createConversation(sessionId: ConversationSessionId, at: UnixMil
 export function transition<S extends TransitionableState, E extends AllowedEventType<S["tag"]>>(
   state: RequireSingleState<S>,
   event: Extract<ConversationEvent, { type: E }>,
-): NextState<S["tag"], E> {
-  return transitionRuntime(state, event) as NextState<S["tag"], E>;
+): Result<NextState<S["tag"], E>, TransitionError> {
+  return transitionRuntime(state, event) as Result<NextState<S["tag"], E>, TransitionError>;
 }
 
 export function transitionRuntime(
   state: ConversationState,
   event: ConversationEvent,
-): ConversationState {
+): Result<ConversationState, TransitionError> {
   switch (state.tag) {
     case ConversationStateTag.Created:
       return fromCreated(state, event);
@@ -398,261 +392,368 @@ export function transitionRuntime(
     case ConversationStateTag.Completed:
     case ConversationStateTag.Cancelled:
     case ConversationStateTag.Failed:
-      throw new IllegalTransitionError(state.tag, event.type);
+      return illegalTransition(state, event);
   }
 }
 
-function fromCreated(state: CreatedState, event: ConversationEvent): ConversationState {
+function fromCreated(
+  state: CreatedState,
+  event: ConversationEvent,
+): Result<ConversationState, TransitionError> {
   switch (event.type) {
     case ConversationEventType.StartRequested:
-      return enter(state, ConversationStateTag.Starting, event.at, {
-        startDeadlineAt: event.startDeadlineAt,
-        transport: { status: TransportStatus.Connecting, epoch: 1, sinceAt: event.at },
-      });
+      return ok(
+        enter(state, ConversationStateTag.Starting, event.at, {
+          startDeadlineAt: event.startDeadlineAt,
+          transport: { status: TransportStatus.Connecting, epoch: 1, sinceAt: event.at },
+        }),
+      );
     case ConversationEventType.EndRequested:
-      return enter(state, ConversationStateTag.Cancelled, event.at, {
-        cancelledAt: event.at,
-        reason: event.reason,
-      });
+      return ok(
+        enter(state, ConversationStateTag.Cancelled, event.at, {
+          cancelledAt: event.at,
+          reason: event.reason,
+        }),
+      );
     default:
-      throw new IllegalTransitionError(state.tag, event.type);
+      return illegalTransition(state, event);
   }
 }
 
-function fromStarting(state: StartingState, event: ConversationEvent): ConversationState {
+function fromStarting(
+  state: StartingState,
+  event: ConversationEvent,
+): Result<ConversationState, TransitionError> {
   switch (event.type) {
-    case ConversationEventType.TransportConnected:
-      requireConnectingEpoch(state, event.type, event.epoch);
-      return revise(state, event.at, {
-        transport: { status: TransportStatus.Connected, epoch: event.epoch, connectedAt: event.at },
-      });
-    case ConversationEventType.RecordingStarted:
-      guard(
+    case ConversationEventType.TransportConnected: {
+      const failure = requireConnectingEpoch(state, event.type, event.epoch);
+      if (failure !== null) return err(failure);
+      return ok(
+        revise(state, event.at, {
+          transport: {
+            status: TransportStatus.Connected,
+            epoch: event.epoch,
+            connectedAt: event.at,
+          },
+        }),
+      );
+    }
+    case ConversationEventType.RecordingStarted: {
+      const failure = guard(
         state,
         event.type,
         state.data.artifact.status === ArtifactStatus.Pending,
         "artifact must be pending",
       );
-      return revise(state, event.at, {
-        artifact: {
-          status: ArtifactStatus.Recording,
-          recordingId: event.recordingId,
-          startedAt: event.at,
-        },
-      });
-    case ConversationEventType.SessionStarted:
-      requireConnectedEpoch(state, event.type, event.epoch);
-      guard(
+      if (failure !== null) return err(failure);
+      return ok(
+        revise(state, event.at, {
+          artifact: {
+            status: ArtifactStatus.Recording,
+            recordingId: event.recordingId,
+            startedAt: event.at,
+          },
+        }),
+      );
+    }
+    case ConversationEventType.SessionStarted: {
+      const epochFailure = requireConnectedEpoch(state, event.type, event.epoch);
+      if (epochFailure !== null) return err(epochFailure);
+      const artifactFailure = guard(
         state,
         event.type,
         state.data.artifact.status === ArtifactStatus.Recording,
         "artifact must be recording",
       );
-      return enter(state, ConversationStateTag.Live, event.at, {
-        startedAt: event.at,
-        maximumEndAt: event.maximumEndAt,
-      });
-    case ConversationEventType.EndRequested:
-      return enter(state, ConversationStateTag.Ending, event.at, {
-        target: { kind: "cancel", reason: event.reason },
-        deadlineAt: event.endingDeadlineAt,
-      });
-    case ConversationEventType.FatalTransportError:
-      requireCurrentEpoch(state, event.type, event.epoch);
-      return failTerminalTransport(state, event, FailureStage.Transport);
-    case ConversationEventType.SessionClosed:
-      requireCurrentEpoch(state, event.type, event.epoch);
-      return failWithClosedTransport(
-        state,
-        event,
-        FailureStage.Starting,
-        value.errorCode("starting.session_closed"),
+      if (artifactFailure !== null) return err(artifactFailure);
+      return ok(
+        enter(state, ConversationStateTag.Live, event.at, {
+          startedAt: event.at,
+          maximumEndAt: event.maximumEndAt,
+        }),
       );
+    }
+    case ConversationEventType.EndRequested:
+      return ok(
+        enter(state, ConversationStateTag.Ending, event.at, {
+          target: { kind: "cancel", reason: event.reason },
+          deadlineAt: event.endingDeadlineAt,
+        }),
+      );
+    case ConversationEventType.FatalTransportError: {
+      const failure = requireCurrentEpoch(state, event.type, event.epoch);
+      return failure === null
+        ? ok(failTerminalTransport(state, event, FailureStage.Transport))
+        : err(failure);
+    }
+    case ConversationEventType.SessionClosed: {
+      const failure = requireCurrentEpoch(state, event.type, event.epoch);
+      if (failure !== null) return err(failure);
+      return ok(
+        failWithClosedTransport(
+          state,
+          event,
+          FailureStage.Starting,
+          value.errorCode("starting.session_closed"),
+        ),
+      );
+    }
     case ConversationEventType.ArtifactFailed:
       return beginFailedEnding(state, event, FailureStage.Artifact);
     case ConversationEventType.StartingDeadlineExceeded:
-      return failWithFailedTransport(state, event, FailureStage.Starting, event.errorCode);
+      return ok(failWithFailedTransport(state, event, FailureStage.Starting, event.errorCode));
     default:
-      throw new IllegalTransitionError(state.tag, event.type);
+      return illegalTransition(state, event);
   }
 }
 
-function fromLive(state: LiveState, event: ConversationEvent): ConversationState {
+function fromLive(
+  state: LiveState,
+  event: ConversationEvent,
+): Result<ConversationState, TransitionError> {
   switch (event.type) {
     case ConversationEventType.TransportInterrupted: {
-      requireCurrentEpoch(state, event.type, event.epoch);
+      const epochFailure = requireCurrentEpoch(state, event.type, event.epoch);
+      if (epochFailure !== null) return err(epochFailure);
       const transport = state.data.transport;
-      guard(
+      const transportFailure = guard(
         state,
         event.type,
         transport.status === TransportStatus.Connected ||
           transport.status === TransportStatus.Reconnecting,
         "transport must be connected or reconnecting",
       );
-      return revise(state, event.at, {
-        transport: {
-          status: TransportStatus.Reconnecting,
-          epoch: event.epoch,
-          interruptedAt:
-            transport.status === TransportStatus.Reconnecting ? transport.interruptedAt : event.at,
-          deadlineAt:
-            transport.status === TransportStatus.Reconnecting
-              ? transport.deadlineAt
-              : event.recoveryDeadlineAt,
-          attempt: transport.status === TransportStatus.Reconnecting ? transport.attempt + 1 : 1,
-          lastErrorCode: event.errorCode,
-        },
-      });
+      if (transportFailure !== null) return err(transportFailure);
+      return ok(
+        revise(state, event.at, {
+          transport: {
+            status: TransportStatus.Reconnecting,
+            epoch: event.epoch,
+            interruptedAt:
+              transport.status === TransportStatus.Reconnecting
+                ? transport.interruptedAt
+                : event.at,
+            deadlineAt:
+              transport.status === TransportStatus.Reconnecting
+                ? transport.deadlineAt
+                : event.recoveryDeadlineAt,
+            attempt: transport.status === TransportStatus.Reconnecting ? transport.attempt + 1 : 1,
+            lastErrorCode: event.errorCode,
+          },
+        }),
+      );
     }
-    case ConversationEventType.TransportConnected:
-      requireReconnectEpoch(state, event.type, event.epoch);
-      return revise(state, event.at, {
-        transport: { status: TransportStatus.Connected, epoch: event.epoch, connectedAt: event.at },
-      });
+    case ConversationEventType.TransportConnected: {
+      const failure = requireReconnectEpoch(state, event.type, event.epoch);
+      if (failure !== null) return err(failure);
+      return ok(
+        revise(state, event.at, {
+          transport: {
+            status: TransportStatus.Connected,
+            epoch: event.epoch,
+            connectedAt: event.at,
+          },
+        }),
+      );
+    }
     case ConversationEventType.RecoveryDeadlineExceeded: {
-      guard(
+      const failure = guard(
         state,
         event.type,
         state.data.transport.status === TransportStatus.Reconnecting,
         "transport must be reconnecting",
       );
-      return failWithFailedTransport(state, event, FailureStage.Transport, event.errorCode);
+      return failure === null
+        ? ok(failWithFailedTransport(state, event, FailureStage.Transport, event.errorCode))
+        : err(failure);
     }
     case ConversationEventType.EndRequested:
-      return enter(state, ConversationStateTag.Ending, event.at, {
-        target: { kind: "complete", reason: StopReason.UserRequested },
-        deadlineAt: event.endingDeadlineAt,
-      });
-    case ConversationEventType.TimeLimitReached:
-      return enter(state, ConversationStateTag.Ending, event.at, {
-        target: { kind: "complete", reason: StopReason.TimeLimitReached },
-        deadlineAt: event.endingDeadlineAt,
-      });
-    case ConversationEventType.FatalTransportError:
-      requireCurrentEpoch(state, event.type, event.epoch);
-      return failTerminalTransport(state, event, FailureStage.Transport);
-    case ConversationEventType.SessionClosed:
-      requireCurrentEpoch(state, event.type, event.epoch);
-      return failWithClosedTransport(
-        state,
-        event,
-        FailureStage.Transport,
-        value.errorCode("transport.unexpected_close"),
+      return ok(
+        enter(state, ConversationStateTag.Ending, event.at, {
+          target: { kind: "complete", reason: StopReason.UserRequested },
+          deadlineAt: event.endingDeadlineAt,
+        }),
       );
+    case ConversationEventType.TimeLimitReached:
+      return ok(
+        enter(state, ConversationStateTag.Ending, event.at, {
+          target: { kind: "complete", reason: StopReason.TimeLimitReached },
+          deadlineAt: event.endingDeadlineAt,
+        }),
+      );
+    case ConversationEventType.FatalTransportError: {
+      const failure = requireCurrentEpoch(state, event.type, event.epoch);
+      return failure === null
+        ? ok(failTerminalTransport(state, event, FailureStage.Transport))
+        : err(failure);
+    }
+    case ConversationEventType.SessionClosed: {
+      const failure = requireCurrentEpoch(state, event.type, event.epoch);
+      if (failure !== null) return err(failure);
+      return ok(
+        failWithClosedTransport(
+          state,
+          event,
+          FailureStage.Transport,
+          value.errorCode("transport.unexpected_close"),
+        ),
+      );
+    }
     case ConversationEventType.ArtifactFailed:
       return beginFailedEnding(state, event, FailureStage.Artifact);
     default:
-      throw new IllegalTransitionError(state.tag, event.type);
+      return illegalTransition(state, event);
   }
 }
 
-function fromEnding(state: EndingState, event: ConversationEvent): ConversationState {
+function fromEnding(
+  state: EndingState,
+  event: ConversationEvent,
+): Result<ConversationState, TransitionError> {
   switch (event.type) {
-    case ConversationEventType.TransportConnected:
-      requireReconnectEpoch(state, event.type, event.epoch);
-      return revise(state, event.at, {
-        transport: { status: TransportStatus.Connected, epoch: event.epoch, connectedAt: event.at },
-      });
-    case ConversationEventType.SessionClosed:
-      requireCurrentEpoch(state, event.type, event.epoch);
-      return finalizeIfReady(
+    case ConversationEventType.TransportConnected: {
+      const failure = requireReconnectEpoch(state, event.type, event.epoch);
+      if (failure !== null) return err(failure);
+      return ok(
         revise(state, event.at, {
-          transport: { status: TransportStatus.Closed, epoch: event.epoch, closedAt: event.at },
+          transport: {
+            status: TransportStatus.Connected,
+            epoch: event.epoch,
+            connectedAt: event.at,
+          },
         }),
-        event.at,
       );
-    case ConversationEventType.RecordingUploadStarted:
-      guardRecordingId(state, event.type, event.recordingId);
-      return revise(state, event.at, {
-        artifact: {
-          status: ArtifactStatus.Uploading,
-          recordingId: event.recordingId,
-          expectedR2Key: event.expectedR2Key,
-          startedAt: event.at,
-          deadlineAt: event.artifactDeadlineAt,
-        },
-      });
-    case ConversationEventType.RecordingArtifactVerified:
-      guard(
+    }
+    case ConversationEventType.SessionClosed: {
+      const failure = requireCurrentEpoch(state, event.type, event.epoch);
+      if (failure !== null) return err(failure);
+      return ok(
+        finalizeIfReady(
+          revise(state, event.at, {
+            transport: { status: TransportStatus.Closed, epoch: event.epoch, closedAt: event.at },
+          }),
+          event.at,
+        ),
+      );
+    }
+    case ConversationEventType.RecordingUploadStarted: {
+      const failure = guardRecordingId(state, event.type, event.recordingId);
+      if (failure !== null) return err(failure);
+      return ok(
+        revise(state, event.at, {
+          artifact: {
+            status: ArtifactStatus.Uploading,
+            recordingId: event.recordingId,
+            expectedR2Key: event.expectedR2Key,
+            startedAt: event.at,
+            deadlineAt: event.artifactDeadlineAt,
+          },
+        }),
+      );
+    }
+    case ConversationEventType.RecordingArtifactVerified: {
+      const statusFailure = guard(
         state,
         event.type,
         state.data.artifact.status === ArtifactStatus.Uploading,
         "artifact must be uploading",
       );
-      guardRecordingId(state, event.type, event.recordingId);
+      if (statusFailure !== null) return err(statusFailure);
+      const idFailure = guardRecordingId(state, event.type, event.recordingId);
+      if (idFailure !== null) return err(idFailure);
       if (state.data.artifact.status === ArtifactStatus.Uploading) {
-        guard(
+        const keyFailure = guard(
           state,
           event.type,
           state.data.artifact.expectedR2Key === event.r2Key,
           "artifact key does not match expected key",
         );
+        if (keyFailure !== null) return err(keyFailure);
       }
-      return finalizeIfReady(
-        revise(state, event.at, {
-          artifact: {
-            status: ArtifactStatus.Ready,
-            recordingId: event.recordingId,
-            r2Key: event.r2Key,
-            r2Etag: event.r2Etag,
-            readyAt: event.at,
-          },
-        }),
-        event.at,
+      return ok(
+        finalizeIfReady(
+          revise(state, event.at, {
+            artifact: {
+              status: ArtifactStatus.Ready,
+              recordingId: event.recordingId,
+              r2Key: event.r2Key,
+              r2Etag: event.r2Etag,
+              readyAt: event.at,
+            },
+          }),
+          event.at,
+        ),
       );
-    case ConversationEventType.ArtifactFailed:
-      return finalizeIfReady(
-        revise(state, event.at, {
-          target: { kind: "fail", stage: FailureStage.Artifact, errorCode: event.errorCode },
-          deadlineAt: event.endingDeadlineAt,
-          artifact: failedArtifact(state, event.recordingId, event.at, event.errorCode),
-        }),
-        event.at,
+    }
+    case ConversationEventType.ArtifactFailed: {
+      const artifact = failedArtifact(state, event.recordingId, event.at, event.errorCode);
+      if (!artifact.ok) return artifact;
+      return ok(
+        finalizeIfReady(
+          revise(state, event.at, {
+            target: { kind: "fail", stage: FailureStage.Artifact, errorCode: event.errorCode },
+            deadlineAt: event.endingDeadlineAt,
+            artifact: artifact.value,
+          }),
+          event.at,
+        ),
       );
-    case ConversationEventType.FatalTransportError:
-      requireCurrentEpoch(state, event.type, event.epoch);
-      return finalizeIfReady(
-        revise(state, event.at, {
-          target: { kind: "fail", stage: FailureStage.Transport, errorCode: event.errorCode },
-          deadlineAt: event.endingDeadlineAt,
-          transport: failedTransport(state, event.at, event.errorCode),
-        }),
-        event.at,
+    }
+    case ConversationEventType.FatalTransportError: {
+      const failure = requireCurrentEpoch(state, event.type, event.epoch);
+      if (failure !== null) return err(failure);
+      return ok(
+        finalizeIfReady(
+          revise(state, event.at, {
+            target: { kind: "fail", stage: FailureStage.Transport, errorCode: event.errorCode },
+            deadlineAt: event.endingDeadlineAt,
+            transport: failedTransport(state, event.at, event.errorCode),
+          }),
+          event.at,
+        ),
       );
+    }
     case ConversationEventType.EndingDeadlineExceeded: {
       const stage = isTransportTerminal(state.data.transport)
         ? FailureStage.Artifact
         : FailureStage.Ending;
-      return enter(state, ConversationStateTag.Failed, event.at, {
-        failedAt: event.at,
-        stage,
-        errorCode: event.errorCode,
-        transport: isTransportTerminal(state.data.transport)
-          ? state.data.transport
-          : failedTransport(state, event.at, event.errorCode),
-        artifact:
-          stage === FailureStage.Artifact && state.data.artifact.status !== ArtifactStatus.Ready
-            ? failedArtifact(state, null, event.at, event.errorCode)
-            : state.data.artifact,
-      });
+      const artifact =
+        stage === FailureStage.Artifact && state.data.artifact.status !== ArtifactStatus.Ready
+          ? failedArtifactState(state, null, event.at, event.errorCode)
+          : state.data.artifact;
+      return ok(
+        enter(state, ConversationStateTag.Failed, event.at, {
+          failedAt: event.at,
+          stage,
+          errorCode: event.errorCode,
+          transport: isTransportTerminal(state.data.transport)
+            ? state.data.transport
+            : failedTransport(state, event.at, event.errorCode),
+          artifact,
+        }),
+      );
     }
-    case ConversationEventType.ArtifactDeadlineExceeded:
-      guard(
+    case ConversationEventType.ArtifactDeadlineExceeded: {
+      const failure = guard(
         state,
         event.type,
         state.data.artifact.status === ArtifactStatus.Uploading,
         "artifact must be uploading",
       );
-      return finalizeIfReady(
-        revise(state, event.at, {
-          target: { kind: "fail", stage: FailureStage.Artifact, errorCode: event.errorCode },
-          deadlineAt: event.endingDeadlineAt,
-          artifact: failedArtifact(state, null, event.at, event.errorCode),
-        }),
-        event.at,
+      if (failure !== null) return err(failure);
+      return ok(
+        finalizeIfReady(
+          revise(state, event.at, {
+            target: { kind: "fail", stage: FailureStage.Artifact, errorCode: event.errorCode },
+            deadlineAt: event.endingDeadlineAt,
+            artifact: failedArtifactState(state, null, event.at, event.errorCode),
+          }),
+          event.at,
+        ),
       );
+    }
     default:
-      throw new IllegalTransitionError(state.tag, event.type);
+      return illegalTransition(state, event);
   }
 }
 
@@ -660,13 +761,15 @@ function beginFailedEnding(
   state: StartingState | LiveState,
   event: ArtifactFailedEvent,
   stage: FailureStage,
-): EndingState | FailedState {
+): Result<EndingState | FailedState, TransitionError> {
+  const artifact = failedArtifact(state, event.recordingId, event.at, event.errorCode);
+  if (!artifact.ok) return artifact;
   const ending = enter(state, ConversationStateTag.Ending, event.at, {
     target: { kind: "fail", stage, errorCode: event.errorCode },
     deadlineAt: event.endingDeadlineAt,
-    artifact: failedArtifact(state, event.recordingId, event.at, event.errorCode),
+    artifact: artifact.value,
   });
-  return finalizeIfReady(ending, event.at) as EndingState | FailedState;
+  return ok(finalizeIfReady(ending, event.at) as EndingState | FailedState);
 }
 
 function failTerminalTransport(
@@ -754,17 +857,29 @@ function failedArtifact(
   suppliedId: RecordingId | null,
   at: UnixMillis,
   errorCode: ErrorCode,
-): ArtifactState {
+): Result<ArtifactState, TransitionGuardError> {
   const currentId =
     state.data.artifact.status === ArtifactStatus.Pending ? null : state.data.artifact.recordingId;
   if (suppliedId !== null && currentId !== null) {
-    guard(
+    const failure = guard(
       state,
       ConversationEventType.ArtifactFailed,
       suppliedId === currentId,
       "recording id mismatch",
     );
+    if (failure !== null) return err(failure);
   }
+  return ok(failedArtifactState(state, suppliedId, at, errorCode));
+}
+
+function failedArtifactState(
+  state: ConversationState,
+  suppliedId: RecordingId | null,
+  at: UnixMillis,
+  errorCode: ErrorCode,
+): ArtifactState {
+  const currentId =
+    state.data.artifact.status === ArtifactStatus.Pending ? null : state.data.artifact.recordingId;
   return {
     status: ArtifactStatus.Failed,
     recordingId: suppliedId ?? currentId,
@@ -773,13 +888,15 @@ function failedArtifact(
   };
 }
 
+type TransitionGuardError = Extract<TransitionError, { kind: "guard_failed" }>;
+
 function guardRecordingId(
   state: ConversationState,
   event: ConversationEventType,
   recordingId: RecordingId,
-): void {
+): TransitionGuardError | null {
   const artifact = state.data.artifact;
-  guard(
+  return guard(
     state,
     event,
     artifact.status !== ArtifactStatus.Pending && artifact.recordingId === recordingId,
@@ -791,8 +908,8 @@ function requireConnectingEpoch(
   state: ConversationState,
   event: ConversationEventType,
   epoch: number,
-): void {
-  guard(
+): TransitionGuardError | null {
+  return guard(
     state,
     event,
     state.data.transport.status === TransportStatus.Connecting &&
@@ -805,8 +922,8 @@ function requireConnectedEpoch(
   state: ConversationState,
   event: ConversationEventType,
   epoch: number,
-): void {
-  guard(
+): TransitionGuardError | null {
+  return guard(
     state,
     event,
     state.data.transport.status === TransportStatus.Connected &&
@@ -819,8 +936,8 @@ function requireReconnectEpoch(
   state: ConversationState,
   event: ConversationEventType,
   epoch: number,
-): void {
-  guard(
+): TransitionGuardError | null {
+  return guard(
     state,
     event,
     state.data.transport.status === TransportStatus.Reconnecting &&
@@ -833,8 +950,13 @@ function requireCurrentEpoch(
   state: ConversationState,
   event: ConversationEventType,
   epoch: number,
-): void {
-  guard(state, event, transportEpoch(state.data.transport) === epoch, "transport epoch mismatch");
+): TransitionGuardError | null {
+  return guard(
+    state,
+    event,
+    transportEpoch(state.data.transport) === epoch,
+    "transport epoch mismatch",
+  );
 }
 
 function transportEpoch(transport: TransportState): number {
@@ -850,8 +972,15 @@ function guard(
   event: ConversationEventType,
   condition: boolean,
   reason: string,
-): asserts condition {
-  if (!condition) throw new TransitionGuardError(state.tag, event, reason);
+): TransitionGuardError | null {
+  return condition ? null : { kind: "guard_failed", state: state.tag, event, reason };
+}
+
+function illegalTransition(
+  state: ConversationState,
+  event: ConversationEvent,
+): Result<never, TransitionError> {
+  return err({ kind: "illegal_transition", state: state.tag, event: event.type });
 }
 
 function revise<S extends ConversationState>(

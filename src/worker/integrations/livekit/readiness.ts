@@ -7,6 +7,7 @@ import type {
   ConversationSession,
   LiveKitTransportEvidence,
 } from "../../../durable-object/conversation-session";
+import type { AggregateStoreResult } from "../../../durable-object/conversation-aggregate-store";
 import { ApiError } from "../../http/api-errors";
 import { err, ok, tryCatch, type Result } from "@ai-oral-exam/result";
 import { applyIntegrationEventWithRetry } from "./integration-event-retry";
@@ -44,14 +45,15 @@ async function requiredState(
   stub: DurableObjectStub<ConversationSession>,
 ): Promise<Result<ConversationState, ApiError>> {
   const state = await tryCatch(
-    async (): Promise<ConversationState | null> => await stub.getState(),
+    async (): Promise<AggregateStoreResult<ConversationState | null>> => await stub.getState(),
     readinessOperationFailed,
   );
   if (!state.ok) return state;
-  if (state.value === null) {
+  if (!state.value.ok) return err(readinessOperationFailed(state.value.error));
+  if (state.value.value === null) {
     return err(new ApiError(404, "conversation_not_found", "Conversation not found."));
   }
-  return ok(state.value);
+  return ok(state.value.value);
 }
 
 async function applyIntegrationEvent(

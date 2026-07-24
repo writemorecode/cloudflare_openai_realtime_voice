@@ -8,6 +8,8 @@ import {
   value,
   type ConversationState,
 } from "../src/domain/conversation-state-machine";
+import type { ApplyEventResult } from "../src/durable-object/conversation-session";
+import { aggregateValue } from "./aggregate-store-test-utils";
 import { authenticatedHeaders } from "./auth-helpers";
 
 const API_ORIGIN = "https://api.example.test";
@@ -234,7 +236,7 @@ describe("LiveKit webhook", () => {
         createdAt: String(Math.floor(Date.now() / 1000)),
       });
       expect(response.status).toBe(204);
-      const state = await stub.getState();
+      const state = aggregateValue<ConversationState | null>(await stub.getState());
       expect(state?.tag).toBe(expectedState);
     };
     await assertObservation(observations[0], ConversationStateTag.Starting);
@@ -242,7 +244,7 @@ describe("LiveKit webhook", () => {
     await assertObservation(observations[2], ConversationStateTag.Starting);
     await assertObservation(observations[3], ConversationStateTag.Live);
 
-    expect(await stub.getState()).toMatchObject({
+    expect(aggregateValue(await stub.getState())).toMatchObject({
       tag: ConversationStateTag.Live,
       revision: 4,
       data: {
@@ -260,7 +262,7 @@ describe("LiveKit webhook", () => {
       track: { sid: "TR_browser", type: "AUDIO", source: "MICROPHONE" },
     });
     expect(interrupted.status).toBe(204);
-    expect(await stub.getState()).toMatchObject({
+    expect(aggregateValue(await stub.getState())).toMatchObject({
       tag: ConversationStateTag.Live,
       revision: 5,
       data: { transport: { status: "reconnecting", epoch: 1 } },
@@ -275,41 +277,47 @@ describe("LiveKit webhook", () => {
     );
     expect(startedEgress.status).toBe(204);
 
-    let state: ConversationState | null = await stub.getState();
+    let state: ConversationState | null = aggregateValue(await stub.getState());
     expect(state).not.toBeNull();
-    let applied = await stub.applyEvent({
-      expectedRevision: state!.revision,
-      event: {
-        type: ConversationEventType.TransportConnected,
-        eventId: "test:transport-connected",
-        at: value.unixMillis(Date.now()),
-        epoch: 1,
-      },
-    });
+    let applied = aggregateValue<ApplyEventResult>(
+      await stub.applyEvent({
+        expectedRevision: state!.revision,
+        event: {
+          type: ConversationEventType.TransportConnected,
+          eventId: "test:transport-connected",
+          at: value.unixMillis(Date.now()),
+          epoch: 1,
+        },
+      }),
+    );
     expect(applied.outcome).toBe("applied");
     state = applied.state;
-    applied = await stub.applyEvent({
-      expectedRevision: state!.revision,
-      event: {
-        type: ConversationEventType.SessionStarted,
-        eventId: "test:session-started",
-        at: value.unixMillis(Date.now()),
-        epoch: 1,
-        maximumEndAt: value.unixMillis(Date.now() + 60_000),
-      },
-    });
+    applied = aggregateValue<ApplyEventResult>(
+      await stub.applyEvent({
+        expectedRevision: state!.revision,
+        event: {
+          type: ConversationEventType.SessionStarted,
+          eventId: "test:session-started",
+          at: value.unixMillis(Date.now()),
+          epoch: 1,
+          maximumEndAt: value.unixMillis(Date.now() + 60_000),
+        },
+      }),
+    );
     expect(applied.outcome).toBe("applied");
     state = applied.state;
-    applied = await stub.applyEvent({
-      expectedRevision: state!.revision,
-      event: {
-        type: ConversationEventType.EndRequested,
-        eventId: "test:end-requested",
-        at: value.unixMillis(Date.now()),
-        reason: "test",
-        endingDeadlineAt: value.unixMillis(Date.now() + 30_000),
-      },
-    });
+    applied = aggregateValue<ApplyEventResult>(
+      await stub.applyEvent({
+        expectedRevision: state!.revision,
+        event: {
+          type: ConversationEventType.EndRequested,
+          eventId: "test:end-requested",
+          at: value.unixMillis(Date.now()),
+          reason: "test",
+          endingDeadlineAt: value.unixMillis(Date.now() + 30_000),
+        },
+      }),
+    );
     expect(applied.outcome).toBe("applied");
 
     const objectKey = `conversations/${conversationId}/recording.ogg`;
@@ -321,7 +329,7 @@ describe("LiveKit webhook", () => {
     );
     expect(egressEnded.status).toBe(204);
 
-    state = await stub.getState();
+    state = aggregateValue(await stub.getState());
     expect(state).toMatchObject({
       tag: ConversationStateTag.Ending,
       data: { artifact: { status: "ready", r2Key: objectKey } },
@@ -334,7 +342,7 @@ describe("LiveKit webhook", () => {
       room: { sid: "RM_test", name: `conversation-${conversationId}` },
     });
     expect(roomFinished.status).toBe(204);
-    expect(await stub.getState()).toMatchObject({
+    expect(aggregateValue(await stub.getState())).toMatchObject({
       tag: ConversationStateTag.Completed,
       data: {
         transport: { status: "closed" },
