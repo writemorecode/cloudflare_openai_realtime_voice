@@ -1,4 +1,4 @@
-/** Renders the browser experience for authentication, a live conversation, and its completion. */
+/** Renders authentication, examination management, live sessions, and recording history. */
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
@@ -6,11 +6,12 @@ import {
   HttpConversationApi,
   TransportStatus,
   createConversationRuntime,
+  type CreateExaminationRequest,
   type ConversationApi,
-  type ConversationClientError,
   type ConversationRuntime,
   type ConversationStateDto,
-  type Result,
+  type ExaminationSession,
+  type ExaminationSummary,
   type RuntimeFactory,
 } from "@ai-oral-exam/conversation-client";
 
@@ -52,17 +53,6 @@ export function App({ services }: { readonly services?: Services }) {
     };
   }, [api, services]);
 
-  const authenticateAndCreate = async (
-    username: string,
-    password: string,
-  ): Promise<Result<ConversationStateDto, ConversationClientError>> => {
-    const login = await api.login(username, password);
-    if (!login.ok) return login;
-    const created = await api.createConversation();
-    if (created.ok) setAuthState("authenticated");
-    return created;
-  };
-
   if (authState === "loading") {
     return (
       <PageFrame>
@@ -74,9 +64,7 @@ export function App({ services }: { readonly services?: Services }) {
   }
 
   if (authState === "unauthenticated") {
-    return (
-      <HomePage api={null} authenticateAndCreate={authenticateAndCreate} navigate={navigate} />
-    );
+    return <LoginPage api={api} onAuthenticated={() => setAuthState("authenticated")} />;
   }
 
   const postMatch = /^\/conversation\/([^/]+)\/complete$/.exec(path);
@@ -94,108 +82,371 @@ export function App({ services }: { readonly services?: Services }) {
       />
     );
   }
-  return <HomePage api={api} navigate={navigate} />;
+  return (
+    <DashboardPage api={api} navigate={navigate} onLogout={() => setAuthState("unauthenticated")} />
+  );
 }
 
-export function HomePage({
+export function LoginPage({
   api,
-  authenticateAndCreate,
-  navigate,
-}: PageProps & {
-  readonly api: ConversationApi | null;
-  readonly authenticateAndCreate?: (
-    username: string,
-    password: string,
-  ) => Promise<Result<ConversationStateDto, ConversationClientError>>;
+  onAuthenticated,
+}: {
+  readonly api: ConversationApi;
+  readonly onAuthenticated: () => void;
 }) {
-  const [starting, setStarting] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
 
-  const start = async () => {
-    if (api === null && (username.length === 0 || password.length === 0)) {
+  const signIn = async () => {
+    if (username.length === 0 || password.length === 0) {
       setError("Enter your username and password to continue.");
       return;
     }
-    setStarting(true);
+    setSubmitting(true);
     setError(null);
-    let created: Result<ConversationStateDto, ConversationClientError>;
-    if (api !== null) {
-      created = await api.createConversation();
-    } else if (authenticateAndCreate !== undefined) {
-      created = await authenticateAndCreate(username, password);
-    } else {
-      setError("Authentication is unavailable.");
-      setStarting(false);
+    const authenticated = await api.login(username, password);
+    if (!authenticated.ok) {
+      setError(messageFor(authenticated.error));
+      setSubmitting(false);
       return;
     }
-    if (!created.ok) {
-      setError(messageFor(created.error));
-      setStarting(false);
-      return;
-    }
-    navigate(`/conversation/${created.value.conversationId}`);
+    onAuthenticated();
   };
 
   return (
     <PageFrame>
       <main className="card home-card">
         <p className="eyebrow">Oral exam</p>
-        <h1>A quiet space to talk through what you know.</h1>
+        <h1>Examinations that listen closely.</h1>
         <p className="lead">
-          You’ll speak with an AI examiner. Your microphone will be used during the conversation,
-          and the session will be recorded for review.
+          Create and take structured oral examinations with an AI examiner. Every grade remains a
+          human decision.
         </p>
-        <div className="note" aria-label="Before you begin">
-          <span className="note-icon" aria-hidden="true">
-            i
-          </span>
-          <p>Find a calm place and allow microphone access when your browser asks.</p>
-        </div>
         <form
           className="start-form"
           onSubmit={(event) => {
             event.preventDefault();
-            void start();
+            void signIn();
           }}
         >
-          {api === null && (
-            <div className="temporary-auth">
-              <div className="temporary-auth-heading">
-                <label htmlFor="username">Sign in</label>
-              </div>
-              <input
-                id="username"
-                name="username"
-                type="text"
-                value={username}
-                onChange={(event) => setUsername(event.target.value)}
-                autoComplete="username"
-                autoCapitalize="none"
-                spellCheck={false}
-                disabled={starting}
-              />
-              <input
-                id="password"
-                name="password"
-                type="password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                autoComplete="current-password"
-                disabled={starting}
-                aria-label="Password"
-              />
+          <div className="temporary-auth">
+            <div className="temporary-auth-heading">
+              <label htmlFor="username">Sign in</label>
             </div>
-          )}
+            <input
+              id="username"
+              name="username"
+              type="text"
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              autoComplete="username"
+              autoCapitalize="none"
+              spellCheck={false}
+              disabled={submitting}
+            />
+            <input
+              id="password"
+              name="password"
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              autoComplete="current-password"
+              disabled={submitting}
+              aria-label="Password"
+            />
+          </div>
           {error && <ErrorMessage>{error}</ErrorMessage>}
-          <button className="primary-button" type="submit" disabled={starting}>
-            {starting ? "Preparing…" : "Start conversation"}
+          <button className="primary-button" type="submit" disabled={submitting}>
+            {submitting ? "Signing in…" : "Sign in"}
           </button>
         </form>
-        <p className="fine-print">You can end the conversation at any time.</p>
       </main>
     </PageFrame>
+  );
+}
+
+export function DashboardPage({
+  api,
+  navigate,
+  onLogout,
+}: PageProps & {
+  readonly api: ConversationApi;
+  readonly onLogout: () => void;
+}) {
+  const [examinations, setExaminations] = useState<ExaminationSummary[]>([]);
+  const [sessions, setSessions] = useState<ExaminationSession[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [startingId, setStartingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = async () => {
+    const [examResult, sessionResult] = await Promise.all([
+      api.listExaminations(),
+      api.listExaminationSessions(),
+    ]);
+    if (!examResult.ok) {
+      setError(messageFor(examResult.error));
+      setLoading(false);
+      return;
+    }
+    if (!sessionResult.ok) {
+      setError(messageFor(sessionResult.error));
+      setLoading(false);
+      return;
+    }
+    setExaminations(examResult.value.examinations);
+    setSessions(sessionResult.value.sessions);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    void load();
+  }, [api]);
+
+  const create = async (request: CreateExaminationRequest) => {
+    setCreating(true);
+    setError(null);
+    const result = await api.createExamination(request);
+    if (!result.ok) {
+      setError(messageFor(result.error));
+      setCreating(false);
+      return false;
+    }
+    setExaminations((current) => [result.value, ...current]);
+    setCreating(false);
+    return true;
+  };
+
+  const start = async (examinationId: string) => {
+    setStartingId(examinationId);
+    setError(null);
+    const result = await api.createExaminationSession(examinationId);
+    if (!result.ok) {
+      setError(messageFor(result.error));
+      setStartingId(null);
+      return;
+    }
+    navigate(`/conversation/${result.value.conversationId}`);
+  };
+
+  const logout = async () => {
+    const result = await api.logout();
+    if (!result.ok) {
+      setError(messageFor(result.error));
+      return;
+    }
+    onLogout();
+  };
+
+  return (
+    <PageFrame wide>
+      <header className="dashboard-header">
+        <div>
+          <p className="eyebrow">Examiner workspace</p>
+          <h1>Oral examinations</h1>
+        </div>
+        <button className="text-button" type="button" onClick={() => void logout()}>
+          Sign out
+        </button>
+      </header>
+      {error && <ErrorMessage>{error}</ErrorMessage>}
+      <main className="dashboard-grid">
+        <section className="dashboard-main" aria-labelledby="available-heading">
+          <CreateExaminationForm creating={creating} onCreate={create} />
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">Available now</p>
+              <h2 id="available-heading">Examinations</h2>
+            </div>
+            <span>{examinations.length}</span>
+          </div>
+          {loading ? (
+            <p className="empty-state">Loading examinations…</p>
+          ) : examinations.length === 0 ? (
+            <p className="empty-state">Create the first examination to get started.</p>
+          ) : (
+            <div className="exam-list">
+              {examinations.map((examination) => (
+                <article className="exam-card" key={examination.id}>
+                  <div>
+                    <p className="subject-label">{examination.subject}</p>
+                    <h3>{examination.name}</h3>
+                    <p>
+                      {examination.questionCount} question
+                      {examination.questionCount === 1 ? "" : "s"}
+                    </p>
+                  </div>
+                  <button
+                    className="primary-button compact-button"
+                    type="button"
+                    disabled={startingId !== null}
+                    onClick={() => void start(examination.id)}
+                  >
+                    {startingId === examination.id ? "Preparing…" : "Start exam"}
+                  </button>
+                </article>
+              ))}
+            </div>
+          )}
+        </section>
+        <aside className="history-panel" aria-labelledby="history-heading">
+          <p className="eyebrow">Assessment record</p>
+          <h2 id="history-heading">Previous sessions</h2>
+          {loading ? (
+            <p className="empty-state">Loading history…</p>
+          ) : sessions.length === 0 ? (
+            <p className="empty-state">Completed and active sessions will appear here.</p>
+          ) : (
+            <div className="session-list">
+              {sessions.map((session) => (
+                <article className="session-card" key={session.id}>
+                  <div className="session-card-heading">
+                    <div>
+                      <h3>{session.examinationName}</h3>
+                      <p>{new Date(session.createdAt).toLocaleString()}</p>
+                    </div>
+                    <span>{session.conversationState ?? "unknown"}</span>
+                  </div>
+                  <p className="session-progress">
+                    Questions: {session.currentQuestionOrdinal}/{session.questionCount}
+                  </p>
+                  {session.recordingAvailable ? (
+                    <audio
+                      className="recording-player"
+                      controls
+                      preload="metadata"
+                      src={api.recordingUrl(session.id)}
+                    >
+                      Your browser does not support audio playback.
+                    </audio>
+                  ) : (
+                    <p className="recording-pending">Recording not yet available</p>
+                  )}
+                </article>
+              ))}
+            </div>
+          )}
+        </aside>
+      </main>
+    </PageFrame>
+  );
+}
+
+function CreateExaminationForm({
+  creating,
+  onCreate,
+}: {
+  readonly creating: boolean;
+  readonly onCreate: (request: CreateExaminationRequest) => Promise<boolean>;
+}) {
+  const [name, setName] = useState("");
+  const [subject, setSubject] = useState("");
+  const [questions, setQuestions] = useState([""]);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    const normalizedQuestions = questions.map((question) => question.trim());
+    if (name.trim() === "" || subject.trim() === "" || normalizedQuestions.some((q) => q === "")) {
+      setError("Add a name, subject, and text for every question.");
+      return;
+    }
+    setError(null);
+    const created = await onCreate({
+      name: name.trim(),
+      subject: subject.trim(),
+      questions: normalizedQuestions,
+    });
+    if (created) {
+      setName("");
+      setSubject("");
+      setQuestions([""]);
+    }
+  };
+
+  return (
+    <details className="create-panel">
+      <summary>Create an examination</summary>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void submit();
+        }}
+      >
+        <div className="field-row">
+          <label>
+            Examination name
+            <input
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              maxLength={160}
+              disabled={creating}
+            />
+          </label>
+          <label>
+            Subject
+            <input
+              value={subject}
+              onChange={(event) => setSubject(event.target.value)}
+              maxLength={160}
+              disabled={creating}
+            />
+          </label>
+        </div>
+        <fieldset>
+          <legend>Questions, in order</legend>
+          {questions.map((question, index) => (
+            <div className="question-row" key={index}>
+              <span>{index + 1}</span>
+              <textarea
+                aria-label={`Question ${index + 1}`}
+                value={question}
+                onChange={(event) =>
+                  setQuestions((current) =>
+                    current.map((value, currentIndex) =>
+                      currentIndex === index ? event.target.value : value,
+                    ),
+                  )
+                }
+                maxLength={4000}
+                rows={2}
+                disabled={creating}
+              />
+              {questions.length > 1 && (
+                <button
+                  className="remove-question"
+                  type="button"
+                  aria-label={`Remove question ${index + 1}`}
+                  onClick={() =>
+                    setQuestions((current) =>
+                      current.filter((_value, currentIndex) => currentIndex !== index),
+                    )
+                  }
+                >
+                  ×
+                </button>
+              )}
+            </div>
+          ))}
+        </fieldset>
+        <div className="form-actions">
+          <button
+            className="text-button"
+            type="button"
+            onClick={() => setQuestions((current) => [...current, ""])}
+            disabled={creating || questions.length >= 100}
+          >
+            + Add question
+          </button>
+          <button className="primary-button compact-button" type="submit" disabled={creating}>
+            {creating ? "Creating…" : "Create examination"}
+          </button>
+        </div>
+        {error && <ErrorMessage>{error}</ErrorMessage>}
+      </form>
+    </details>
   );
 }
 
@@ -392,16 +643,16 @@ export function PostConversationPage({
         <p className="eyebrow">Session summary</p>
         <h1>
           {completed
-            ? "Conversation complete"
+            ? "Examination complete"
             : failed
-              ? "The conversation ended early"
+              ? "The examination ended early"
               : cancelled
-                ? "Conversation cancelled"
-                : "Saving your conversation"}
+                ? "Examination cancelled"
+                : "Saving your examination"}
         </h1>
         <p className="lead">
           {completed
-            ? "Your recording has been saved and is ready for the next step."
+            ? "Your recording has been saved for review."
             : failed
               ? "We couldn’t finish the session normally. No action is needed right now."
               : cancelled
@@ -414,7 +665,7 @@ export function PostConversationPage({
         </div>
         {error && <ErrorMessage>{error}</ErrorMessage>}
         <button className="secondary-button wide" type="button" onClick={() => navigate("/")}>
-          Back to home
+          Back to examinations
         </button>
       </main>
     </PageFrame>
@@ -424,12 +675,14 @@ export function PostConversationPage({
 function PageFrame({
   children,
   compact = false,
+  wide = false,
 }: {
   readonly children: React.ReactNode;
   readonly compact?: boolean;
+  readonly wide?: boolean;
 }) {
   return (
-    <div className={`page-shell ${compact ? "compact" : ""}`}>
+    <div className={`page-shell ${compact ? "compact" : ""} ${wide ? "wide-shell" : ""}`}>
       <div className="brand">
         Oral<span>·</span>Exam
       </div>

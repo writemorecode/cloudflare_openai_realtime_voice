@@ -1,5 +1,5 @@
 /** Verifies browser-page authentication, navigation, and live-conversation controls. */
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -13,7 +13,7 @@ import {
   type RuntimeEvents,
   type RuntimeFactory,
 } from "@ai-oral-exam/conversation-client";
-import { ConversationPage, HomePage, PostConversationPage } from "./App";
+import { ConversationPage, DashboardPage, LoginPage, PostConversationPage } from "./App";
 
 const ID = "12345678-1234-8234-9234-123456789abc";
 
@@ -38,6 +38,13 @@ function api(overrides: Partial<ConversationApi> = {}): ConversationApi {
     login: vi.fn().mockResolvedValue(ok({ username: "examiner" })),
     getSession: vi.fn().mockResolvedValue(ok({ username: "examiner" })),
     logout: vi.fn().mockResolvedValue(ok(undefined)),
+    createExamination: vi.fn(),
+    listExaminations: vi.fn().mockResolvedValue(ok({ examinations: [] })),
+    getExamination: vi.fn(),
+    createExaminationSession: vi.fn(),
+    listExaminationSessions: vi.fn().mockResolvedValue(ok({ sessions: [] })),
+    getExaminationSession: vi.fn(),
+    recordingUrl: vi.fn(),
     createConversation: vi.fn().mockResolvedValue(ok(state(ConversationStateTag.Created))),
     startConversation: vi.fn(),
     getState: vi.fn().mockResolvedValue(ok(state(ConversationStateTag.Completed))),
@@ -50,44 +57,109 @@ function api(overrides: Partial<ConversationApi> = {}): ConversationApi {
 }
 
 describe("conversation pages", () => {
-  it("starts on the home page and navigates to the created conversation", async () => {
+  it("starts an available examination and navigates to its conversation", async () => {
     const navigate = vi.fn();
-    render(<HomePage api={api()} navigate={navigate} />);
-    await userEvent.click(screen.getByRole("button", { name: "Start conversation" }));
+    const examination = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      name: "Distributed systems oral",
+      subject: "Computer science",
+      questionCount: 2,
+      createdAt: 1,
+    };
+    const conversationApi = api({
+      listExaminations: vi.fn().mockResolvedValue(ok({ examinations: [examination] })),
+      createExaminationSession: vi.fn().mockResolvedValue(
+        ok({
+          id: ID,
+          examinationId: examination.id,
+          examinationName: examination.name,
+          subject: examination.subject,
+          conversationId: ID,
+          questionState: "in_progress",
+          currentQuestionOrdinal: 1,
+          questionCount: 2,
+          createdAt: 1,
+          questionsCompletedAt: null,
+          conversationState: "created",
+          recordingAvailable: false,
+        }),
+      ),
+    });
+    render(<DashboardPage api={conversationApi} navigate={navigate} onLogout={vi.fn()} />);
+    await userEvent.click(await screen.findByRole("button", { name: "Start exam" }));
     expect(navigate).toHaveBeenCalledWith(`/conversation/${ID}`);
   });
 
   it("requires and submits username and password credentials", async () => {
-    const navigate = vi.fn();
-    const authenticateAndCreate = vi
-      .fn()
-      .mockResolvedValue(ok(state(ConversationStateTag.Created)));
-    render(
-      <HomePage api={null} authenticateAndCreate={authenticateAndCreate} navigate={navigate} />,
-    );
+    const onAuthenticated = vi.fn();
+    const conversationApi = api();
+    render(<LoginPage api={conversationApi} onAuthenticated={onAuthenticated} />);
 
     const usernameInput = screen.getByLabelText("Sign in");
     const passwordInput = screen.getByLabelText("Password");
     expect(passwordInput).toHaveAttribute("type", "password");
-    await userEvent.click(screen.getByRole("button", { name: "Start conversation" }));
+    await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Enter your username and password to continue.",
     );
-    expect(authenticateAndCreate).not.toHaveBeenCalled();
+    expect(conversationApi.login).not.toHaveBeenCalled();
 
     await userEvent.type(usernameInput, "examiner");
     await userEvent.type(passwordInput, "correct horse battery staple");
-    await userEvent.click(screen.getByRole("button", { name: "Start conversation" }));
-    expect(authenticateAndCreate).toHaveBeenCalledWith("examiner", "correct horse battery staple");
-    expect(navigate).toHaveBeenCalledWith(`/conversation/${ID}`);
+    await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(conversationApi.login).toHaveBeenCalledWith("examiner", "correct horse battery staple");
+    expect(onAuthenticated).toHaveBeenCalledOnce();
+  });
+
+  it("creates an examination with ordered questions from the dashboard", async () => {
+    const conversationApi = api({
+      createExamination: vi.fn().mockResolvedValue(
+        ok({
+          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          name: "Operating systems oral",
+          subject: "Computer science",
+          questionCount: 2,
+          createdAt: 1,
+          questions: [
+            {
+              id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+              ordinal: 1,
+              text: "Explain virtual memory.",
+            },
+            {
+              id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+              ordinal: 2,
+              text: "What causes deadlock?",
+            },
+          ],
+        }),
+      ),
+    });
+    const rendered = render(
+      <DashboardPage api={conversationApi} navigate={vi.fn()} onLogout={vi.fn()} />,
+    );
+    const view = within(rendered.container);
+
+    await userEvent.click(view.getByText("Create an examination"));
+    await userEvent.type(view.getByLabelText("Examination name"), "Operating systems oral");
+    await userEvent.type(view.getByLabelText("Subject"), "Computer science");
+    await userEvent.type(view.getByLabelText("Question 1"), "Explain virtual memory.");
+    await userEvent.click(view.getByRole("button", { name: "+ Add question" }));
+    await userEvent.type(view.getByLabelText("Question 2"), "What causes deadlock?");
+    await userEvent.click(view.getByRole("button", { name: "Create examination" }));
+
+    expect(conversationApi.createExamination).toHaveBeenCalledWith({
+      name: "Operating systems oral",
+      subject: "Computer science",
+      questions: ["Explain virtual memory.", "What causes deadlock?"],
+    });
+    expect(await view.findByText("Operating systems oral")).toBeVisible();
   });
 
   it("shows the completed post-conversation state", async () => {
     render(<PostConversationPage conversationId={ID} api={api()} navigate={vi.fn()} />);
-    expect(await screen.findByRole("heading", { name: "Conversation complete" })).toBeVisible();
-    expect(
-      screen.getByText("Your recording has been saved and is ready for the next step."),
-    ).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Examination complete" })).toBeVisible();
+    expect(screen.getByText("Your recording has been saved for review.")).toBeVisible();
   });
 
   it("ends an active call and navigates to the post-conversation page", async () => {
