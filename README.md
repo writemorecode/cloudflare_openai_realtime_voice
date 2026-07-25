@@ -7,15 +7,12 @@ through the Worker or Durable Object. Cloudflare Workers provide the authenticat
 durable coordination, signed provider webhooks, and recording verification without a custom media
 bridge or audio transcoder.
 
-The repository currently contains the conversation aggregate, its Durable Object transition
-kernel, the HTTP API, a MessagePack WebSocket control protocol, the signed LiveKit webhook that
-verifies completed recording objects in R2, a deploy-ready LiveKit Agent workspace, and an
-idempotent access endpoint that creates the room, dispatches the agent, starts audio-only egress,
-and mints a restricted browser token. The agent reports authenticated lifecycle observations back
-to the Worker. Signed participant and track webhooks combine with that evidence so transport
-becomes connected only when the browser, agent, both microphone tracks, and Realtime are usable.
-Shutdown uses the same provider boundary to stop egress, remove the dispatch, and close the room
-exactly once after the aggregate enters `ending` or a terminal lifecycle state.
+The repository currently contains the examination dashboard and D1 model, the conversation
+aggregate and Durable Object transition kernel, a MessagePack WebSocket control protocol, the
+signed LiveKit webhook that verifies completed recording objects in R2, and a deploy-ready LiveKit
+Agent workspace. The agent loads fixed examination questions through authenticated tools and runs
+one LiveKit `AgentTask` per question. The browser can create examinations, start unlimited
+sessions, and replay verified recordings without receiving internal R2 keys.
 
 The target LiveKit integration is documented in
 [`docs/livekit-architecture.md`](docs/livekit-architecture.md).
@@ -139,6 +136,15 @@ The authenticated Worker API exposes:
 - `POST /v1/auth/login` — verify a D1 username/password and establish an opaque cookie session.
 - `GET /v1/auth/session` — validate the current browser session.
 - `POST /v1/auth/logout` — revoke the current session and clear its cookie.
+- `GET|POST /v1/examinations` — list all available examinations or create one with ordered fixed
+  questions.
+- `GET /v1/examinations/:id` — return one examination and its ordered questions.
+- `POST /v1/examinations/:id/sessions` — idempotently create a user-owned examination session and
+  its conversation.
+- `GET /v1/examination-sessions` — list the signed-in user's current and previous sessions.
+- `GET /v1/examination-sessions/:id` — return one owned examination session.
+- `GET /v1/examination-sessions/:id/recording` — stream an owned, verified R2 recording with HTTP
+  byte-range support.
 - `POST /v1/conversations` — create from an `Idempotency-Key`.
 - `POST /v1/conversations/:id/start` — apply `StartRequested` and return sanitized `starting` state
   with HTTP 202. This endpoint performs no external provisioning.
@@ -151,6 +157,10 @@ The authenticated Worker API exposes:
 - `POST /v1/integrations/livekit/webhook` — verify and apply signed LiveKit room and egress events.
 - `POST /v1/integrations/livekit/agent-events` — authenticate and correlate agent readiness,
   interruption, failure, recovery, and closure observations.
+- `GET /v1/integrations/examinations/conversations/:id/current-question` — return the agent's
+  authoritative current fixed question.
+- `POST /v1/integrations/examinations/conversations/:id/complete-question` — idempotently record
+  completion and advance the agent to the next fixed question.
 
 Use `.dev.vars` for local development. Required production control-plane secrets include:
 
@@ -165,11 +175,13 @@ pnpm exec wrangler secret put R2_S3_SECRET_ACCESS_KEY
 
 `LIVEKIT_URL`, `R2_BUCKET_NAME`, `R2_S3_ENDPOINT`, and `ALLOWED_ORIGIN` are non-secret settings
 configured per environment. Browser API and `conversation.v1` WebSocket access use the opaque D1
-session cookie. Provision `oral-exam-auth`, apply `migrations/`, and create the single user with:
+session cookie. Authentication stays in `oral-exam-auth`; examination content and sessions use the
+separate EU-jurisdiction `oral-exam-data-dev` database through `EXAM_DB`.
 
 ```sh
 pnpm exec wrangler d1 create oral-exam-auth
 pnpm exec wrangler d1 migrations apply oral-exam-auth --remote
+pnpm exec wrangler d1 migrations apply EXAM_DB --remote
 pnpm auth:create-user -- --remote oral-exam-auth <username>
 ```
 
@@ -190,9 +202,9 @@ pnpm auth:change-password -- --remote oral-exam-auth <username>
 
 ## Recording retention
 
-The authoritative R2 lifecycle policy in `config/r2-lifecycle.json` expires every object in
-`oral-exam-recordings-dev` 24 hours after creation and aborts incomplete multipart uploads after the
-same interval. Apply and inspect it with:
+The authoritative R2 lifecycle policy in `config/r2-lifecycle.json` expires completed objects in
+`oral-exam-recordings-dev` 30 days after creation and aborts incomplete multipart uploads after 24
+hours. Apply and inspect it with:
 
 ```sh
 pnpm r2:apply-retention
@@ -200,8 +212,8 @@ pnpm r2:verify-retention
 ```
 
 The apply command intentionally replaces the bucket's complete lifecycle configuration so an older,
-less restrictive rule cannot leave recordings behind. R2 marks objects expired at 24 hours;
-physical deletion is asynchronous and normally completes within the following 24 hours.
+less restrictive rule cannot leave recordings behind. R2 physical deletion is asynchronous after
+an object expires.
 
 ## LiveKit Agent workspace
 

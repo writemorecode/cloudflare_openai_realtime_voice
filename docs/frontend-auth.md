@@ -15,6 +15,14 @@ pnpm exec wrangler d1 migrations apply oral-exam-auth --remote
 pnpm auth:create-user -- --remote oral-exam-auth <username>
 ```
 
+Examination definitions and examination sessions deliberately use the separate `EXAM_DB` binding
+and `oral-exam-data-dev` database. User IDs are copied as application-level references; D1 cannot
+enforce a foreign key across the two databases.
+
+```sh
+pnpm exec wrangler d1 migrations apply EXAM_DB --remote
+```
+
 The user script prompts for the password without echoing it, derives a uniquely salted
 PBKDF2-HMAC-SHA-256 hash with 600,000 iterations, and passes only that one-way hash to
 `wrangler d1 execute`. The plaintext password is never sent to D1, printed, or placed in shell
@@ -31,6 +39,7 @@ For local development, apply the migration and create a separate local user:
 
 ```sh
 pnpm exec wrangler d1 migrations apply oral-exam-auth --local
+pnpm exec wrangler d1 migrations apply EXAM_DB --local
 pnpm auth:create-user -- --local oral-exam-auth <username>
 pnpm auth:change-password -- --local oral-exam-auth <username>
 pnpm exec wrangler dev

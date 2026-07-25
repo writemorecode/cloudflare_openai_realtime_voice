@@ -31,6 +31,7 @@ flowchart LR
         Worker[Worker HTTP API]
         Webhook[LiveKit webhook endpoint]
         DO[ConversationSession Durable Object]
+        ExamDB[(Examination D1)]
         ShutdownQueue[LiveKit shutdown Queue]
         R2[(R2 recording bucket)]
     end
@@ -53,6 +54,7 @@ flowchart LR
     LKClient <-->|WebRTC audio| Room
     ControlClient <-->|MessagePack control and snapshots| DO
     UI -->|create, start, request access| Worker
+    Worker -->|examinations, sessions, question progress| ExamDB
     Worker -->|typed RPC| DO
     DO -->|transactional time-limit outbox| ShutdownQueue
     ShutdownQueue -->|retryable teardown job| Worker
@@ -63,6 +65,7 @@ flowchart LR
     Dispatch --> Agent
     Agent <-->|WebRTC participant| Room
     Agent --> Adapter
+    Agent -->|authenticated question tools| Worker
     Adapter <-->|Realtime session| OpenAI
     Room --> Egress
     Egress -->|S3-compatible upload| R2
@@ -89,6 +92,8 @@ The data paths have intentionally different owners:
   user commands.
 - Uses the D1-backed username/password login and opaque, host-only browser session cookie for REST
   and control-WebSocket authentication.
+- Creates immutable examinations with ordered fixed questions, starts unlimited sessions, lists
+  the current user's session history, and replays owned verified recordings through the Worker.
 - Never receives an OpenAI API key or LiveKit API secret.
 
 The browser implementation is split into a reusable foundation client and the product UI. The
@@ -110,6 +115,10 @@ package.
 - Verifies LiveKit webhook signatures before translating webhook payloads into typed conversation
   events.
 - Verifies completed R2 objects rather than trusting an egress notification alone.
+- Stores examination definitions, ordered questions, per-user session links, and idempotent
+  question completion records in the separate `EXAM_DB` D1 database.
+- Streams an owned completed recording from R2 with byte-range support while keeping its key
+  internal.
 - Consumes bounded, retryable time-limit shutdown jobs and invokes the idempotent LiveKit teardown
   adapter outside the Durable Object transaction.
 - Receives time, identifiers, Durable Object lookup, R2 lookup, webhook verification, and LiveKit
@@ -143,10 +152,13 @@ package.
 - Joins the room as the AI participant.
 - Uses LiveKit's OpenAI Realtime plugin with configurable model and voice settings, defaulting to
   `gpt-realtime-2.1` and `marin`.
-- Currently supplies a minimal helpful-assistant prompt with no tools. Dispatched jobs deliver
-  authenticated lifecycle events to the Worker; the OpenAI session's accepted configuration,
-  recoverable errors and reconnection, fatal errors, and session closure drive those events.
-  Explicitly synthetic console jobs retain the no-op reporter.
+- Loads `agent/examiner_agent_system_prompt.md`, calls an authenticated Worker tool for the
+  authoritative current question, and runs one LiveKit `AgentTask` for each fixed question. The
+  task may collect neutral clarification or elaboration, then calls the idempotent completion tool
+  to advance. It never receives D1 or R2 credentials.
+- Delivers authenticated lifecycle events to the Worker; the OpenAI session's accepted
+  configuration, recoverable errors and reconnection, fatal errors, and session closure drive
+  those events. Explicitly synthetic console jobs retain the no-op reporter.
 - Keeps `OPENAI_API_KEY` in the agent runtime, never in the browser or Durable Object snapshot.
 
 Explicit dispatch metadata is versioned and contains the conversation UUID, the matching
@@ -158,7 +170,8 @@ console flag.
 
 The intended sequence is:
 
-1. The browser creates a conversation.
+1. The browser creates an examination session for a selected examination. The Worker idempotently
+   links that D1 session to a newly initialized conversation.
 2. The browser calls the provider-neutral start endpoint. `StartRequested` moves lifecycle to
    `starting` and transport to `connecting` at epoch 1.
 3. The browser requests LiveKit access from a separate endpoint.
@@ -170,11 +183,13 @@ The intended sequence is:
    `RecordingStarted`.
 8. The complete signed evidence set produces `TransportConnected` and then `SessionStarted`. The
    reducer also requires recording to be active.
-9. A browser-initiated `EndRequested` calls `DELETE /livekit-access`. When the authoritative duration
-   alarm applies `TimeLimitReached`, the same transaction stores a shutdown outbox message; the
-   Durable Object sends it to Cloudflare Queues after commit. The Queue consumer stops egress,
-   deletes the explicit dispatch, and closes the room. Closing the room disconnects the agent and
-   ends its job. A Durable Object lease makes duplicate HTTP, alarm, and Queue delivery retry-safe.
+9. After Realtime readiness, the agent calls the current-question endpoint and begins the
+   per-question `AgentTask` sequence.
+10. A browser-initiated `EndRequested` calls `DELETE /livekit-access`. When the authoritative duration
+    alarm applies `TimeLimitReached`, the same transaction stores a shutdown outbox message; the
+    Durable Object sends it to Cloudflare Queues after commit. The Queue consumer stops egress,
+    deletes the explicit dispatch, and closes the room. Closing the room disconnects the agent and
+    ends its job. A Durable Object lease makes duplicate HTTP, alarm, and Queue delivery retry-safe.
 
 Room names and participant identities must be deterministic enough for retry convergence while
 remaining unguessable to unauthorized clients. Each conversation gets a unique room. Do not rely on
@@ -185,6 +200,25 @@ The implemented webhook correlation convention is `conversation-<conversation-id
 adapter uses the same convention and records both the egress ID and the deterministic
 `conversations/<conversation-id>/recording.ogg` key. Webhooks must match both correlations, so a
 signed provider payload cannot make the Worker inspect an unrelated R2 object.
+
+## Examination data and question progression
+
+Authentication and examination data intentionally use separate D1 databases. `AUTH_DB` owns users
+and browser sessions. `EXAM_DB` owns:
+
+- immutable examination headers (`name`, `subject`, creator user ID, and creation time);
+- ordered fixed questions with a unique ordinal per examination;
+- per-user examination sessions linked one-to-one to conversation IDs;
+- per-question completion receipts and a monotonic question revision.
+
+The same browser `Idempotency-Key` derives the examination-session ID and conversation ID, so a
+lost response can be retried without creating a second attempt. Cross-database user foreign keys
+are enforced at the application boundary because D1 cannot enforce a foreign key across bindings.
+
+The agent-only current-question endpoint is read-only. Completion includes the current question ID
+and expected revision. D1 advances only from that exact question/revision and stores a unique
+completion receipt. A retry returns the already-current next question rather than skipping again.
+The model never owns question order.
 
 ## Conversation finite state machines
 
@@ -304,6 +338,7 @@ src/worker/ports/foundation.ts            interfaces for all foundation external
 src/worker/adapters/                      Cloudflare, R2, Web Crypto, and LiveKit implementations
 src/worker/foundation-dependencies.ts     production adapter assembly
 src/worker/http/                          stateless HTTP API, security, and public DTOs
+src/worker/examinations/                  D1 repository and examination application services
 src/worker/integrations/livekit/*-decisions.ts
                                          pure decoding and orchestration policy
 src/worker/integrations/livekit/webhook.ts
@@ -384,8 +419,13 @@ Artifact completion has two pieces of evidence:
 Only then should the Durable Object receive `RecordingArtifactVerified`. The FSM intentionally
 supports either ordering between transport closure and artifact readiness.
 
-The R2 bucket lifecycle configuration expires all completed objects and aborts incomplete multipart
-uploads after 24 hours. R2 performs physical deletion asynchronously after an object expires.
+The browser recording route first verifies session ownership and requires the authoritative
+conversation state to be `completed` with artifact `ready`. It then streams the internal R2 object
+with HTTP byte-range support and never returns the object key.
+
+The R2 bucket lifecycle configuration expires completed objects after 30 days and aborts incomplete
+multipart uploads after 24 hours. R2 performs physical deletion asynchronously after an object
+expires.
 
 ## Security and trust boundaries
 
