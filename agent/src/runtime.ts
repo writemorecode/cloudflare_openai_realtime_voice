@@ -12,10 +12,7 @@ export interface AgentSessionPort<Room, Assistant> {
   start(options: { readonly agent: Assistant; readonly room: Room }): Promise<void>;
   generateReply(options: {
     readonly instructions: string;
-    readonly toolChoice?: {
-      readonly type: "function";
-      readonly function: { readonly name: string };
-    };
+    readonly toolChoice?: "required";
   }): unknown;
   on(event: "error", listener: (event: AgentSessionErrorEvent) => void): unknown;
   on(event: "close", listener: () => void): unknown;
@@ -35,7 +32,7 @@ export interface RunAgentJobOptions<Room, Assistant> {
   readonly createAssistant: () => Assistant;
   readonly reporter: AgentLifecycleReporter;
   readonly initialReplyInstructions?: string;
-  readonly initialToolName?: string;
+  readonly requireInitialTool?: boolean;
   readonly registerShutdownCallback?: (callback: () => Promise<void>) => void;
   readonly onBackgroundReportError?: (error: unknown) => void;
 }
@@ -58,14 +55,7 @@ export async function runAgentJob<Room, Assistant>(
     await lifecycle.confirmInitialReadiness();
     await session.generateReply({
       instructions: options.initialReplyInstructions ?? INITIAL_GREETING_INSTRUCTIONS,
-      ...(options.initialToolName === undefined
-        ? {}
-        : {
-            toolChoice: {
-              type: "function" as const,
-              function: { name: options.initialToolName },
-            },
-          }),
+      ...(options.requireInitialTool !== true ? {} : { toolChoice: "required" as const }),
     });
   } catch {
     const failure: AgentFailureEvent = {
@@ -108,6 +98,7 @@ class AgentLifecycleCoordinator {
         this.resolveInitialReadiness();
       },
       failed: () => this.failBeforeReady(),
+      interrupted: () => this.providerInterrupted(),
       recovered: () => this.providerRecovered(),
     };
   }
@@ -124,14 +115,7 @@ class AgentLifecycleCoordinator {
       if (!event.error.recoverable) this.failBeforeReady();
       return;
     }
-    if (this.terminal) return;
-    if (event.error.recoverable) {
-      if (this.interrupted) return;
-      this.interrupted = true;
-      const interrupted = this.event("realtime-interrupted");
-      this.enqueue(() => this.reporter.realtimeInterrupted(interrupted));
-      return;
-    }
+    if (this.terminal || event.error.recoverable) return;
     this.terminal = true;
     const failure: AgentFailureEvent = {
       ...this.event("realtime-failed"),
@@ -152,6 +136,13 @@ class AgentLifecycleCoordinator {
 
   async flush(): Promise<void> {
     await this.pendingReports;
+  }
+
+  private providerInterrupted(): void {
+    if (!this.live || this.interrupted || this.terminal) return;
+    this.interrupted = true;
+    const interrupted = this.event("realtime-interrupted");
+    this.enqueue(() => this.reporter.realtimeInterrupted(interrupted));
   }
 
   private providerRecovered(): void {

@@ -1,11 +1,13 @@
 /** Creates the OpenAI Realtime model adapter and observes its lifecycle readiness signals. */
 import * as openai from "@livekit/agents-plugin-openai";
+import { APIConnectionError, llm } from "@livekit/agents";
 
 import type { AgentRuntimeConfig } from "./config.js";
 
 export interface RealtimeLifecycleObserver {
   ready(): void;
   failed(): void;
+  interrupted(): void;
   recovered(): void;
 }
 
@@ -21,26 +23,47 @@ interface OpenAIRealtimeServerEvent {
 
 interface RealtimeModelErrorEvent {
   readonly recoverable?: unknown;
+  readonly error?: unknown;
 }
 
 export function observeRealtimeReadiness(
   session: RealtimeSessionEventSource,
   observer: RealtimeLifecycleObserver,
 ): void {
-  let settled = false;
+  let initialSettled = false;
+  let ready = false;
   session.on("openai_server_event_received", (event) => {
-    if (settled || !isOpenAIRealtimeServerEvent(event) || event.type !== "session.updated") return;
-    settled = true;
+    if (initialSettled || !isOpenAIRealtimeServerEvent(event) || event.type !== "session.updated") {
+      return;
+    }
+    initialSettled = true;
+    ready = true;
     observer.ready();
   });
   session.on("error", (event) => {
-    if (settled || !isRealtimeModelErrorEvent(event) || event.recoverable !== false) return;
-    settled = true;
+    if (!isRealtimeModelErrorEvent(event)) return;
+    if (ready && event.recoverable === true && event.error instanceof APIConnectionError) {
+      observer.interrupted();
+      return;
+    }
+    if (initialSettled || event.recoverable !== false) return;
+    initialSettled = true;
     observer.failed();
   });
   session.on("session_reconnected", () => {
-    if (settled) observer.recovered();
+    if (ready) observer.recovered();
   });
+}
+
+class ObservedRealtimeSession extends openai.realtime.RealtimeSession {
+  constructor(model: openai.realtime.RealtimeModel, observer: RealtimeLifecycleObserver) {
+    super(model);
+    observeRealtimeReadiness(this, observer);
+  }
+
+  override updateChatCtx(chatCtx: llm.ChatContext): Promise<void> {
+    return super.updateChatCtx(realtimeCompatibleChatContext(chatCtx));
+  }
 }
 
 class ObservedRealtimeModel extends openai.realtime.RealtimeModel {
@@ -52,9 +75,7 @@ class ObservedRealtimeModel extends openai.realtime.RealtimeModel {
   }
 
   override session(): openai.realtime.RealtimeSession {
-    const session = super.session();
-    observeRealtimeReadiness(session, this.observer);
-    return session;
+    return new ObservedRealtimeSession(this, this.observer);
   }
 }
 
@@ -70,6 +91,10 @@ export function createRealtimeModel(
     },
     observer,
   );
+}
+
+export function realtimeCompatibleChatContext(chatCtx: llm.ChatContext): llm.ChatContext {
+  return chatCtx.copy({ excludeConfigUpdate: true });
 }
 
 function isOpenAIRealtimeServerEvent(value: unknown): value is OpenAIRealtimeServerEvent {

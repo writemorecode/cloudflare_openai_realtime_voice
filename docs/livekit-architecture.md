@@ -157,8 +157,9 @@ package.
   task may collect neutral clarification or elaboration, then calls the idempotent completion tool
   to advance. It never receives D1 or R2 credentials.
 - Delivers authenticated lifecycle events to the Worker; the OpenAI session's accepted
-  configuration, recoverable errors and reconnection, fatal errors, and session closure drive
-  those events. Explicitly synthetic console jobs retain the no-op reporter.
+  configuration, connection-specific retry and reconnection, fatal errors, and session closure
+  drive those events. Recoverable response and configuration errors are informational and do not
+  imply a transport outage. Explicitly synthetic console jobs retain the no-op reporter.
 - Keeps `OPENAI_API_KEY` in the agent runtime, never in the browser or Durable Object snapshot.
 
 Explicit dispatch metadata is versioned and contains the conversation UUID, the matching
@@ -288,6 +289,13 @@ current aggregate.
 | Successful egress plus verified R2 object                      | `RecordingArtifactVerified`          | Include the verified key and etag internally.                                |
 | Failed egress or missing/corrupt R2 object                     | `ArtifactFailed`                     | Successful lifecycle completion is no longer possible.                       |
 | Room and agent session are closed                              | `SessionClosed`                      | May arrive before or after artifact readiness.                               |
+
+For the OpenAI Realtime plugin, only a retryable `APIConnectionError` is Realtime transport
+interruption evidence. The Agents SDK also labels rejected response options and other per-response
+model errors as recoverable; those errors are informational because the session remains usable and
+they do not produce a matching reconnection signal. AgentTask configuration-history records remain
+in the local session history but are excluded when synchronizing chat context to OpenAI because
+they are internal LiveKit records rather than supported Realtime conversation items.
 
 LiveKit webhook IDs should become event IDs. Only the current `EV_`-prefixed LiveKit ID format is
 accepted. Agent-originated observations need their own stable, retry-safe IDs. The existing event

@@ -113,15 +113,12 @@ describe("runAgentJob", () => {
       createAssistant: () => ({}),
       reporter: new NoopAgentLifecycleReporter(),
       initialReplyInstructions: BEGIN_EXAMINATION_INSTRUCTIONS,
-      initialToolName: "get_current_examination_question",
+      requireInitialTool: true,
     });
 
     expect(session.generateReply).toHaveBeenCalledWith({
       instructions: BEGIN_EXAMINATION_INSTRUCTIONS,
-      toolChoice: {
-        type: "function",
-        function: { name: "get_current_examination_question" },
-      },
+      toolChoice: "required",
     });
   });
 
@@ -150,7 +147,7 @@ describe("runAgentJob", () => {
     expect(reporter.realtimeFailed).toHaveBeenCalledOnce();
   });
 
-  it("reports interruption, incremented recovery, fatal failure, and closure in order", async () => {
+  it("reports connection interruption, incremented recovery, fatal failure, and closure", async () => {
     const calls: string[] = [];
     const reporter = {
       ...new NoopAgentLifecycleReporter(),
@@ -191,6 +188,10 @@ describe("runAgentJob", () => {
     });
 
     session.emit("error", { error: { recoverable: true } });
+    await shutdownCallback?.();
+    expect(calls).toEqual(["ready"]);
+
+    observer?.interrupted();
     observer?.recovered();
     session.emit("error", { error: { recoverable: false } });
     session.emit("close");

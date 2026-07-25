@@ -52,7 +52,7 @@ export default defineAgent({
         ? {}
         : {
             initialReplyInstructions: BEGIN_EXAMINATION_INSTRUCTIONS,
-            initialToolName: "get_current_examination_question",
+            requireInitialTool: true,
           }),
       registerShutdownCallback: (callback) => ctx.addShutdownCallback(callback),
       onBackgroundReportError: (error) => {
