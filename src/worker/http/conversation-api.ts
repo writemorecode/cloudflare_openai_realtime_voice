@@ -10,6 +10,7 @@ import type { AggregateStoreResult } from "../../durable-object/conversation-agg
 import { ApiError, problemResponse } from "./api-errors";
 import { preflightResponse, validateOrigin, withCors } from "./api-cors";
 import { deriveConversationId, validateIdempotencyKey } from "./api-security";
+import { authenticateBearer } from "./api-security";
 import { authenticateBrowserSession, login, logout, type AuthenticatedUser } from "./browser-auth";
 import { toConversationStateDto, type ConversationStateDto } from "./conversation-state-dto";
 import { WIRE_SUBPROTOCOL } from "@ai-oral-exam/conversation-contract";
@@ -22,6 +23,18 @@ import {
 } from "../integrations/livekit/access";
 import { err, ok, tryCatch, type Result } from "@ai-oral-exam/result";
 import type { FoundationDependencies } from "../ports/foundation";
+import {
+  completeAgentCurrentQuestion,
+  createExamination,
+  createExaminationSession,
+  getAgentCurrentQuestion,
+  getExamination,
+  getExaminations,
+  getExaminationSession,
+  getExaminationSessionRecording,
+  getExaminationSessions,
+  type ExaminationApiResult,
+} from "../examinations/examination-api";
 
 const STARTING_WINDOW_MS = 60_000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -34,6 +47,14 @@ type ApiRouteName =
   | "login"
   | "logout"
   | "auth_session"
+  | "examinations"
+  | "examination"
+  | "create_examination_session"
+  | "examination_sessions"
+  | "examination_session"
+  | "examination_recording"
+  | "agent_current_examination_question"
+  | "agent_complete_examination_question"
   | "create_conversation"
   | "start_conversation"
   | "get_state"
@@ -46,6 +67,7 @@ interface MatchedRoute {
   readonly name: ApiRouteName;
   readonly allowedMethods: readonly string[];
   readonly conversationId: string | null;
+  readonly resourceId?: string;
 }
 
 interface RequestTelemetry {
@@ -170,10 +192,19 @@ async function processMatchedRequest(
     const headers = validateSmallHeaders(request);
     if (!headers.ok) return headers;
   }
+  let authenticatedUser: AuthenticatedUser | null = null;
   if (route.name === "livekit_webhook") {
     // LiveKit authenticates this route with its signed webhook JWT.
-  } else if (route.name === "livekit_agent_event") {
+  } else if (
+    route.name === "livekit_agent_event" ||
+    route.name === "agent_current_examination_question" ||
+    route.name === "agent_complete_examination_question"
+  ) {
     // The integration handler verifies the agent-only bearer credential.
+    if (route.name !== "livekit_agent_event") {
+      const authenticated = authenticateBearer(request, env.AGENT_CALLBACK_TOKEN);
+      if (!authenticated.ok) return authenticated;
+    }
   } else if (route.name === "login") {
     const browserOrigin = requireBrowserOrigin(origin);
     if (!browserOrigin.ok) return browserOrigin;
@@ -184,8 +215,9 @@ async function processMatchedRequest(
     }
     const authenticated = await authenticateBrowserSession(request, env.AUTH_DB);
     if (!authenticated.ok) return authenticated;
+    authenticatedUser = authenticated.value;
   }
-  return dispatch(request, env, route, dependencies);
+  return dispatch(request, env, route, authenticatedUser, dependencies);
 }
 
 function errorRouteResult(
@@ -216,6 +248,7 @@ async function dispatch(
   request: Request,
   env: Env,
   route: MatchedRoute,
+  authenticatedUser: AuthenticatedUser | null,
   dependencies: FoundationDependencies,
 ): Promise<ApiResult<RouteResult>> {
   switch (route.name) {
@@ -232,8 +265,85 @@ async function dispatch(
     case "auth_session": {
       const empty = await validateNoBody(request);
       if (!empty.ok) return empty;
-      const user = await authenticateBrowserSession(request, env.AUTH_DB);
-      return user.ok ? ok(authSessionResult(user.value)) : user;
+      return authenticatedUser === null
+        ? err(new ApiError(401, "session_unauthorized", "Authentication is required."))
+        : ok(authSessionResult(authenticatedUser));
+    }
+    case "examinations": {
+      const user = requireAuthenticatedUser(authenticatedUser);
+      if (!user.ok) return user;
+      const handled =
+        request.method === "POST"
+          ? await createExamination(request, user.value, env, dependencies)
+          : await getExaminations(env);
+      return examinationRouteResult(handled);
+    }
+    case "examination": {
+      const empty = await validateNoBody(request);
+      if (!empty.ok) return empty;
+      const examinationId = requireResourceId(route);
+      if (!examinationId.ok) return examinationId;
+      return examinationRouteResult(await getExamination(examinationId.value, env));
+    }
+    case "create_examination_session": {
+      const empty = await validateNoBody(request);
+      if (!empty.ok) return empty;
+      const user = requireAuthenticatedUser(authenticatedUser);
+      if (!user.ok) return user;
+      const examinationId = requireResourceId(route);
+      if (!examinationId.ok) return examinationId;
+      return examinationRouteResult(
+        await createExaminationSession(request, examinationId.value, user.value, env, dependencies),
+      );
+    }
+    case "examination_sessions": {
+      const empty = await validateNoBody(request);
+      if (!empty.ok) return empty;
+      const user = requireAuthenticatedUser(authenticatedUser);
+      if (!user.ok) return user;
+      return examinationRouteResult(await getExaminationSessions(user.value, env, dependencies));
+    }
+    case "examination_session": {
+      const empty = await validateNoBody(request);
+      if (!empty.ok) return empty;
+      const user = requireAuthenticatedUser(authenticatedUser);
+      if (!user.ok) return user;
+      const examinationSessionId = requireResourceId(route);
+      if (!examinationSessionId.ok) return examinationSessionId;
+      return examinationRouteResult(
+        await getExaminationSession(examinationSessionId.value, user.value, env, dependencies),
+      );
+    }
+    case "examination_recording": {
+      const user = requireAuthenticatedUser(authenticatedUser);
+      if (!user.ok) return user;
+      const examinationSessionId = requireResourceId(route);
+      if (!examinationSessionId.ok) return examinationSessionId;
+      return examinationRouteResult(
+        await getExaminationSessionRecording(
+          request,
+          examinationSessionId.value,
+          user.value,
+          env,
+          dependencies,
+        ),
+      );
+    }
+    case "agent_current_examination_question": {
+      const empty = await validateNoBody(request);
+      if (!empty.ok) return empty;
+      const conversationId = requireConversationId(route);
+      return conversationId.ok
+        ? examinationRouteResult(await getAgentCurrentQuestion(conversationId.value, env))
+        : conversationId;
+    }
+    case "agent_complete_examination_question": {
+      const conversationId = requireConversationId(route);
+      return conversationId.ok
+        ? examinationRouteResult(
+            await completeAgentCurrentQuestion(request, conversationId.value, env, dependencies),
+          )
+        : conversationId;
     }
     case "create_conversation": {
       const empty = await validateNoBody(request);
@@ -538,6 +648,75 @@ function matchRoute(pathname: string): ApiResult<MatchedRoute | null> {
   if (pathname === "/v1/integrations/livekit/agent-events") {
     return ok({ name: "livekit_agent_event", allowedMethods: ["POST"], conversationId: null });
   }
+  const agentQuestionMatch =
+    /^\/v1\/integrations\/examinations\/conversations\/([^/]+)\/(current-question|complete-question)$/.exec(
+      pathname,
+    );
+  if (agentQuestionMatch !== null) {
+    const conversationId = agentQuestionMatch[1];
+    if (conversationId === undefined || !UUID_PATTERN.test(conversationId)) {
+      return err(
+        new ApiError(400, "invalid_conversation_id", "Conversation ID must be a canonical UUID."),
+      );
+    }
+    return ok({
+      name:
+        agentQuestionMatch[2] === "current-question"
+          ? "agent_current_examination_question"
+          : "agent_complete_examination_question",
+      allowedMethods: agentQuestionMatch[2] === "current-question" ? ["GET"] : ["POST"],
+      conversationId,
+    });
+  }
+  if (pathname === "/v1/examinations") {
+    return ok({ name: "examinations", allowedMethods: ["GET", "POST"], conversationId: null });
+  }
+  if (pathname === "/v1/examination-sessions") {
+    return ok({
+      name: "examination_sessions",
+      allowedMethods: ["GET"],
+      conversationId: null,
+    });
+  }
+  const examinationSessionMatch = /^\/v1\/examination-sessions\/([^/]+)(\/recording)?$/.exec(
+    pathname,
+  );
+  if (examinationSessionMatch !== null) {
+    const examinationSessionId = examinationSessionMatch[1];
+    if (examinationSessionId === undefined || !UUID_PATTERN.test(examinationSessionId)) {
+      return err(
+        new ApiError(
+          400,
+          "invalid_examination_session_id",
+          "Examination session ID must be a canonical UUID.",
+        ),
+      );
+    }
+    return ok({
+      name:
+        examinationSessionMatch[2] === "/recording"
+          ? "examination_recording"
+          : "examination_session",
+      allowedMethods: ["GET"],
+      conversationId: null,
+      resourceId: examinationSessionId,
+    });
+  }
+  const examinationMatch = /^\/v1\/examinations\/([^/]+)(\/sessions)?$/.exec(pathname);
+  if (examinationMatch !== null) {
+    const examinationId = examinationMatch[1];
+    if (examinationId === undefined || !UUID_PATTERN.test(examinationId)) {
+      return err(
+        new ApiError(400, "invalid_examination_id", "Examination ID must be a canonical UUID."),
+      );
+    }
+    return ok({
+      name: examinationMatch[2] === "/sessions" ? "create_examination_session" : "examination",
+      allowedMethods: examinationMatch[2] === "/sessions" ? ["POST"] : ["GET"],
+      conversationId: null,
+      resourceId: examinationId,
+    });
+  }
   if (pathname === "/v1/conversations") {
     return ok({ name: "create_conversation", allowedMethods: ["POST"], conversationId: null });
   }
@@ -605,6 +784,29 @@ function requireConversationId(route: MatchedRoute): ApiResult<string> {
     return err(new ApiError(500, "invalid_route", "The request route is invalid."));
   }
   return ok(route.conversationId);
+}
+
+function requireResourceId(route: MatchedRoute): ApiResult<string> {
+  return route.resourceId === undefined
+    ? err(new ApiError(500, "invalid_route", "The request route is invalid."))
+    : ok(route.resourceId);
+}
+
+function requireAuthenticatedUser(user: AuthenticatedUser | null): ApiResult<AuthenticatedUser> {
+  return user === null
+    ? err(new ApiError(401, "session_unauthorized", "Authentication is required."))
+    : ok(user);
+}
+
+function examinationRouteResult(result: ApiResult<ExaminationApiResult>): ApiResult<RouteResult> {
+  return result.ok
+    ? ok({
+        response: result.value.response,
+        conversationId: result.value.conversationId,
+        state: null,
+        outcome: result.value.outcome,
+      })
+    : result;
 }
 
 async function validateNoBody(request: Request): Promise<ApiResult<void>> {
