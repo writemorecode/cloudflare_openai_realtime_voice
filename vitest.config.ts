@@ -2,6 +2,7 @@ import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-worker
 import { defineConfig } from "vitest/config";
 
 const d1Migrations = await readD1Migrations("./migrations");
+const examinationD1Migrations = await readD1Migrations("./migrations-examinations");
 
 export default defineConfig({
   test: {
@@ -14,6 +15,7 @@ export default defineConfig({
       miniflare: {
         bindings: {
           TEST_D1_MIGRATIONS: d1Migrations,
+          TEST_EXAM_D1_MIGRATIONS: examinationD1Migrations,
           AGENT_CALLBACK_TOKEN: "test-agent-callback-token",
           ALLOWED_ORIGIN: "http://localhost:5173/",
           CONVERSATION_ID_SECRET: "test-conversation-id-secret",

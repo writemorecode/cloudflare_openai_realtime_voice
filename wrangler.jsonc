@@ -50,6 +50,12 @@
       "database_id": "1af84547-3ebc-4914-bdd8-f6ea7b0e7275",
       "migrations_dir": "migrations",
     },
+    {
+      "binding": "EXAM_DB",
+      "database_name": "oral-exam-data-dev",
+      "database_id": "cad009b8-5c4c-4d6a-ab67-8d73a788adff",
+      "migrations_dir": "migrations-examinations",
+    },
   ],
   "queues": {
     "producers": [
