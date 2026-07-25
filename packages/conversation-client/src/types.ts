@@ -1,7 +1,12 @@
 /** Defines the browser application's API, media-runtime, and event contracts. */
 import type {
   AuthSession,
+  CreateExaminationRequest,
   ConversationStateDto,
+  Examination,
+  ExaminationList,
+  ExaminationSession,
+  ExaminationSessionList,
   LiveKitAccess,
 } from "@ai-oral-exam/conversation-contract";
 import type { Result } from "@ai-oral-exam/result";
@@ -11,6 +16,19 @@ export interface ConversationApi {
   login(username: string, password: string): Promise<Result<AuthSession, ConversationClientError>>;
   getSession(): Promise<Result<AuthSession, ConversationClientError>>;
   logout(): Promise<Result<void, ConversationClientError>>;
+  createExamination(
+    examination: CreateExaminationRequest,
+  ): Promise<Result<Examination, ConversationClientError>>;
+  listExaminations(): Promise<Result<ExaminationList, ConversationClientError>>;
+  getExamination(examinationId: string): Promise<Result<Examination, ConversationClientError>>;
+  createExaminationSession(
+    examinationId: string,
+  ): Promise<Result<ExaminationSession, ConversationClientError>>;
+  listExaminationSessions(): Promise<Result<ExaminationSessionList, ConversationClientError>>;
+  getExaminationSession(
+    examinationSessionId: string,
+  ): Promise<Result<ExaminationSession, ConversationClientError>>;
+  recordingUrl(examinationSessionId: string): string;
   createConversation(): Promise<Result<ConversationStateDto, ConversationClientError>>;
   startConversation(
     conversationId: string,

@@ -6,6 +6,13 @@ export { err, ok, type Result } from "@ai-oral-exam/result";
 export {
   ArtifactStatus,
   ConversationStateTag,
+  type CreateExaminationRequest,
+  type Examination,
+  type ExaminationList,
+  type ExaminationQuestion,
+  type ExaminationSession,
+  type ExaminationSessionList,
+  type ExaminationSummary,
   FailureStage,
   StopReason,
   TransportStatus,

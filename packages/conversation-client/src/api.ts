@@ -2,8 +2,17 @@
 import {
   WIRE_SUBPROTOCOL,
   authSessionSchema,
+  examinationListSchema,
+  examinationSchema,
+  examinationSessionListSchema,
+  examinationSessionSchema,
   conversationStateSchema,
   liveKitAccessSchema,
+  type CreateExaminationRequest,
+  type Examination,
+  type ExaminationList,
+  type ExaminationSession,
+  type ExaminationSessionList,
   type AuthSession,
   type ConversationStateDto,
   type LiveKitAccess,
@@ -45,6 +54,55 @@ export class HttpConversationApi implements ConversationApi {
 
   logout(): Promise<Result<void, ConversationClientError>> {
     return this.requestWithoutResponse("/v1/auth/logout", { method: "POST" });
+  }
+
+  createExamination(
+    examination: CreateExaminationRequest,
+  ): Promise<Result<Examination, ConversationClientError>> {
+    return this.request("/v1/examinations", examinationSchema, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(examination),
+    });
+  }
+
+  listExaminations(): Promise<Result<ExaminationList, ConversationClientError>> {
+    return this.request("/v1/examinations", examinationListSchema);
+  }
+
+  getExamination(examinationId: string): Promise<Result<Examination, ConversationClientError>> {
+    return this.request(`/v1/examinations/${examinationId}`, examinationSchema);
+  }
+
+  createExaminationSession(
+    examinationId: string,
+  ): Promise<Result<ExaminationSession, ConversationClientError>> {
+    return this.request(`/v1/examinations/${examinationId}/sessions`, examinationSessionSchema, {
+      method: "POST",
+      headers: { "Idempotency-Key": crypto.randomUUID() },
+    });
+  }
+
+  listExaminationSessions(): Promise<Result<ExaminationSessionList, ConversationClientError>> {
+    return this.request("/v1/examination-sessions", examinationSessionListSchema);
+  }
+
+  getExaminationSession(
+    examinationSessionId: string,
+  ): Promise<Result<ExaminationSession, ConversationClientError>> {
+    return this.request(
+      `/v1/examination-sessions/${examinationSessionId}`,
+      examinationSessionSchema,
+    );
+  }
+
+  recordingUrl(examinationSessionId: string): string {
+    const encodedSessionId = encodeURIComponent(examinationSessionId);
+    const url = new URL(
+      `/v1/examination-sessions/${encodedSessionId}/recording`,
+      this.config.baseUrl,
+    );
+    return url.href;
   }
 
   createConversation(): Promise<Result<ConversationStateDto, ConversationClientError>> {
