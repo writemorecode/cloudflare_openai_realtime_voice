@@ -5,7 +5,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { RealtimeLifecycleObserver } from "../src/model.js";
 import { NoopAgentLifecycleReporter } from "../src/reporter.js";
-import { INITIAL_GREETING_INSTRUCTIONS, runAgentJob } from "../src/runtime.js";
+import {
+  BEGIN_EXAMINATION_INSTRUCTIONS,
+  INITIAL_GREETING_INSTRUCTIONS,
+  runAgentJob,
+} from "../src/runtime.js";
 
 const metadata = {
   version: 1 as const,
@@ -94,6 +98,31 @@ describe("runAgentJob", () => {
     expect(JSON.stringify(reporter.realtimeFailed.mock.calls)).not.toContain(
       "provider secret detail",
     );
+  });
+
+  it("can direct the first reply to begin the examination tool workflow", async () => {
+    const session = new TestAgentSession();
+    await runAgentJob({
+      metadata,
+      room: {},
+      connect: async () => undefined,
+      createSession: (observer) => {
+        queueMicrotask(() => observer.ready());
+        return session;
+      },
+      createAssistant: () => ({}),
+      reporter: new NoopAgentLifecycleReporter(),
+      initialReplyInstructions: BEGIN_EXAMINATION_INSTRUCTIONS,
+      initialToolName: "get_current_examination_question",
+    });
+
+    expect(session.generateReply).toHaveBeenCalledWith({
+      instructions: BEGIN_EXAMINATION_INSTRUCTIONS,
+      toolChoice: {
+        type: "function",
+        function: { name: "get_current_examination_question" },
+      },
+    });
   });
 
   it("reports initialization failure when the provider rejects readiness", async () => {

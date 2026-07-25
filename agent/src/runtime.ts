@@ -5,10 +5,18 @@ import { lifecycleEvent, type AgentLifecycleReporter, type AgentFailureEvent } f
 
 export const INITIAL_GREETING_INSTRUCTIONS =
   "Greet the user briefly in English and ask how you can help.";
+export const BEGIN_EXAMINATION_INSTRUCTIONS =
+  "Begin the examination now. Call get_current_examination_question before speaking; never invent an examination question.";
 
 export interface AgentSessionPort<Room, Assistant> {
   start(options: { readonly agent: Assistant; readonly room: Room }): Promise<void>;
-  generateReply(options: { readonly instructions: string }): unknown;
+  generateReply(options: {
+    readonly instructions: string;
+    readonly toolChoice?: {
+      readonly type: "function";
+      readonly function: { readonly name: string };
+    };
+  }): unknown;
   on(event: "error", listener: (event: AgentSessionErrorEvent) => void): unknown;
   on(event: "close", listener: () => void): unknown;
 }
@@ -26,6 +34,8 @@ export interface RunAgentJobOptions<Room, Assistant> {
   ) => AgentSessionPort<Room, Assistant>;
   readonly createAssistant: () => Assistant;
   readonly reporter: AgentLifecycleReporter;
+  readonly initialReplyInstructions?: string;
+  readonly initialToolName?: string;
   readonly registerShutdownCallback?: (callback: () => Promise<void>) => void;
   readonly onBackgroundReportError?: (error: unknown) => void;
 }
@@ -46,7 +56,17 @@ export async function runAgentJob<Room, Assistant>(
     await session.start({ agent: options.createAssistant(), room: options.room });
     await options.connect();
     await lifecycle.confirmInitialReadiness();
-    await session.generateReply({ instructions: INITIAL_GREETING_INSTRUCTIONS });
+    await session.generateReply({
+      instructions: options.initialReplyInstructions ?? INITIAL_GREETING_INSTRUCTIONS,
+      ...(options.initialToolName === undefined
+        ? {}
+        : {
+            toolChoice: {
+              type: "function" as const,
+              function: { name: options.initialToolName },
+            },
+          }),
+    });
   } catch {
     const failure: AgentFailureEvent = {
       ...lifecycleEvent(options.metadata, "realtime-failed"),

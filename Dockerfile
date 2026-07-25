@@ -20,6 +20,7 @@ RUN pnpm install --frozen-lockfile --filter @ai-oral-exam/livekit-agent --ignore
   && pnpm rebuild --filter @ai-oral-exam/livekit-agent
 RUN pnpm --filter @ai-oral-exam/livekit-agent exec livekit-agents download-files
 COPY agent/src agent/src
+COPY agent/examiner_agent_system_prompt.md agent/examiner_agent_system_prompt.md
 COPY agent/tsconfig.json agent/tsconfig.json
 COPY agent/tsconfig.build.json agent/tsconfig.build.json
 RUN pnpm --filter @ai-oral-exam/livekit-agent build \

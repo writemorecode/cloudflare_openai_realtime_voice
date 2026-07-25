@@ -7,7 +7,7 @@
   ],
   "type": "module",
   "scripts": {
-    "build": "tsc --project tsconfig.build.json",
+    "build": "tsc --project tsconfig.build.json && cp examiner_agent_system_prompt.md dist/examiner_agent_system_prompt.md",
     "check": "pnpm run typecheck && pnpm run test",
     "console": "lk agent console src/main.ts",
     "dev": "lk agent dev src/main.ts",

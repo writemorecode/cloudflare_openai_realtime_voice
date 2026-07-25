@@ -12,9 +12,10 @@ import dotenv from "dotenv";
 import { createAssistant } from "./assistant.js";
 import { readAgentRuntimeConfig } from "./config.js";
 import { dispatchMetadataForJob } from "./dispatch-metadata.js";
+import { HttpExaminationQuestionClient } from "./examination-client.js";
 import { createRealtimeModel } from "./model.js";
 import { createLifecycleReporter, NoopAgentLifecycleReporter } from "./reporter.js";
-import { runAgentJob } from "./runtime.js";
+import { BEGIN_EXAMINATION_INSTRUCTIONS, runAgentJob } from "./runtime.js";
 
 export const AGENT_DISPATCH_NAME = "oral-exam-agent";
 
@@ -29,14 +30,30 @@ export default defineAgent({
       ctx.isFakeJob && config.allowSyntheticMetadata
         ? new NoopAgentLifecycleReporter()
         : createLifecycleReporter(config);
+    const examinationClient =
+      config.controlPlaneUrl === null || config.callbackToken === null
+        ? null
+        : new HttpExaminationQuestionClient(config.controlPlaneUrl, config.callbackToken);
+    if (!ctx.isFakeJob && examinationClient === null) {
+      throw new Error("Agent examination control-plane configuration is required");
+    }
     await runAgentJob({
       metadata,
       room: ctx.room,
       connect: async () => ctx.connect(),
       createSession: (observer) =>
         new voice.AgentSession({ llm: createRealtimeModel(config, observer) }),
-      createAssistant,
+      createAssistant: () =>
+        examinationClient === null
+          ? createAssistant()
+          : createAssistant({ client: examinationClient, conversationId: metadata.conversationId }),
       reporter,
+      ...(examinationClient === null
+        ? {}
+        : {
+            initialReplyInstructions: BEGIN_EXAMINATION_INSTRUCTIONS,
+            initialToolName: "get_current_examination_question",
+          }),
       registerShutdownCallback: (callback) => ctx.addShutdownCallback(callback),
       onBackgroundReportError: (error) => {
         console.error(
