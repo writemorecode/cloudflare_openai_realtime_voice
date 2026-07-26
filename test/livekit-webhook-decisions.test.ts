@@ -84,6 +84,26 @@ describe("LiveKit webhook decisions", () => {
     });
   });
 
+  it("acknowledges room-started webhooks without requiring a participant payload", () => {
+    expect(
+      decodeLiveKitWebhook(
+        webhook({
+          event: "room_started",
+          room: { name: ROOM_NAME },
+        }),
+      ),
+    ).toEqual({
+      ok: true,
+      value: {
+        kind: "acknowledged",
+        eventId: EVENT_ID,
+        eventType: "room_started",
+        conversationId: CONVERSATION_ID,
+        roomName: ROOM_NAME,
+      },
+    });
+  });
+
   it("rejects invalid event and room correlation before any stateful work", () => {
     expect(
       decodeLiveKitWebhook(

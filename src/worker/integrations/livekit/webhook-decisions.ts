@@ -129,6 +129,7 @@ export function decodeLiveKitWebhook(
     case "room_finished":
       return ok({ ...base, kind: "room_finished" });
     case "room_started":
+      return ok({ ...base, kind: "acknowledged" });
     case "participant_joined":
     case "participant_left":
     case "participant_connection_aborted":
