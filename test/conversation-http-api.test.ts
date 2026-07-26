@@ -95,6 +95,26 @@ describe("Worker HTTP boundary", () => {
     expect(pathBearing.status).toBe(403);
   });
 
+  it("uses method-specific routes with explicit parameter and fallback handling", async () => {
+    const unknown = await api("/v1/unknown");
+    const wrongMethod = await api("/v1/conversations", { method: "PUT" });
+    const invalidId = await api("/v1/conversations/not-a-uuid/state");
+    const missingPreflightOrigin = await exports.default.fetch(
+      new Request(`${API_ORIGIN}/v1/conversations`, { method: "OPTIONS" }),
+    );
+
+    expect(unknown.status).toBe(404);
+    expect(unknown.headers.get("Access-Control-Allow-Origin")).toBe(ALLOWED_ORIGIN);
+    expect(await unknown.json()).toMatchObject({ code: "route_not_found" });
+    expect(wrongMethod.status).toBe(405);
+    expect(wrongMethod.headers.get("Allow")).toBe("POST");
+    expect(await wrongMethod.json()).toMatchObject({ code: "method_not_allowed" });
+    expect(invalidId.status).toBe(400);
+    expect(await invalidId.json()).toMatchObject({ code: "invalid_conversation_id" });
+    expect(missingPreflightOrigin.status).toBe(400);
+    expect(await missingPreflightOrigin.json()).toMatchObject({ code: "origin_required" });
+  });
+
   it("creates conversations deterministically and idempotently", async () => {
     const first = await createConversation("create-idempotently");
     const second = await createConversation("create-idempotently");
