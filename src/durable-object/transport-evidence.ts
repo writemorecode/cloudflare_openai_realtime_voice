@@ -35,6 +35,10 @@ export function updateMediaEvidence(
         ...current,
         agentParticipantActive: true,
         agentParticipantIdentity: participantIdentity,
+        agentAudioPublished:
+          current.agentParticipantIdentity === participantIdentity
+            ? current.agentAudioPublished
+            : false,
       };
     case "agent_participant_left":
       if (current.agentParticipantIdentity !== participantIdentity) return current;
