@@ -35,6 +35,7 @@ import {
   getExaminationSessions,
   type ExaminationApiResult,
 } from "../examinations/examination-api";
+import { Hono, type Context } from "hono";
 
 const STARTING_WINDOW_MS = 60_000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -93,81 +94,123 @@ interface RouteResult {
 
 type ApiResult<T> = Result<T, ApiError>;
 
+interface HonoEnvironment {
+  readonly Bindings: Env;
+  readonly Variables: {
+    readonly requestId: string;
+    readonly startedAt: number;
+    readonly route: MatchedRoute | null;
+    readonly origin: string | null;
+    readonly routeResult: RouteResult | null;
+  };
+}
+
+type ApiContext = Context<HonoEnvironment>;
+
 export type StartConversationResponse = ConversationStateDto;
 
-export async function handleConversationRequest(
-  request: Request,
-  env: Env,
-  dependencies: FoundationDependencies,
-): Promise<Response> {
-  const startedAt = dependencies.clock.now();
-  const requestId = dependencies.ids.randomUuid();
-  const context: { route: MatchedRoute | null; origin: string | null } = {
-    route: null,
-    origin: null,
-  };
-  const processed = await tryCatch(async (): Promise<ApiResult<RouteResult>> => {
-    const configured = validateConfiguration(env);
-    if (!configured.ok) return configured;
-    const validOrigin = validateOrigin(request, env.ALLOWED_ORIGIN);
-    if (!validOrigin.ok) return validOrigin;
-    context.origin = validOrigin.value;
-    const matchedRoute = matchRoute(new URL(request.url).pathname);
-    if (!matchedRoute.ok) return matchedRoute;
-    context.route = matchedRoute.value;
-    return processMatchedRequest(request, env, context.route, context.origin, dependencies);
-  }, httpOperationFailed);
-  const handled = processed.ok ? processed.value : processed;
-  const result = handled.ok
-    ? handled.value
-    : errorRouteResult(handled.error, requestId, context.route?.conversationId ?? null);
+export function createConversationApi(dependencies: FoundationDependencies): Hono<HonoEnvironment> {
+  const app = new Hono<HonoEnvironment>();
 
-  if (!handled.ok && handled.error.status >= 500 && handled.error.cause !== undefined) {
-    const cause = handled.error.cause;
-    console.error(
-      JSON.stringify({
-        kind: "conversation_http_error",
+  app.use("*", async (context, next) => {
+    const startedAt = dependencies.clock.now();
+    const requestId = dependencies.ids.randomUuid();
+    context.set("startedAt", startedAt);
+    context.set("requestId", requestId);
+    context.set("route", null);
+    context.set("origin", null);
+    context.set("routeResult", null);
+
+    const configured = validateConfiguration(context.env);
+    if (!configured.ok) {
+      setRouteResponse(context, errorRouteResult(configured.error, requestId, null));
+    } else {
+      const validOrigin = validateOrigin(context.req.raw, context.env.ALLOWED_ORIGIN);
+      if (!validOrigin.ok) {
+        setRouteResponse(context, errorRouteResult(validOrigin.error, requestId, null));
+      } else {
+        context.set("origin", validOrigin.value);
+        await next();
+      }
+    }
+
+    const route = context.get("route");
+    const result =
+      context.get("routeResult") ??
+      errorRouteResult(
+        new ApiError(500, "internal_error", "The request could not be completed."),
         requestId,
-        error: cause instanceof Error ? cause.name : "unknown_error",
-      }),
-    );
-  }
+        route?.conversationId ?? null,
+      );
 
-  if (result.response.status === 101) {
+    if (result.response.status === 101) {
+      emitRequestTelemetry(
+        context.req.raw,
+        route,
+        result,
+        101,
+        startedAt,
+        requestId,
+        dependencies.clock,
+      );
+      return result.response;
+    }
+
+    const response = withRequestMetadata(
+      withCors(result.response, context.get("origin")),
+      requestId,
+    );
     emitRequestTelemetry(
-      request,
-      context.route,
+      context.req.raw,
+      route,
       result,
-      101,
+      response.status,
       startedAt,
       requestId,
       dependencies.clock,
     );
-    return result.response;
-  }
-  const response = withRequestMetadata(withCors(result.response, context.origin), requestId);
-  emitRequestTelemetry(
-    request,
-    context.route,
-    result,
-    response.status,
-    startedAt,
-    requestId,
-    dependencies.clock,
+    context.res = response;
+    return response;
+  });
+
+  registerRoutes(app, dependencies);
+  app.notFound((context) =>
+    setRouteResponse(
+      context,
+      errorRouteResult(
+        new ApiError(404, "route_not_found", "The requested route does not exist."),
+        context.get("requestId"),
+        null,
+      ),
+    ),
   );
-  return response;
+  app.onError((cause, context) => {
+    const error = cause instanceof ApiError ? cause : httpOperationFailed(cause);
+    const requestId = context.get("requestId");
+    if (error.status >= 500 && error.cause !== undefined) logHttpError(error, requestId);
+    return setRouteResponse(
+      context,
+      errorRouteResult(error, requestId, context.get("route")?.conversationId ?? null),
+    );
+  });
+  return app;
+}
+
+export function handleConversationRequest(
+  request: Request,
+  env: Env,
+  dependencies: FoundationDependencies,
+): Promise<Response> {
+  return Promise.resolve(createConversationApi(dependencies).fetch(request, env));
 }
 
 async function processMatchedRequest(
   request: Request,
   env: Env,
-  route: MatchedRoute | null,
+  route: MatchedRoute,
   origin: string | null,
   dependencies: FoundationDependencies,
 ): Promise<ApiResult<RouteResult>> {
-  if (route === null) {
-    return err(new ApiError(404, "route_not_found", "The requested route does not exist."));
-  }
   if (request.method === "OPTIONS") {
     if (origin === null) {
       return err(
@@ -632,123 +675,202 @@ function stateResult(state: ConversationState, outcome: string): RouteResult {
   };
 }
 
-function matchRoute(pathname: string): ApiResult<MatchedRoute | null> {
-  if (pathname === "/v1/auth/login") {
-    return ok({ name: "login", allowedMethods: ["POST"], conversationId: null });
-  }
-  if (pathname === "/v1/auth/logout") {
-    return ok({ name: "logout", allowedMethods: ["POST"], conversationId: null });
-  }
-  if (pathname === "/v1/auth/session") {
-    return ok({ name: "auth_session", allowedMethods: ["GET"], conversationId: null });
-  }
-  if (pathname === "/v1/integrations/livekit/webhook") {
-    return ok({ name: "livekit_webhook", allowedMethods: ["POST"], conversationId: null });
-  }
-  if (pathname === "/v1/integrations/livekit/agent-events") {
-    return ok({ name: "livekit_agent_event", allowedMethods: ["POST"], conversationId: null });
-  }
-  const agentQuestionMatch =
-    /^\/v1\/integrations\/examinations\/conversations\/([^/]+)\/(current-question|complete-question)$/.exec(
-      pathname,
-    );
-  if (agentQuestionMatch !== null) {
-    const conversationId = agentQuestionMatch[1];
-    if (conversationId === undefined || !UUID_PATTERN.test(conversationId)) {
-      return err(
-        new ApiError(400, "invalid_conversation_id", "Conversation ID must be a canonical UUID."),
-      );
-    }
-    return ok({
-      name:
-        agentQuestionMatch[2] === "current-question"
-          ? "agent_current_examination_question"
-          : "agent_complete_examination_question",
-      allowedMethods: agentQuestionMatch[2] === "current-question" ? ["GET"] : ["POST"],
-      conversationId,
-    });
-  }
-  if (pathname === "/v1/examinations") {
-    return ok({ name: "examinations", allowedMethods: ["GET", "POST"], conversationId: null });
-  }
-  if (pathname === "/v1/examination-sessions") {
-    return ok({
-      name: "examination_sessions",
-      allowedMethods: ["GET"],
-      conversationId: null,
-    });
-  }
-  const examinationSessionMatch = /^\/v1\/examination-sessions\/([^/]+)(\/recording)?$/.exec(
-    pathname,
-  );
-  if (examinationSessionMatch !== null) {
-    const examinationSessionId = examinationSessionMatch[1];
-    if (examinationSessionId === undefined || !UUID_PATTERN.test(examinationSessionId)) {
-      return err(
-        new ApiError(
-          400,
-          "invalid_examination_session_id",
-          "Examination session ID must be a canonical UUID.",
-        ),
-      );
-    }
-    return ok({
-      name:
-        examinationSessionMatch[2] === "/recording"
-          ? "examination_recording"
-          : "examination_session",
-      allowedMethods: ["GET"],
-      conversationId: null,
-      resourceId: examinationSessionId,
-    });
-  }
-  const examinationMatch = /^\/v1\/examinations\/([^/]+)(\/sessions)?$/.exec(pathname);
-  if (examinationMatch !== null) {
-    const examinationId = examinationMatch[1];
-    if (examinationId === undefined || !UUID_PATTERN.test(examinationId)) {
-      return err(
-        new ApiError(400, "invalid_examination_id", "Examination ID must be a canonical UUID."),
-      );
-    }
-    return ok({
-      name: examinationMatch[2] === "/sessions" ? "create_examination_session" : "examination",
-      allowedMethods: examinationMatch[2] === "/sessions" ? ["POST"] : ["GET"],
-      conversationId: null,
-      resourceId: examinationId,
-    });
-  }
-  if (pathname === "/v1/conversations") {
-    return ok({ name: "create_conversation", allowedMethods: ["POST"], conversationId: null });
-  }
+function registerRoutes(app: Hono<HonoEnvironment>, dependencies: FoundationDependencies): void {
+  const route = (matchedRoute: () => ApiResult<MatchedRoute>) => async (context: ApiContext) =>
+    executeRoute(context, matchedRoute(), dependencies);
+  const staticRoute = (name: ApiRouteName, allowedMethods: readonly string[]) =>
+    route(() => ok({ name, allowedMethods, conversationId: null }));
 
-  const match = /^\/v1\/conversations\/([^/]+)\/(start|state|connect|livekit-access)$/.exec(
-    pathname,
+  app.all("/v1/auth/login", staticRoute("login", ["POST"]));
+  app.all("/v1/auth/logout", staticRoute("logout", ["POST"]));
+  app.all("/v1/auth/session", staticRoute("auth_session", ["GET"]));
+  app.all("/v1/integrations/livekit/webhook", staticRoute("livekit_webhook", ["POST"]));
+  app.all("/v1/integrations/livekit/agent-events", staticRoute("livekit_agent_event", ["POST"]));
+  app.all(
+    "/v1/integrations/examinations/conversations/:conversationId/current-question",
+    routeForConversation("agent_current_examination_question", ["GET"], dependencies),
   );
-  if (match === null) {
-    return ok(null);
-  }
-  const conversationId = match[1];
+  app.all(
+    "/v1/integrations/examinations/conversations/:conversationId/complete-question",
+    routeForConversation("agent_complete_examination_question", ["POST"], dependencies),
+  );
+  app.all("/v1/examinations", staticRoute("examinations", ["GET", "POST"]));
+  app.all("/v1/examinations/:examinationId/sessions", routeForExaminationSession(dependencies));
+  app.all("/v1/examinations/:examinationId", routeForExamination(dependencies));
+  app.all("/v1/examination-sessions", staticRoute("examination_sessions", ["GET"]));
+  app.all(
+    "/v1/examination-sessions/:examinationSessionId/recording",
+    routeForExaminationRecording(dependencies),
+  );
+  app.all(
+    "/v1/examination-sessions/:examinationSessionId",
+    routeForExaminationSessionRead(dependencies),
+  );
+  app.all("/v1/conversations", staticRoute("create_conversation", ["POST"]));
+  app.all(
+    "/v1/conversations/:conversationId/start",
+    routeForConversation("start_conversation", ["POST"], dependencies),
+  );
+  app.all(
+    "/v1/conversations/:conversationId/state",
+    routeForConversation("get_state", ["GET"], dependencies),
+  );
+  app.all(
+    "/v1/conversations/:conversationId/connect",
+    routeForConversation("connect", ["GET"], dependencies),
+  );
+  app.all(
+    "/v1/conversations/:conversationId/livekit-access",
+    routeForConversation("livekit_access", ["POST", "DELETE"], dependencies),
+  );
+}
+
+function routeForConversation(
+  name: ApiRouteName,
+  allowedMethods: readonly string[],
+  dependencies: FoundationDependencies,
+) {
+  return (context: ApiContext) =>
+    executeRoute(
+      context,
+      conversationMatchedRoute(name, allowedMethods, context.req.param("conversationId")),
+      dependencies,
+    );
+}
+
+function routeForExaminationSession(dependencies: FoundationDependencies) {
+  return (context: ApiContext) =>
+    executeRoute(
+      context,
+      resourceMatchedRoute(
+        "create_examination_session",
+        ["POST"],
+        context.req.param("examinationId"),
+        "invalid_examination_id",
+        "Examination ID must be a canonical UUID.",
+      ),
+      dependencies,
+    );
+}
+
+function routeForExamination(dependencies: FoundationDependencies) {
+  return (context: ApiContext) =>
+    executeRoute(
+      context,
+      resourceMatchedRoute(
+        "examination",
+        ["GET"],
+        context.req.param("examinationId"),
+        "invalid_examination_id",
+        "Examination ID must be a canonical UUID.",
+      ),
+      dependencies,
+    );
+}
+
+function routeForExaminationRecording(dependencies: FoundationDependencies) {
+  return (context: ApiContext) =>
+    executeRoute(
+      context,
+      resourceMatchedRoute(
+        "examination_recording",
+        ["GET"],
+        context.req.param("examinationSessionId"),
+        "invalid_examination_session_id",
+        "Examination session ID must be a canonical UUID.",
+      ),
+      dependencies,
+    );
+}
+
+function routeForExaminationSessionRead(dependencies: FoundationDependencies) {
+  return (context: ApiContext) =>
+    executeRoute(
+      context,
+      resourceMatchedRoute(
+        "examination_session",
+        ["GET"],
+        context.req.param("examinationSessionId"),
+        "invalid_examination_session_id",
+        "Examination session ID must be a canonical UUID.",
+      ),
+      dependencies,
+    );
+}
+
+function conversationMatchedRoute(
+  name: ApiRouteName,
+  allowedMethods: readonly string[],
+  conversationId: string | undefined,
+): ApiResult<MatchedRoute> {
   if (conversationId === undefined || !UUID_PATTERN.test(conversationId)) {
     return err(
       new ApiError(400, "invalid_conversation_id", "Conversation ID must be a canonical UUID."),
     );
   }
-  switch (match[2]) {
-    case "start":
-      return ok({ name: "start_conversation", allowedMethods: ["POST"], conversationId });
-    case "state":
-      return ok({ name: "get_state", allowedMethods: ["GET"], conversationId });
-    case "connect":
-      return ok({ name: "connect", allowedMethods: ["GET"], conversationId });
-    case "livekit-access":
-      return ok({
-        name: "livekit_access",
-        allowedMethods: ["POST", "DELETE"],
-        conversationId,
-      });
-    default:
-      return ok(null);
+  return ok({ name, allowedMethods, conversationId });
+}
+
+function resourceMatchedRoute(
+  name: ApiRouteName,
+  allowedMethods: readonly string[],
+  resourceId: string | undefined,
+  code: string,
+  title: string,
+): ApiResult<MatchedRoute> {
+  if (resourceId === undefined || !UUID_PATTERN.test(resourceId)) {
+    return err(new ApiError(400, code, title));
   }
+  return ok({ name, allowedMethods, conversationId: null, resourceId });
+}
+
+async function executeRoute(
+  context: ApiContext,
+  matchedRoute: ApiResult<MatchedRoute>,
+  dependencies: FoundationDependencies,
+): Promise<Response> {
+  const requestId = context.get("requestId");
+  if (!matchedRoute.ok) {
+    return setRouteResponse(context, errorRouteResult(matchedRoute.error, requestId, null));
+  }
+  const route = matchedRoute.value;
+  context.set("route", route);
+  const processed = await tryCatch(
+    () =>
+      processMatchedRequest(
+        context.req.raw,
+        context.env,
+        route,
+        context.get("origin"),
+        dependencies,
+      ),
+    httpOperationFailed,
+  );
+  const handled = processed.ok ? processed.value : processed;
+  if (!handled.ok && handled.error.status >= 500 && handled.error.cause !== undefined) {
+    logHttpError(handled.error, requestId);
+  }
+  return setRouteResponse(
+    context,
+    handled.ok ? handled.value : errorRouteResult(handled.error, requestId, route.conversationId),
+  );
+}
+
+function setRouteResponse(context: ApiContext, result: RouteResult): Response {
+  context.set("routeResult", result);
+  context.res = result.response;
+  return result.response;
+}
+
+function logHttpError(error: ApiError, requestId: string): void {
+  const cause = error.cause;
+  console.error(
+    JSON.stringify({
+      kind: "conversation_http_error",
+      requestId,
+      error: cause instanceof Error ? cause.name : "unknown_error",
+    }),
+  );
 }
 
 function authResult(response: Response, outcome: string): RouteResult {
