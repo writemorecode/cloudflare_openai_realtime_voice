@@ -90,6 +90,9 @@ importers:
 
   agent:
     dependencies:
+      '@ai-oral-exam/result':
+        specifier: workspace:*
+        version: link:../packages/result
       '@livekit/agents':
         specifier: ^1.5.2
         version: 1.5.2(@livekit/rtc-node@0.13.31)(supports-color@10.2.2)(typescript@7.0.2)(zod@4.4.3)

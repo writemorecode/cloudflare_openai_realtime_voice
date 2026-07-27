@@ -19,11 +19,11 @@ agent/src/
 The agent may know LiveKit and OpenAI, but it must not import Worker or Durable Object source. It
 does not own durable conversation state, question progress, or R2 verification. The canonical
 `examiner_agent_system_prompt.md` is packaged with the agent. Production jobs call
-`get_current_examination_question`, then run one `AgentTask` per fixed question; each task calls
-`complete_current_examination_question` after any justified follow-up. Secrets in this runtime are
-limited to LiveKit project credentials supplied by the platform, `OPENAI_API_KEY`, and the
-agent-only `AGENT_CALLBACK_TOKEN`. Dispatched jobs also require the non-secret
-`AGENT_CONTROL_PLANE_URL`; synthetic console jobs explicitly use the no-op reporter.
+`get_current_examination_question`, then run the per-question `AgentTask`s in one shared-context
+`TaskGroup`; each task calls `complete_current_examination_question` after any justified follow-up.
+Secrets in this runtime are limited to LiveKit project credentials supplied by the platform,
+`OPENAI_API_KEY`, and the agent-only `AGENT_CALLBACK_TOKEN`. Dispatched jobs also require the
+non-secret `AGENT_CONTROL_PLANE_URL`; synthetic console jobs explicitly use the no-op reporter.
 
 Run its checks from the repository root:
 

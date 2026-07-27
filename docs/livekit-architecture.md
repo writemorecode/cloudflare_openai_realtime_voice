@@ -153,9 +153,14 @@ package.
 - Uses LiveKit's OpenAI Realtime plugin with configurable model and voice settings, defaulting to
   `gpt-realtime-2.1` and `marin`.
 - Loads `agent/examiner_agent_system_prompt.md`, calls an authenticated Worker tool for the
-  authoritative current question, and runs one LiveKit `AgentTask` for each fixed question. The
-  task may collect neutral clarification or elaboration, then calls the idempotent completion tool
-  to advance. It never receives D1 or R2 credentials.
+  authoritative current question, and runs the fixed-question `AgentTask`s in one LiveKit
+  `TaskGroup`. The experimental group API is an intentional choice: all question tasks share one
+  copied chat context, and end-of-group summarization is disabled so the Realtime conversation is
+  not replaced by another model-generated summary. Each task may collect neutral clarification or
+  elaboration, then calls the idempotent completion tool to advance. Completed questions cannot be
+  revisited because the control-plane API only advances authoritative progress. Expected sequence
+  mismatches return explicit `Result` failures and are adapted to LiveKit task failure only at the
+  SDK boundary. The agent never receives D1 or R2 credentials.
 - Delivers authenticated lifecycle events to the Worker; the OpenAI session's accepted
   configuration, connection-specific retry and reconnection, fatal errors, and session closure
   drive those events. Recoverable response and configuration errors are informational and do not
@@ -184,8 +189,8 @@ The intended sequence is:
    `RecordingStarted`.
 8. The complete signed evidence set produces `TransportConnected` and then `SessionStarted`. The
    reducer also requires recording to be active.
-9. After Realtime readiness, the agent calls the current-question endpoint and begins the
-   per-question `AgentTask` sequence.
+9. After Realtime readiness, the agent calls the current-question endpoint and begins the shared
+   per-question `TaskGroup`.
 10. A browser-initiated `EndRequested` calls `DELETE /livekit-access`. When the authoritative duration
     alarm applies `TimeLimitReached`, the same transaction stores a shutdown outbox message; the
     Durable Object sends it to Cloudflare Queues after commit. The Queue consumer stops egress,
