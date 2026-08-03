@@ -44,8 +44,8 @@ async function connect(conversationId: string): Promise<WebSocket> {
 
 async function derivedConversationId(name: string): Promise<string> {
   const result = await deriveConversationId(ID_SECRET, name);
-  expect(result).toMatchObject({ ok: true });
-  if (!result.ok) throw result.error;
+  expect(result).toMatchObject({ status: "ok" });
+  if (!result.isOk()) throw result.error;
   return result.value;
 }
 
@@ -76,8 +76,8 @@ async function setup(name: string, start = false) {
 
 function send(socket: WebSocket, message: BrowserWireMessage): void {
   const encoded = encodeWireMessage(message);
-  expect(encoded).toMatchObject({ ok: true });
-  if (!encoded.ok) throw encoded.error;
+  expect(encoded).toMatchObject({ status: "ok" });
+  if (!encoded.isOk()) throw encoded.error;
   socket.send(encoded.value);
 }
 
@@ -88,7 +88,7 @@ async function receive(socket: WebSocket): Promise<ServerWireMessage> {
   const data = event.data;
   if (data instanceof ArrayBuffer) {
     const decoded = decodeServerMessage(data);
-    if (!decoded.ok) throw decoded.error;
+    if (!decoded.isOk()) throw decoded.error;
     return decoded.value;
   }
   if (ArrayBuffer.isView(data)) {
@@ -96,7 +96,7 @@ async function receive(socket: WebSocket): Promise<ServerWireMessage> {
     const decoded = decodeServerMessage(
       view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength) as ArrayBuffer,
     );
-    if (!decoded.ok) throw decoded.error;
+    if (!decoded.isOk()) throw decoded.error;
     return decoded.value;
   }
   throw new Error("expected binary message");

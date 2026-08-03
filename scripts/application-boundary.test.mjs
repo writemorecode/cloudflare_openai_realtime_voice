@@ -47,7 +47,7 @@ test("the application depends on the foundation only through conversation-client
 });
 
 test("the public contract has no application or runtime dependencies", async () => {
-  const allowed = new Set(["@ai-oral-exam/result", "@msgpack/msgpack", "zod"]);
+  const allowed = new Set(["better-result", "@msgpack/msgpack", "zod"]);
   const violations = (await importsIn("packages/conversation-contract/src")).filter(
     ({ specifier }) =>
       specifier !== undefined && !specifier.startsWith(".") && !allowed.has(specifier),

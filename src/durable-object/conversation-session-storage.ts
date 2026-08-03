@@ -1,6 +1,6 @@
 import type { ConversationState } from "../domain/conversation-state-machine";
 import type { LiveKitProvisioningReady } from "./conversation-session-contract";
-import { err, ok, type Result } from "@ai-oral-exam/result";
+import { Result } from "better-result";
 
 export const SNAPSHOT_KEY = "conversation:snapshot:v1";
 export const RECEIPT_KEY_PREFIX = "conversation:receipt:v1:";
@@ -53,14 +53,14 @@ export interface UnsupportedSnapshotVersionError {
 export function decodeSnapshot(
   snapshot: SnapshotEnvelope | undefined,
 ): Result<ConversationState | null, UnsupportedSnapshotVersionError> {
-  if (snapshot === undefined) return ok(null);
+  if (snapshot === undefined) return Result.ok(null);
   if (snapshot.schemaVersion !== SNAPSHOT_SCHEMA_VERSION) {
-    return err({
+    return Result.err({
       kind: "unsupported_snapshot_version",
       schemaVersion: snapshot.schemaVersion,
     });
   }
-  return ok(snapshot.state);
+  return Result.ok(snapshot.state);
 }
 
 export function receiptKey(eventId: string): string {

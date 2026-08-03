@@ -17,7 +17,7 @@ import {
   type ConversationStateDto,
   type LiveKitAccess,
 } from "@ai-oral-exam/conversation-contract";
-import { err, ok, tryCatch, type Result } from "@ai-oral-exam/result";
+import { Result } from "better-result";
 import type { z } from "zod";
 import { ConversationClientError, conversationClientError } from "./errors";
 import type { ConversationApi } from "./types";
@@ -154,21 +154,21 @@ export class HttpConversationApi implements ConversationApi {
     init: RequestInit = {},
   ): Promise<Result<z.infer<T>, ConversationClientError>> {
     const response = await this.fetchResponse(path, init);
-    if (!response.ok) return err(response.error);
-    const body = await tryCatch(
-      () => response.value.json(),
-      (cause) =>
+    if (!response.isOk()) return Result.err(response.error);
+    const body = await Result.tryPromise({
+      try: () => response.value.json(),
+      catch: (cause) =>
         conversationClientError(
           "invalid_response",
           "The server returned an unreadable response.",
           cause,
         ),
-    );
-    if (!body.ok) return err(body.error);
+    });
+    if (!body.isOk()) return Result.err(body.error);
     const parsed = schema.safeParse(body.value);
     return parsed.success
-      ? ok(parsed.data)
-      : err(
+      ? Result.ok(parsed.data)
+      : Result.err(
           new ConversationClientError(
             "invalid_response",
             "The server returned an invalid response.",
@@ -182,15 +182,15 @@ export class HttpConversationApi implements ConversationApi {
     init: RequestInit,
   ): Promise<Result<void, ConversationClientError>> {
     const response = await this.fetchResponse(path, init);
-    return response.ok ? ok(undefined) : err(response.error);
+    return response.isOk() ? Result.ok(undefined) : Result.err(response.error);
   }
 
   private async fetchResponse(
     path: string,
     init: RequestInit,
   ): Promise<Result<Response, ConversationClientError>> {
-    const responseResult = await tryCatch(
-      () => {
+    const responseResult = await Result.tryPromise({
+      try: () => {
         const headers = new Headers(init.headers);
         const url = new URL(path, this.config.baseUrl);
         return fetch(url, {
@@ -199,25 +199,25 @@ export class HttpConversationApi implements ConversationApi {
           headers,
         });
       },
-      (cause) =>
+      catch: (cause) =>
         conversationClientError("request_failed", "The request could not be completed.", cause),
-    );
-    if (!responseResult.ok) return err(responseResult.error);
+    });
+    if (!responseResult.isOk()) return Result.err(responseResult.error);
     const response = responseResult.value;
     if (!response.ok) {
-      const details = await tryCatch(
-        () => response.json() as Promise<unknown>,
-        () => null,
-      );
-      const problem = details.ok ? problemDetails(details.value) : {};
-      return err(
+      const details = await Result.tryPromise({
+        try: () => response.json() as Promise<unknown>,
+        catch: () => null,
+      });
+      const problem = details.isOk() ? problemDetails(details.value) : {};
+      return Result.err(
         new ConversationClientError(
           "http_request_failed",
           problem.detail ?? problem.title ?? `Request failed (${response.status})`,
         ),
       );
     }
-    return ok(response);
+    return Result.ok(response);
   }
 }
 

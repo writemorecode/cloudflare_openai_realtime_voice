@@ -22,19 +22,19 @@ describe("browser authentication", () => {
       "pbkdf2_sha256$100000$ABEiM0RVZneImaq7zN3u_w$9oIHRTR2PJCfUzwstKO7f-gw8RcJlgLsWRclYh47pLM";
 
     await expect(verifyPassword("Codex-Newline-Proof-2026!", encoded)).resolves.toEqual({
-      ok: true,
+      status: "ok",
       value: true,
     });
     await expect(verifyPassword("Codex-Newline-Proof-2026!\n", encoded)).resolves.toEqual({
-      ok: true,
+      status: "ok",
       value: false,
     });
     await expect(verifyPassword("Codex-Newline-Proof-2026!\r", encoded)).resolves.toEqual({
-      ok: true,
+      status: "ok",
       value: false,
     });
     await expect(verifyPassword("Codex-Newline-Proof-2026!\r\n", encoded)).resolves.toEqual({
-      ok: true,
+      status: "ok",
       value: false,
     });
     await expect(
@@ -42,7 +42,7 @@ describe("browser authentication", () => {
         "Codex-Newline-Proof-2026!",
         "pbkdf2_sha256$600000$ZFUEM7VvfvBmkPum5nqflA$3kHfqHaBMEgRSOUhOPPr-pF5aA5OLaCDwOmVXzq0JJ8",
       ),
-    ).resolves.toEqual({ ok: true, value: false });
+    ).resolves.toEqual({ status: "ok", value: false });
   });
 
   it("rejects invalid credentials without identifying the missing user", async () => {

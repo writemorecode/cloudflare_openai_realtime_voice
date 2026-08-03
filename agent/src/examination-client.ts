@@ -1,5 +1,6 @@
 /** Authenticated control-plane client used only by the separately deployed LiveKit agent. */
 import { z } from "zod";
+import { Result, TaggedError } from "better-result";
 
 const questionSchema = z.object({
   id: z.uuid(),
@@ -48,13 +49,15 @@ export interface ExaminationQuestionClient {
   ): Promise<CurrentExaminationQuestion>;
 }
 
-export class ExaminationClientError extends Error {
-  constructor(
-    readonly code: "request_failed" | "invalid_response",
-    cause?: unknown,
-  ) {
-    super(code, { cause });
-    this.name = "ExaminationClientError";
+const ExaminationClientErrorBase = TaggedError("ExaminationClientError");
+
+export class ExaminationClientError extends ExaminationClientErrorBase<{
+  readonly code: "request_failed" | "invalid_response";
+  readonly cause: unknown;
+  readonly message: string;
+}> {
+  constructor(code: "request_failed" | "invalid_response", cause?: unknown) {
+    super({ code, message: code, cause });
   }
 }
 
@@ -89,26 +92,26 @@ export class HttpExaminationQuestionClient implements ExaminationQuestionClient 
   }
 
   private async request(path: string, init: RequestInit = {}): Promise<CurrentExaminationQuestion> {
-    let response: Response;
-    try {
-      const headers = new Headers(init.headers);
-      headers.set("Authorization", `Bearer ${this.callbackToken}`);
-      response = await fetch(new URL(path, this.controlPlaneUrl), {
+    const headers = new Headers(init.headers);
+    headers.set("Authorization", `Bearer ${this.callbackToken}`);
+    const responseResult = await Result.tryPromise(() =>
+      fetch(new URL(path, this.controlPlaneUrl), {
         ...init,
         headers,
         signal: AbortSignal.timeout(10_000),
-      });
-    } catch (cause) {
-      throw new ExaminationClientError("request_failed", cause);
+      }),
+    );
+    if (responseResult.isErr()) {
+      throw new ExaminationClientError("request_failed", responseResult.error.cause);
     }
+    const response = responseResult.value;
     if (!response.ok) throw new ExaminationClientError("request_failed");
 
-    const body = await response.json().then(
-      (value: unknown) => ({ ok: true as const, value }),
-      (cause: unknown) => ({ ok: false as const, cause }),
-    );
-    if (!body.ok) throw new ExaminationClientError("invalid_response", body.cause);
-    const parsed = currentQuestionSchema.safeParse(body.value);
+    const bodyResult = await Result.tryPromise(() => response.json());
+    if (bodyResult.isErr()) {
+      throw new ExaminationClientError("invalid_response", bodyResult.error.cause);
+    }
+    const parsed = currentQuestionSchema.safeParse(bodyResult.value);
     if (!parsed.success) throw new ExaminationClientError("invalid_response");
     return parsed.data;
   }

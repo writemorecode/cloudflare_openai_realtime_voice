@@ -1,6 +1,6 @@
 import { value } from "../domain/conversation-state-machine";
 import type { LiveKitShutdownMessage } from "../shared/livekit-shutdown";
-import { err, ok, tryCatch, type Result } from "@ai-oral-exam/result";
+import { Result } from "better-result";
 import { ConversationAggregateStore } from "./conversation-aggregate-store";
 import { emitAlarmTelemetry, emitTransitionTelemetry } from "./conversation-telemetry";
 import type { AlarmExecution } from "./conversation-session-contract";
@@ -30,30 +30,30 @@ export class ConversationAlarmRunner {
       deadline: null,
       event: null,
     };
-    const operation = await tryCatch(
-      async (): Promise<Result<AlarmExecution, AlarmRunnerError>> => {
+    const operation = await Result.tryPromise({
+      try: async (): Promise<Result<AlarmExecution, AlarmRunnerError>> => {
         const initialFlush = await this.flushShutdownOutbox();
-        if (!initialFlush.ok) return initialFlush;
+        if (!initialFlush.isOk()) return initialFlush;
         const stored = await this.aggregate.applyDeadline(now, (observed) => {
           context = observed;
         });
-        if (!stored.ok) {
+        if (!stored.isOk()) {
           return stored.error.kind === "unsupported_snapshot_version"
-            ? err({
+            ? Result.err({
                 kind: "snapshot_decode_failed",
                 schemaVersion: stored.error.schemaVersion,
               })
-            : err({ kind: "inconsistent_storage" });
+            : Result.err({ kind: "inconsistent_storage" });
         }
         if (stored.value.outcome === "transition_rejected") {
-          return err({ kind: "alarm_transition_rejected" });
+          return Result.err({ kind: "alarm_transition_rejected" });
         }
-        return ok(stored.value);
+        return Result.ok(stored.value);
       },
-      (cause): AlarmRunnerError => ({ kind: "runtime_failure", cause }),
-    );
-    const execution = operation.ok ? operation.value : operation;
-    if (!execution.ok) {
+      catch: (cause): AlarmRunnerError => ({ kind: "runtime_failure", cause }),
+    });
+    const execution = operation.isOk() ? operation.value : operation;
+    if (!execution.isOk()) {
       emitAlarmTelemetry(
         { outcome: "failed", ...context, transition: null },
         alarmInfo,
@@ -61,10 +61,10 @@ export class ConversationAlarmRunner {
         execution.error,
         this.sessionId,
       );
-      await tryCatch(
-        () => this.storage.setAlarm(Date.now() + ALARM_RETRY_DELAY_MS),
-        (cause): AlarmRunnerError => ({ kind: "runtime_failure", cause }),
-      );
+      await Result.tryPromise({
+        try: () => this.storage.setAlarm(Date.now() + ALARM_RETRY_DELAY_MS),
+        catch: (cause): AlarmRunnerError => ({ kind: "runtime_failure", cause }),
+      });
       return execution;
     }
 
@@ -80,7 +80,7 @@ export class ConversationAlarmRunner {
       );
     }
     const finalFlush = await this.flushShutdownOutbox();
-    if (!finalFlush.ok) {
+    if (!finalFlush.isOk()) {
       emitAlarmTelemetry(
         { outcome: "failed", ...context, transition: null },
         alarmInfo,
@@ -88,19 +88,19 @@ export class ConversationAlarmRunner {
         finalFlush.error,
         this.sessionId,
       );
-      await tryCatch(
-        () => this.storage.setAlarm(Date.now() + ALARM_RETRY_DELAY_MS),
-        (cause): AlarmRunnerError => ({ kind: "runtime_failure", cause }),
-      );
+      await Result.tryPromise({
+        try: () => this.storage.setAlarm(Date.now() + ALARM_RETRY_DELAY_MS),
+        catch: (cause): AlarmRunnerError => ({ kind: "runtime_failure", cause }),
+      });
       return finalFlush;
     }
     emitAlarmTelemetry(execution.value, alarmInfo, now, null, this.sessionId);
-    return ok(undefined);
+    return Result.ok(undefined);
   }
 
   async flushShutdownOutbox(): Promise<Result<void, AlarmRunnerError>> {
-    return tryCatch(
-      async () => {
+    return Result.tryPromise({
+      try: async () => {
         const pending = await this.storage.get<LiveKitShutdownMessage>(LIVEKIT_SHUTDOWN_OUTBOX_KEY);
         if (pending === undefined) return;
 
@@ -114,7 +114,7 @@ export class ConversationAlarmRunner {
           }
         });
       },
-      (cause): AlarmRunnerError => ({ kind: "runtime_failure", cause }),
-    );
+      catch: (cause): AlarmRunnerError => ({ kind: "runtime_failure", cause }),
+    });
   }
 }

@@ -204,9 +204,9 @@ describe("LiveKit access", () => {
     const first = await createLiveKitAccess(env, conversationId, dependencies);
     const repeated = await createLiveKitAccess(env, conversationId, dependencies);
 
-    expect(first).toMatchObject({ ok: true });
-    expect(repeated).toMatchObject({ ok: true });
-    if (!first.ok || !repeated.ok) return;
+    expect(first).toMatchObject({ status: "ok" });
+    expect(repeated).toMatchObject({ status: "ok" });
+    if (!first.isOk() || !repeated.isOk()) return;
     expect(first.value.roomName).toBe(`conversation-${conversationId}`);
     expect(first.value.serverUrl).toBe("wss://test.livekit.cloud");
     expect(repeated.value.roomName).toBe(first.value.roomName);
@@ -284,7 +284,7 @@ describe("LiveKit access", () => {
     });
 
     const access = await createLiveKitAccess(env, conversationId, accessDependencies(services));
-    expect(access.ok).toBe(true);
+    expect(access.isOk()).toBe(true);
     expect(await stub.getLiveKitTransportEvidence()).toMatchObject({
       transportEpoch: 1,
       agentParticipantActive: true,
@@ -374,7 +374,7 @@ describe("LiveKit access", () => {
     await expect(
       createLiveKitAccess(env, body.conversationId, accessDependencies(fakeServices())),
     ).resolves.toMatchObject({
-      ok: false,
+      status: "error",
       error: { status: 409, code: "conversation_not_starting" },
     });
   });
@@ -402,11 +402,11 @@ describe("LiveKit access", () => {
     const services = fakeShutdownServices();
     const dependencies = shutdownDependencies(services);
     expect(await stopLiveKitAccess(env, conversationId, dependencies)).toEqual({
-      ok: true,
+      status: "ok",
       value: "stopped",
     });
     expect(await stopLiveKitAccess(env, conversationId, dependencies)).toEqual({
-      ok: true,
+      status: "ok",
       value: "already_stopped",
     });
     expect(services.stopEgress).toHaveBeenCalledTimes(1);
@@ -421,7 +421,7 @@ describe("LiveKit access", () => {
     await expect(
       stopLiveKitAccess(env, conversationId, shutdownDependencies(fakeShutdownServices())),
     ).resolves.toMatchObject({
-      ok: false,
+      status: "error",
       error: { status: 409, code: "conversation_not_ending" },
     });
   });

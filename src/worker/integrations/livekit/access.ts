@@ -1,4 +1,5 @@
 /** Provisions room-scoped LiveKit access, dispatch, and recording resources for a conversation. */
+import { deserializeResult } from "@ai-oral-exam/conversation-contract";
 import {
   ConversationStateTag,
   TransportStatus,
@@ -10,7 +11,10 @@ import type {
   ConversationSession,
   LiveKitProvisioningReady,
 } from "../../../durable-object/conversation-session";
-import type { AggregateStoreResult } from "../../../durable-object/conversation-aggregate-store";
+import type {
+  AggregateStoreError,
+  AggregateStoreResult,
+} from "../../../durable-object/conversation-aggregate-store";
 import { ApiError } from "../../http/api-errors";
 import type {
   LiveKitAccessDependencies,
@@ -18,7 +22,7 @@ import type {
   LiveKitShutdownDependencies,
   LiveKitShutdownPort,
 } from "../../ports/foundation";
-import { err, ok, tryCatch, type Result } from "@ai-oral-exam/result";
+import { Result } from "better-result";
 import {
   decideLiveKitDispatch,
   decideLiveKitEgress,
@@ -53,24 +57,27 @@ export async function createLiveKitAccess(
   dependencies: LiveKitAccessDependencies,
 ): Promise<Result<LiveKitAccessResponse, ApiError>> {
   const configured = validateLiveKitAccessConfiguration(env);
-  if (!configured.ok) return configured;
+  if (!configured.isOk()) return configured;
 
   const stub = dependencies.conversations.get(conversationId);
-  const state = await tryCatch(
-    async (): Promise<AggregateStoreResult<ConversationState | null>> => await stub.getState(),
-    liveKitAccessOperationFailed,
-  );
-  if (!state.ok) return state;
-  if (!state.value.ok) return err(liveKitAccessOperationFailed(state.value.error));
+  const state = await Result.tryPromise({
+    try: async (): Promise<AggregateStoreResult<ConversationState | null>> =>
+      deserializeResult<ConversationState | null, AggregateStoreError>(await stub.getState()),
+    catch: liveKitAccessOperationFailed,
+  });
+  if (!state.isOk()) return state;
+  if (!state.value.isOk()) return Result.err(liveKitAccessOperationFailed(state.value.error));
   const current = state.value.value;
   if (current === null) {
-    return err(new ApiError(404, "conversation_not_found", "Conversation not found."));
+    return Result.err(new ApiError(404, "conversation_not_found", "Conversation not found."));
   }
   if (current.tag !== ConversationStateTag.Starting) {
-    return err(new ApiError(409, "conversation_not_starting", "Conversation is not starting."));
+    return Result.err(
+      new ApiError(409, "conversation_not_starting", "Conversation is not starting."),
+    );
   }
   if (current.data.transport.status !== TransportStatus.Connecting) {
-    return err(
+    return Result.err(
       new ApiError(409, "transport_not_connecting", "Conversation transport is not connecting."),
     );
   }
@@ -79,8 +86,8 @@ export async function createLiveKitAccess(
   const transportEpoch = current.data.transport.epoch;
   const leaseId = dependencies.ids.randomUuid();
   const now = dependencies.clock.now();
-  const claim = await tryCatch(
-    async (): Promise<BeginLiveKitProvisioningResult> =>
+  const claim = await Result.tryPromise({
+    try: async (): Promise<BeginLiveKitProvisioningResult> =>
       await stub.beginLiveKitProvisioning({
         roomName,
         transportEpoch,
@@ -88,21 +95,21 @@ export async function createLiveKitAccess(
         now,
         leaseExpiresAt: now + PROVISIONING_LEASE_MS,
       }),
-    liveKitAccessOperationFailed,
-  );
-  if (!claim.ok) return claim;
+    catch: liveKitAccessOperationFailed,
+  });
+  if (!claim.isOk()) return claim;
 
   let provisioning: LiveKitProvisioningReady;
   if (claim.value.outcome === "ready") {
     provisioning = claim.value.provisioning;
   } else if (claim.value.outcome === "in_progress") {
-    return err(
+    return Result.err(
       new ApiError(409, "livekit_provisioning_in_progress", "LiveKit access is being prepared.", {
         "Retry-After": String(Math.max(1, Math.ceil((claim.value.retryAt - now) / 1000))),
       }),
     );
   } else if (claim.value.outcome === "rejected") {
-    return err(
+    return Result.err(
       new ApiError(409, "livekit_provisioning_rejected", "LiveKit access cannot be prepared."),
     );
   } else {
@@ -112,7 +119,7 @@ export async function createLiveKitAccess(
       roomName,
       transportEpoch,
     );
-    if (!resources.ok) {
+    if (!resources.isOk()) {
       logLiveKitFailure("livekit_access_failed", conversationId, resources.error);
       return abandonProvisioning(stub, leaseId, resources.error);
     }
@@ -122,11 +129,11 @@ export async function createLiveKitAccess(
       transportEpoch,
       ...resources.value,
     };
-    const completed = await tryCatch(
-      () => stub.completeLiveKitProvisioning({ ...provisioning, leaseId }),
-      liveKitAccessOperationFailed,
-    );
-    if (!completed.ok) return abandonProvisioning(stub, leaseId, completed.error);
+    const completed = await Result.tryPromise({
+      try: () => stub.completeLiveKitProvisioning({ ...provisioning, leaseId }),
+      catch: liveKitAccessOperationFailed,
+    });
+    if (!completed.isOk()) return abandonProvisioning(stub, leaseId, completed.error);
     if (!completed.value) {
       return abandonProvisioning(
         stub,
@@ -140,13 +147,13 @@ export async function createLiveKitAccess(
     }
   }
 
-  const participantToken = await tryCatch(
-    () =>
+  const participantToken = await Result.tryPromise({
+    try: () =>
       dependencies.liveKit.mintParticipantToken(provisioning.roomName, `browser-${conversationId}`),
-    liveKitProvisioningFailed,
-  );
-  if (!participantToken.ok) return participantToken;
-  return ok({
+    catch: liveKitProvisioningFailed,
+  });
+  if (!participantToken.isOk()) return participantToken;
+  return Result.ok({
     roomName: provisioning.roomName,
     serverUrl: env.LIVEKIT_URL,
     participantToken: participantToken.value,
@@ -159,31 +166,31 @@ export async function stopLiveKitAccess(
   dependencies: LiveKitShutdownDependencies,
 ): Promise<Result<"stopped" | "already_stopped", ApiError>> {
   const configured = validateLiveKitAccessConfiguration(env);
-  if (!configured.ok) return configured;
+  if (!configured.isOk()) return configured;
 
   const stub = dependencies.conversations.get(conversationId);
   const leaseId = dependencies.ids.randomUuid();
   const now = dependencies.clock.now();
-  const claim = await tryCatch(
-    async (): Promise<BeginLiveKitShutdownResult> =>
+  const claim = await Result.tryPromise({
+    try: async (): Promise<BeginLiveKitShutdownResult> =>
       await stub.beginLiveKitShutdown({
         leaseId,
         now,
         leaseExpiresAt: now + SHUTDOWN_LEASE_MS,
       }),
-    liveKitAccessOperationFailed,
-  );
-  if (!claim.ok) return claim;
-  if (claim.value.outcome === "stopped") return ok("already_stopped");
+    catch: liveKitAccessOperationFailed,
+  });
+  if (!claim.isOk()) return claim;
+  if (claim.value.outcome === "stopped") return Result.ok("already_stopped");
   if (claim.value.outcome === "in_progress") {
-    return err(
+    return Result.err(
       new ApiError(409, "livekit_shutdown_in_progress", "LiveKit shutdown is in progress.", {
         "Retry-After": String(Math.max(1, Math.ceil((claim.value.retryAt - now) / 1000))),
       }),
     );
   }
   if (claim.value.outcome === "rejected") {
-    return err(
+    return Result.err(
       new ApiError(
         409,
         claim.value.reason === "conversation_active"
@@ -195,29 +202,32 @@ export async function stopLiveKitAccess(
   }
 
   const provisioning = claim.value.provisioning;
-  const stopped = await tryCatch(async () => {
-    const { egressId, dispatchId, roomName } = provisioning;
-    const egress = await dependencies.liveKit.getEgress(egressId);
-    if (egress?.active === true) {
-      await dependencies.liveKit.stopEgress(egressId);
-    }
-    if ((await dependencies.liveKit.getDispatch(dispatchId, roomName)) !== undefined) {
-      await dependencies.liveKit.deleteDispatch(dispatchId, roomName);
-    }
-    if (await dependencies.liveKit.roomExists(roomName)) {
-      await dependencies.liveKit.deleteRoom(roomName);
-    }
-  }, liveKitShutdownFailed);
-  if (!stopped.ok) {
+  const stopped = await Result.tryPromise({
+    try: async () => {
+      const { egressId, dispatchId, roomName } = provisioning;
+      const egress = await dependencies.liveKit.getEgress(egressId);
+      if (egress?.active === true) {
+        await dependencies.liveKit.stopEgress(egressId);
+      }
+      if ((await dependencies.liveKit.getDispatch(dispatchId, roomName)) !== undefined) {
+        await dependencies.liveKit.deleteDispatch(dispatchId, roomName);
+      }
+      if (await dependencies.liveKit.roomExists(roomName)) {
+        await dependencies.liveKit.deleteRoom(roomName);
+      }
+    },
+    catch: liveKitShutdownFailed,
+  });
+  if (!stopped.isOk()) {
     logLiveKitFailure("livekit_shutdown_failed", conversationId, stopped.error);
     return abandonShutdown(stub, leaseId, stopped.error);
   }
 
-  const completed = await tryCatch(
-    () => stub.completeLiveKitShutdown({ leaseId, stoppedAt: dependencies.clock.now() }),
-    liveKitAccessOperationFailed,
-  );
-  if (!completed.ok) return abandonShutdown(stub, leaseId, completed.error);
+  const completed = await Result.tryPromise({
+    try: () => stub.completeLiveKitShutdown({ leaseId, stoppedAt: dependencies.clock.now() }),
+    catch: liveKitAccessOperationFailed,
+  });
+  if (!completed.isOk()) return abandonShutdown(stub, leaseId, completed.error);
   if (!completed.value) {
     return abandonShutdown(
       stub,
@@ -225,7 +235,7 @@ export async function stopLiveKitAccess(
       new ApiError(409, "livekit_shutdown_superseded", "LiveKit shutdown was superseded."),
     );
   }
-  return ok("stopped");
+  return Result.ok("stopped");
 }
 
 async function provisionResources(
@@ -235,55 +245,55 @@ async function provisionResources(
   transportEpoch: number,
 ): Promise<Result<ProvisionedResources, ApiError>> {
   const descriptor = describeLiveKitProvisioning(conversationId, roomName, transportEpoch);
-  const existingRoom = await tryCatch(
-    () => services.roomExists(roomName),
-    liveKitProvisioningFailed,
-  );
-  if (!existingRoom.ok) return existingRoom;
+  const existingRoom = await Result.tryPromise({
+    try: () => services.roomExists(roomName),
+    catch: liveKitProvisioningFailed,
+  });
+  if (!existingRoom.isOk()) return existingRoom;
   if (!existingRoom.value) {
-    const createdRoom = await tryCatch(
-      () => services.createRoom(roomName, descriptor.metadata),
-      liveKitProvisioningFailed,
-    );
-    if (!createdRoom.ok) return createdRoom;
+    const createdRoom = await Result.tryPromise({
+      try: () => services.createRoom(roomName, descriptor.metadata),
+      catch: liveKitProvisioningFailed,
+    });
+    if (!createdRoom.isOk()) return createdRoom;
   }
 
-  const dispatches = await tryCatch(
-    () => services.listDispatches(roomName),
-    liveKitProvisioningFailed,
-  );
-  if (!dispatches.ok) return dispatches;
+  const dispatches = await Result.tryPromise({
+    try: () => services.listDispatches(roomName),
+    catch: liveKitProvisioningFailed,
+  });
+  if (!dispatches.isOk()) return dispatches;
   const dispatchDecision = decideLiveKitDispatch(dispatches.value, descriptor.metadata);
-  if (!dispatchDecision.ok) return err(resourceDecisionError(dispatchDecision.error));
+  if (!dispatchDecision.isOk()) return Result.err(resourceDecisionError(dispatchDecision.error));
   const dispatch =
     dispatchDecision.value.kind === "create"
-      ? await tryCatch(
-          () => services.createDispatch(roomName, descriptor.metadata),
-          liveKitProvisioningFailed,
-        )
-      : ok(dispatchDecision.value.resource);
-  if (!dispatch.ok) return dispatch;
+      ? await Result.tryPromise({
+          try: () => services.createDispatch(roomName, descriptor.metadata),
+          catch: liveKitProvisioningFailed,
+        })
+      : Result.ok(dispatchDecision.value.resource);
+  if (!dispatch.isOk()) return dispatch;
   const validDispatch = validLiveKitDispatch(dispatch.value);
-  if (!validDispatch.ok) return err(resourceDecisionError(validDispatch.error));
+  if (!validDispatch.isOk()) return Result.err(resourceDecisionError(validDispatch.error));
 
-  const activeEgress = await tryCatch(
-    () => services.listActiveEgress(roomName),
-    liveKitProvisioningFailed,
-  );
-  if (!activeEgress.ok) return activeEgress;
+  const activeEgress = await Result.tryPromise({
+    try: () => services.listActiveEgress(roomName),
+    catch: liveKitProvisioningFailed,
+  });
+  if (!activeEgress.isOk()) return activeEgress;
   const egressDecision = decideLiveKitEgress(activeEgress.value);
-  if (!egressDecision.ok) return err(resourceDecisionError(egressDecision.error));
+  if (!egressDecision.isOk()) return Result.err(resourceDecisionError(egressDecision.error));
   const egress =
     egressDecision.value.kind === "create"
-      ? await tryCatch(
-          () => services.startEgress(roomName, descriptor.expectedR2Key),
-          liveKitProvisioningFailed,
-        )
-      : ok(egressDecision.value.resource);
-  if (!egress.ok) return egress;
+      ? await Result.tryPromise({
+          try: () => services.startEgress(roomName, descriptor.expectedR2Key),
+          catch: liveKitProvisioningFailed,
+        })
+      : Result.ok(egressDecision.value.resource);
+  if (!egress.isOk()) return egress;
   const validEgress = validLiveKitEgress(egress.value);
-  if (!validEgress.ok) return err(resourceDecisionError(validEgress.error));
-  return ok({
+  if (!validEgress.isOk()) return Result.err(resourceDecisionError(validEgress.error));
+  return Result.ok({
     dispatchId: validDispatch.value.id,
     egressId: validEgress.value.egressId,
     expectedR2Key: descriptor.expectedR2Key,
@@ -318,16 +328,16 @@ function validateLiveKitAccessConfiguration(env: Env): Result<void, ApiError> {
     env.R2_S3_SECRET_ACCESS_KEY,
   ];
   if (values.some((value) => value.length === 0)) {
-    return err(
+    return Result.err(
       new ApiError(500, "livekit_access_not_configured", "LiveKit access is not configured."),
     );
   }
   if (!env.LIVEKIT_URL.startsWith("wss://") || !env.R2_S3_ENDPOINT.startsWith("https://")) {
-    return err(
+    return Result.err(
       new ApiError(500, "livekit_access_not_configured", "LiveKit access is not configured."),
     );
   }
-  return ok(undefined);
+  return Result.ok(undefined);
 }
 
 async function abandonProvisioning(
@@ -335,11 +345,11 @@ async function abandonProvisioning(
   leaseId: string,
   error: ApiError,
 ): Promise<Result<never, ApiError>> {
-  const abandoned = await tryCatch(
-    () => stub.abandonLiveKitProvisioning(leaseId),
-    liveKitAccessOperationFailed,
-  );
-  return abandoned.ok ? err(error) : abandoned;
+  const abandoned = await Result.tryPromise({
+    try: () => stub.abandonLiveKitProvisioning(leaseId),
+    catch: liveKitAccessOperationFailed,
+  });
+  return abandoned.isOk() ? Result.err(error) : abandoned;
 }
 
 async function abandonShutdown(
@@ -347,11 +357,11 @@ async function abandonShutdown(
   leaseId: string,
   error: ApiError,
 ): Promise<Result<never, ApiError>> {
-  const abandoned = await tryCatch(
-    () => stub.abandonLiveKitShutdown(leaseId),
-    liveKitAccessOperationFailed,
-  );
-  return abandoned.ok ? err(error) : abandoned;
+  const abandoned = await Result.tryPromise({
+    try: () => stub.abandonLiveKitShutdown(leaseId),
+    catch: liveKitAccessOperationFailed,
+  });
+  return abandoned.isOk() ? Result.err(error) : abandoned;
 }
 
 function liveKitAccessOperationFailed(cause: unknown): ApiError {

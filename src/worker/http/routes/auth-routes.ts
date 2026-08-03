@@ -1,4 +1,4 @@
-import { ok } from "@ai-oral-exam/result";
+import { Result } from "better-result";
 
 import { login, logout } from "../browser-auth";
 import {
@@ -23,8 +23,8 @@ export function createAuthRoutes() {
     const loggedIn = await login(context.req.raw, context.env.AUTH_DB);
     return respond(
       context,
-      loggedIn.ok
-        ? ok({ response: loggedIn.value, conversationId: null, outcome: "logged_in" })
+      loggedIn.isOk()
+        ? Result.ok({ response: loggedIn.value, conversationId: null, outcome: "logged_in" })
         : loggedIn,
     );
   });
@@ -41,8 +41,8 @@ export function createAuthRoutes() {
       const loggedOut = await logout(context.req.raw, context.env.AUTH_DB);
       return respond(
         context,
-        loggedOut.ok
-          ? ok({ response: loggedOut.value, conversationId: null, outcome: "logged_out" })
+        loggedOut.isOk()
+          ? Result.ok({ response: loggedOut.value, conversationId: null, outcome: "logged_out" })
           : loggedOut,
       );
     },
@@ -58,7 +58,7 @@ export function createAuthRoutes() {
     (context) =>
       respond(
         context,
-        ok({
+        Result.ok({
           response: Response.json(
             { username: currentUser(context).username },
             { headers: { "Cache-Control": "no-store" } },

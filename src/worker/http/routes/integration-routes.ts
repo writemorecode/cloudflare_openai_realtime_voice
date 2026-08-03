@@ -1,4 +1,4 @@
-import { ok } from "@ai-oral-exam/result";
+import { Result } from "better-result";
 
 import { handleAgentEvent } from "../../integrations/livekit/agent-events";
 import { handleLiveKitWebhook } from "../../integrations/livekit/webhook";
@@ -24,8 +24,8 @@ export function createIntegrationRoutes() {
     );
     return respond(
       context,
-      handled.ok
-        ? ok({
+      handled.isOk()
+        ? Result.ok({
             response: new Response(null, { status: 204 }),
             conversationId: handled.value.conversationId,
             state: toConversationStateDto(handled.value.state),
@@ -46,8 +46,8 @@ export function createIntegrationRoutes() {
     );
     return respond(
       context,
-      handled.ok
-        ? ok({
+      handled.isOk()
+        ? Result.ok({
             response: new Response(null, { status: 204 }),
             conversationId: handled.value.conversationId,
             state: toConversationStateDto(handled.value.state),

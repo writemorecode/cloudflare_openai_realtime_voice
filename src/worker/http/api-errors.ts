@@ -1,4 +1,6 @@
 /** Normalizes API failures into sanitized RFC 7807-style HTTP problem responses. */
+import { TaggedError } from "better-result";
+
 export interface ProblemDetails {
   readonly type: string;
   readonly title: string;
@@ -7,16 +9,24 @@ export interface ProblemDetails {
   readonly requestId: string;
 }
 
-export class ApiError extends Error {
+const ApiErrorBase = TaggedError("ApiError");
+
+export class ApiError extends ApiErrorBase<{
+  readonly status: number;
+  readonly code: string;
+  readonly title: string;
+  readonly headers: Readonly<Record<string, string>>;
+  readonly cause: unknown;
+  readonly message: string;
+}> {
   constructor(
-    readonly status: number,
-    readonly code: string,
-    readonly title: string,
-    readonly headers: Readonly<Record<string, string>> = {},
+    status: number,
+    code: string,
+    title: string,
+    headers: Readonly<Record<string, string>> = {},
     cause?: unknown,
   ) {
-    super(title, { cause });
-    this.name = "ApiError";
+    super({ status, code, title, headers, cause, message: title });
   }
 }
 

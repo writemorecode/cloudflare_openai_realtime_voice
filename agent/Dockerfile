@@ -19,7 +19,7 @@ ENV PATH="$PNPM_HOME:$PATH"
 RUN apt-get update -qq && apt-get install --no-install-recommends -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
 # Pin pnpm version for reproducible builds
-RUN npm install -g pnpm@10
+RUN npm install -g pnpm@11.16.0
 
 # --- Build stage ---
 # Install dependencies, build the project, and prepare production assets

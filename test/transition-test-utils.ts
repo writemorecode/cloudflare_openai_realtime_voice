@@ -16,7 +16,7 @@ export function transition<S extends TransitionableState, E extends AllowedEvent
   event: Extract<ConversationEvent, { type: E }>,
 ): NextState<S["tag"], E> {
   const result = transitionResult(state, event);
-  if (!result.ok) {
+  if (!result.isOk()) {
     throw new Error(
       result.error.kind === "guard_failed"
         ? result.error.reason
@@ -31,7 +31,7 @@ export function transitionRuntime(
   event: ConversationEvent,
 ): ConversationState {
   const result = transitionRuntimeResult(state, event);
-  if (!result.ok) {
+  if (!result.isOk()) {
     throw new Error(
       result.error.kind === "guard_failed"
         ? result.error.reason

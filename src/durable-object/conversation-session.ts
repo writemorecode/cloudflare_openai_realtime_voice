@@ -6,6 +6,7 @@
  * model providers and it never handles audio bytes.
  */
 import { DurableObject } from "cloudflare:workers";
+import { serializeResult, type ResultWire } from "@ai-oral-exam/conversation-contract";
 
 import {
   ConversationEventType,
@@ -16,6 +17,7 @@ import {
 import {
   ConversationAggregateStore,
   type AggregateStoreResult,
+  type AggregateStoreError,
 } from "./conversation-aggregate-store";
 import { ConversationAlarmRunner } from "./conversation-alarm-runner";
 import { emitTransitionTelemetry } from "./conversation-telemetry";
@@ -65,8 +67,8 @@ export class ConversationSession extends DurableObject<Env> {
     this.ctx.id.name ?? null,
   );
   private readonly sockets = new ConversationSocketGateway(this.ctx, {
-    getState: () => this.getState(),
-    applyEvent: (command) => this.applyEvent(command),
+    getState: () => this.getStateInternal(),
+    applyEvent: (command) => this.applyEventInternal(command),
   });
 
   override fetch(request: Request): Promise<Response> {
@@ -94,13 +96,13 @@ export class ConversationSession extends DurableObject<Env> {
   async initialize(
     sessionId: ConversationSessionId,
     at: UnixMillis,
-  ): Promise<AggregateStoreResult<InitializeResult>> {
-    return this.aggregate.initialize(this.ctx.id.name, sessionId, at);
+  ): Promise<ResultWire<InitializeResult, AggregateStoreError>> {
+    return serializeResult(await this.initializeInternal(sessionId, at));
   }
 
   /** Returns the authoritative snapshot, or null before initialization. */
-  getState(): AggregateStoreResult<ConversationState | null> {
-    return this.aggregate.getState();
+  getState(): ResultWire<ConversationState | null, AggregateStoreError> {
+    return serializeResult(this.getStateInternal());
   }
 
   /** Claims or observes the retry-safe LiveKit provisioning lease for the current starting epoch. */
@@ -160,9 +162,28 @@ export class ConversationSession extends DurableObject<Env> {
   }
 
   /** Applies one revision-checked domain event and flushes a time-limit shutdown outbox entry. */
-  async applyEvent(command: ApplyEventCommand): Promise<AggregateStoreResult<ApplyEventResult>> {
+  async applyEvent(
+    command: ApplyEventCommand,
+  ): Promise<ResultWire<ApplyEventResult, AggregateStoreError>> {
+    return serializeResult(await this.applyEventInternal(command));
+  }
+
+  private initializeInternal(
+    sessionId: ConversationSessionId,
+    at: UnixMillis,
+  ): Promise<AggregateStoreResult<InitializeResult>> {
+    return this.aggregate.initialize(this.ctx.id.name, sessionId, at);
+  }
+
+  private getStateInternal(): AggregateStoreResult<ConversationState | null> {
+    return this.aggregate.getState();
+  }
+
+  private async applyEventInternal(
+    command: ApplyEventCommand,
+  ): Promise<AggregateStoreResult<ApplyEventResult>> {
     const stored = await this.aggregate.applyEvent(command);
-    if (!stored.ok) return stored;
+    if (!stored.isOk()) return stored;
     const result = stored.value;
     emitTransitionTelemetry(command, result, "rpc", this.ctx.id.name ?? null);
     if (
@@ -177,14 +198,14 @@ export class ConversationSession extends DurableObject<Env> {
   /** Applies a trusted server-side integration event and publishes the new snapshot to clients. */
   async applyIntegrationEvent(
     command: ApplyEventCommand,
-  ): Promise<AggregateStoreResult<ApplyEventResult>> {
-    const stored = await this.applyEvent(command);
-    if (!stored.ok) return stored;
+  ): Promise<ResultWire<ApplyEventResult, AggregateStoreError>> {
+    const stored = await this.applyEventInternal(command);
+    if (!stored.isOk()) return serializeResult(stored);
     const result = stored.value;
     if (result.outcome === "applied") {
       this.sockets.broadcastStateSnapshot(result.state);
     }
-    return stored;
+    return serializeResult(stored);
   }
 
   override async alarm(alarmInfo?: AlarmInvocationInfo): Promise<void> {

@@ -1,6 +1,6 @@
 /** Enforces HTTP authentication, idempotency, and request-integrity safeguards. */
 import { ApiError } from "./api-errors";
-import { err, ok, tryCatch, type Result } from "@ai-oral-exam/result";
+import { Result } from "better-result";
 
 const encoder = new TextEncoder();
 
@@ -13,7 +13,7 @@ export function authenticateBearer(
 ): Result<void, ApiError> {
   const authorization = request.headers.get("Authorization");
   if (authorization === null || !authorization.startsWith("Bearer ")) {
-    return err(unauthorized());
+    return Result.err(unauthorized());
   }
 
   const suppliedToken = authorization.slice("Bearer ".length);
@@ -23,9 +23,9 @@ export function authenticateBearer(
     supplied.byteLength !== expected.byteLength ||
     !crypto.subtle.timingSafeEqual(supplied, expected)
   ) {
-    return err(unauthorized());
+    return Result.err(unauthorized());
   }
-  return ok(undefined);
+  return Result.ok(undefined);
 }
 
 export function validateIdempotencyKey(value: string | null): Result<string, ApiError> {
@@ -35,7 +35,7 @@ export function validateIdempotencyKey(value: string | null): Result<string, Api
     value.length > IDEMPOTENCY_KEY_MAX_LENGTH ||
     !/^[\x20-\x7e]+$/.test(value)
   ) {
-    return err(
+    return Result.err(
       new ApiError(
         400,
         "invalid_idempotency_key",
@@ -43,15 +43,15 @@ export function validateIdempotencyKey(value: string | null): Result<string, Api
       ),
     );
   }
-  return ok(value);
+  return Result.ok(value);
 }
 
 export async function deriveConversationId(
   secret: string,
   idempotencyKey: string,
 ): Promise<Result<string, ApiError>> {
-  return tryCatch(
-    async () => {
+  return Result.tryPromise({
+    try: async () => {
       const key = await crypto.subtle.importKey(
         "raw",
         encoder.encode(secret),
@@ -71,7 +71,7 @@ export async function deriveConversationId(
         .join("");
       return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
     },
-    (cause) =>
+    catch: (cause) =>
       new ApiError(
         500,
         "conversation_id_derivation_failed",
@@ -79,7 +79,7 @@ export async function deriveConversationId(
         {},
         cause,
       ),
-  );
+  });
 }
 
 function unauthorized(): ApiError {

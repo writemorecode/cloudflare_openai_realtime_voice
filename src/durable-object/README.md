@@ -28,6 +28,6 @@ by responsibility while sharing the same object storage and consistency boundary
 
 Expected lifecycle and concurrency rejections use discriminated result types. Domain transitions,
 snapshot decoding, aggregate storage operations, and alarm execution use
-`@ai-oral-exam/result`. Durable Object RPC callers unwrap the aggregate result before interpreting
-the operation-specific result union. Alarm failures are logged and explicitly rescheduled, so
+`better-result`. Durable Object RPC callers unwrap the aggregate result before interpreting the
+operation-specific result union. Alarm failures are logged and explicitly rescheduled, so
 retries do not depend on throwing from the platform alarm handler.

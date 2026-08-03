@@ -14,7 +14,7 @@ import {
   TRANSPORT_RECOVERY_WINDOW_MS,
 } from "../../../domain/conversation-deadlines";
 import type { AgentObservationKind } from "../../../durable-object/conversation-session";
-import { err, ok, type Result } from "@ai-oral-exam/result";
+import { Result } from "better-result";
 
 const AGENT_EVENT_ID_PATTERN = /^agent:[0-9a-f-]{36}:[1-9][0-9]*:[a-z-]+$/;
 const ERROR_CODE_PATTERN = /^[a-z][a-z0-9_.-]{0,127}$/;
@@ -63,15 +63,15 @@ export function decodeAgentEvent(body: string): Result<AgentEvent, AgentEventDec
   try {
     parsed = JSON.parse(body) as unknown;
   } catch (cause) {
-    return err({ code: "invalid_event", cause });
+    return Result.err({ code: "invalid_event", cause });
   }
   const result = agentEventSchema.safeParse(parsed);
-  if (!result.success) return err({ code: "invalid_event" });
+  if (!result.success) return Result.err({ code: "invalid_event" });
   const event = result.data;
   if (event.roomName !== `conversation-${event.conversationId}`) {
-    return err({ code: "room_mismatch" });
+    return Result.err({ code: "room_mismatch" });
   }
-  return ok(event);
+  return Result.ok(event);
 }
 
 export function decideAgentEvent(
@@ -88,10 +88,10 @@ export function decideAgentEvent(
     transport.status === TransportStatus.Idle ||
     (transport.epoch !== event.transportEpoch && !advancesRecoveryEpoch)
   ) {
-    return err("stale_transport_epoch");
+    return Result.err("stale_transport_epoch");
   }
 
-  return ok({
+  return Result.ok({
     observation: {
       eventId: event.eventId,
       kind: event.type satisfies AgentObservationKind,

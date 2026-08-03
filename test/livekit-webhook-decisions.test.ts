@@ -44,7 +44,7 @@ function starting(): StartingState {
 function decodedEgress(payload: Record<string, unknown>): DecodedEgressWebhook {
   const decoded = decodeLiveKitWebhook(webhook(payload));
   if (
-    !decoded.ok ||
+    !decoded.isOk() ||
     (decoded.value.kind !== "egress_progress" && decoded.value.kind !== "egress_ended")
   ) {
     throw new Error("expected decoded egress webhook");
@@ -54,7 +54,7 @@ function decodedEgress(payload: Record<string, unknown>): DecodedEgressWebhook {
 
 function decodedMedia(payload: Record<string, unknown>): DecodedMediaWebhook {
   const decoded = decodeLiveKitWebhook(webhook(payload));
-  if (!decoded.ok || decoded.value.kind !== "media") {
+  if (!decoded.isOk() || decoded.value.kind !== "media") {
     throw new Error("expected decoded media webhook");
   }
   return decoded.value;
@@ -70,7 +70,7 @@ describe("LiveKit webhook decisions", () => {
         }),
       ),
     ).toEqual({
-      ok: true,
+      status: "ok",
       value: {
         kind: "egress_progress",
         eventId: EVENT_ID,
@@ -93,7 +93,7 @@ describe("LiveKit webhook decisions", () => {
         }),
       ),
     ).toEqual({
-      ok: true,
+      status: "ok",
       value: {
         kind: "acknowledged",
         eventId: EVENT_ID,
@@ -113,7 +113,7 @@ describe("LiveKit webhook decisions", () => {
           room: { name: ROOM_NAME },
         }),
       ),
-    ).toEqual({ ok: false, error: "invalid_event" });
+    ).toEqual({ status: "error", error: "invalid_event" });
     expect(
       decodeLiveKitWebhook(
         webhook({
@@ -126,7 +126,7 @@ describe("LiveKit webhook decisions", () => {
           },
         }),
       ),
-    ).toEqual({ ok: false, error: "room_mismatch" });
+    ).toEqual({ status: "error", error: "room_mismatch" });
   });
 
   it("classifies browser, agent, and irrelevant media observations", () => {
@@ -164,11 +164,11 @@ describe("LiveKit webhook decisions", () => {
     });
 
     expect(decideEgressProgress(active, starting())).toEqual({
-      ok: true,
+      status: "ok",
       value: { kind: "recording_started", recordingId: "EG_test" },
     });
     expect(decideEgressProgress(failed, starting())).toEqual({
-      ok: true,
+      status: "ok",
       value: { kind: "fail_artifact", errorCode: "artifact.livekit_egress_failed" },
     });
   });
@@ -189,14 +189,14 @@ describe("LiveKit webhook decisions", () => {
     };
 
     expect(completedEgressRecording(completed)).toEqual({
-      ok: true,
+      status: "ok",
       value: {
         recordingId: "EG_test",
         r2Key: `conversations/${CONVERSATION_ID}/recording.ogg`,
       },
     });
     expect(completedEgressRecording(traversal)).toEqual({
-      ok: false,
+      status: "error",
       error: "invalid_output_key",
     });
   });

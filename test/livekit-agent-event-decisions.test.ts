@@ -67,14 +67,14 @@ function live(): LiveState {
 
 function decoded(type: AgentEvent["type"], transportEpoch = 1): AgentEvent {
   const result = decodeAgentEvent(JSON.stringify(event(type, transportEpoch)));
-  if (!result.ok) throw new Error(`expected decoded event: ${result.error.code}`);
+  if (!result.isOk()) throw new Error(`expected decoded event: ${result.error.code}`);
   return result.value;
 }
 
 describe("LiveKit agent event decisions", () => {
   it("decodes and correlates a valid observation", () => {
     expect(decodeAgentEvent(JSON.stringify(event("realtime_ready")))).toMatchObject({
-      ok: true,
+      status: "ok",
       value: {
         type: "realtime_ready",
         conversationId: CONVERSATION_ID,
@@ -84,17 +84,20 @@ describe("LiveKit agent event decisions", () => {
   });
 
   it("rejects malformed input and mismatched rooms", () => {
-    expect(decodeAgentEvent("{")).toMatchObject({ ok: false, error: { code: "invalid_event" } });
+    expect(decodeAgentEvent("{")).toMatchObject({
+      status: "error",
+      error: { code: "invalid_event" },
+    });
     expect(
       decodeAgentEvent(
         JSON.stringify({ ...event("realtime_ready"), roomName: "conversation-wrong" }),
       ),
-    ).toEqual({ ok: false, error: { code: "room_mismatch" } });
+    ).toEqual({ status: "error", error: { code: "room_mismatch" } });
   });
 
   it("records readiness without requesting a domain transition", () => {
     expect(decideAgentEvent(decoded("realtime_ready"), starting())).toMatchObject({
-      ok: true,
+      status: "ok",
       value: {
         observation: { kind: "realtime_ready", roomName: ROOM_NAME, transportEpoch: 1 },
         domainEvent: null,
@@ -104,7 +107,7 @@ describe("LiveKit agent event decisions", () => {
 
   it("plans an interruption for a connected live conversation", () => {
     expect(decideAgentEvent(decoded("realtime_interrupted"), live())).toMatchObject({
-      ok: true,
+      status: "ok",
       value: {
         domainEvent: {
           type: ConversationEventType.TransportInterrupted,
@@ -126,11 +129,11 @@ describe("LiveKit agent event decisions", () => {
     });
 
     expect(decideAgentEvent(decoded("realtime_recovered", 2), reconnecting)).toMatchObject({
-      ok: true,
+      status: "ok",
       value: { observation: { transportEpoch: 2 }, domainEvent: null },
     });
     expect(decideAgentEvent(decoded("realtime_recovered", 3), reconnecting)).toEqual({
-      ok: false,
+      status: "error",
       error: "stale_transport_epoch",
     });
   });

@@ -1,8 +1,8 @@
 export function aggregateValue<T>(result: unknown): T {
-  if (typeof result !== "object" || result === null || !("ok" in result)) {
+  if (typeof result !== "object" || result === null || !("status" in result)) {
     throw new Error("expected aggregate Result");
   }
-  if (result.ok !== true) {
+  if (result.status !== "ok") {
     throw new Error("aggregate operation failed");
   }
   if (!("value" in result)) {

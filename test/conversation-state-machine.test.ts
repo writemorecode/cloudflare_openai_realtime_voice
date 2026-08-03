@@ -85,7 +85,7 @@ describe("conversation aggregate transitions", () => {
       maximumEndAt: at(100),
     });
     expect(tooEarly).toMatchObject({
-      ok: false,
+      status: "error",
       error: { kind: "guard_failed", reason: "transport must be connected at the supplied epoch" },
     });
 
@@ -103,7 +103,7 @@ describe("conversation aggregate transitions", () => {
       maximumEndAt: at(100),
     });
     expect(noRecording).toMatchObject({
-      ok: false,
+      status: "error",
       error: { kind: "guard_failed", reason: "artifact must be recording" },
     });
 
@@ -148,7 +148,7 @@ describe("conversation aggregate transitions", () => {
       epoch: 1,
     });
     expect(badEpoch).toMatchObject({
-      ok: false,
+      status: "error",
       error: { kind: "guard_failed", reason: "reconnect epoch must increment by one" },
     });
     const restored = transition(observedAgain, {
@@ -305,6 +305,6 @@ describe("conversation aggregate transitions", () => {
       at: at(2),
       startDeadlineAt: at(10),
     });
-    expect(rejected).toMatchObject({ ok: false, error: { kind: "illegal_transition" } });
+    expect(rejected).toMatchObject({ status: "error", error: { kind: "illegal_transition" } });
   });
 });

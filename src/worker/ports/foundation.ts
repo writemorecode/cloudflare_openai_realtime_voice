@@ -1,6 +1,5 @@
 /** External effects used by the conversation foundation. */
 import type { WebhookEvent } from "livekit-server-sdk";
-
 import type { ConversationSession } from "../../durable-object/conversation-session";
 
 export interface Clock {

@@ -9,7 +9,7 @@ import type {
   ExaminationSessionList,
   LiveKitAccess,
 } from "@ai-oral-exam/conversation-contract";
-import type { Result } from "@ai-oral-exam/result";
+import type { Result } from "better-result";
 import type { ConversationClientError } from "./errors";
 
 export interface ConversationApi {

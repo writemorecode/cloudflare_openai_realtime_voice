@@ -8,7 +8,7 @@
   },
   "dependencies": {
     "@ai-oral-exam/conversation-contract": "workspace:*",
-    "@ai-oral-exam/result": "workspace:*",
+    "better-result": "3.0.0",
     "livekit-client": "^2.20.1",
     "zod": "^4.4.3"
   }

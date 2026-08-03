@@ -1,6 +1,6 @@
 /** Pure resource-selection rules for idempotent LiveKit provisioning. */
 import type { LiveKitDispatchResource, LiveKitEgressResource } from "../../ports/foundation";
-import { err, ok, type Result } from "@ai-oral-exam/result";
+import { Result } from "better-result";
 
 const LIVEKIT_AGENT_NAME = "oral-exam-agent";
 
@@ -37,33 +37,33 @@ export function decideLiveKitDispatch(
   const matching = dispatches.filter(
     (dispatch) => dispatch.agentName === LIVEKIT_AGENT_NAME && dispatch.metadata === metadata,
   );
-  if (matching.length > 1) return err("dispatch_conflict");
+  if (matching.length > 1) return Result.err("dispatch_conflict");
   const dispatch = matching[0];
-  if (dispatch === undefined) return ok({ kind: "create" });
-  return validLiveKitDispatch(dispatch).ok
-    ? ok({ kind: "reuse", resource: dispatch })
-    : err("dispatch_invalid");
+  if (dispatch === undefined) return Result.ok({ kind: "create" });
+  return validLiveKitDispatch(dispatch).isOk()
+    ? Result.ok({ kind: "reuse", resource: dispatch })
+    : Result.err("dispatch_invalid");
 }
 
 export function decideLiveKitEgress(
   activeEgress: readonly LiveKitEgressResource[],
 ): Result<LiveKitResourceDecision<LiveKitEgressResource>, LiveKitResourceDecisionError> {
-  if (activeEgress.length > 1) return err("egress_conflict");
+  if (activeEgress.length > 1) return Result.err("egress_conflict");
   const egress = activeEgress[0];
-  if (egress === undefined) return ok({ kind: "create" });
-  return validLiveKitEgress(egress).ok
-    ? ok({ kind: "reuse", resource: egress })
-    : err("egress_invalid");
+  if (egress === undefined) return Result.ok({ kind: "create" });
+  return validLiveKitEgress(egress).isOk()
+    ? Result.ok({ kind: "reuse", resource: egress })
+    : Result.err("egress_invalid");
 }
 
 export function validLiveKitDispatch(
   dispatch: LiveKitDispatchResource,
 ): Result<LiveKitDispatchResource, LiveKitResourceDecisionError> {
-  return dispatch.id.length === 0 ? err("dispatch_invalid") : ok(dispatch);
+  return dispatch.id.length === 0 ? Result.err("dispatch_invalid") : Result.ok(dispatch);
 }
 
 export function validLiveKitEgress(
   egress: LiveKitEgressResource,
 ): Result<LiveKitEgressResource, LiveKitResourceDecisionError> {
-  return egress.egressId.length === 0 ? err("egress_invalid") : ok(egress);
+  return egress.egressId.length === 0 ? Result.err("egress_invalid") : Result.ok(egress);
 }

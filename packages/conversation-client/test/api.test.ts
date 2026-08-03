@@ -15,14 +15,24 @@ const validState = {
 
 afterEach(() => vi.unstubAllGlobals());
 
+function resolved<T>(value: T) {
+  return vi.fn(async () => value);
+}
+
+function rejected(error: unknown) {
+  return vi.fn(async () => {
+    throw error;
+  });
+}
+
 describe("HttpConversationApi public contract", () => {
   it("returns responses that satisfy the foundation contract", async () => {
-    const fetch = vi.fn().mockResolvedValue(Response.json(validState));
+    const fetch = resolved(Response.json(validState));
     vi.stubGlobal("fetch", fetch);
     const api = new HttpConversationApi({ baseUrl: "https://example.test" });
 
     await expect(api.getState(validState.conversationId)).resolves.toEqual({
-      ok: true,
+      status: "ok",
       value: validState,
     });
     expect(fetch).toHaveBeenCalledWith(
@@ -32,14 +42,11 @@ describe("HttpConversationApi public contract", () => {
   });
 
   it("rejects malformed control-plane responses before they reach the application", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(Response.json({ ...validState, revision: "not-a-number" })),
-    );
+    vi.stubGlobal("fetch", resolved(Response.json({ ...validState, revision: "not-a-number" })));
     const api = new HttpConversationApi({ baseUrl: "https://example.test" });
 
     await expect(api.getState(validState.conversationId)).resolves.toMatchObject({
-      ok: false,
+      status: "error",
       error: { code: "invalid_response" },
     });
   });
@@ -47,14 +54,12 @@ describe("HttpConversationApi public contract", () => {
   it("returns typed HTTP problem details as an error value", async () => {
     vi.stubGlobal(
       "fetch",
-      vi
-        .fn()
-        .mockResolvedValue(Response.json({ detail: "Conversation not found." }, { status: 404 })),
+      resolved(Response.json({ detail: "Conversation not found." }, { status: 404 })),
     );
     const api = new HttpConversationApi({ baseUrl: "https://example.test" });
 
     await expect(api.getState(validState.conversationId)).resolves.toMatchObject({
-      ok: false,
+      status: "error",
       error: {
         code: "http_request_failed",
         message: "Conversation not found.",
@@ -63,11 +68,11 @@ describe("HttpConversationApi public contract", () => {
   });
 
   it("returns network failures as error values", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("offline")));
+    vi.stubGlobal("fetch", rejected(new TypeError("offline")));
     const api = new HttpConversationApi({ baseUrl: "https://example.test" });
 
     await expect(api.getState(validState.conversationId)).resolves.toMatchObject({
-      ok: false,
+      status: "error",
       error: { code: "request_failed" },
     });
   });

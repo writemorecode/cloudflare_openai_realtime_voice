@@ -1,4 +1,4 @@
-import { err, ok, tryCatch, type Result } from "@ai-oral-exam/result";
+import { Result } from "better-result";
 import { cors } from "hono/cors";
 import { createFactory } from "hono/factory";
 import type { RequestIdVariables } from "hono/request-id";
@@ -166,20 +166,20 @@ export const requireBrowserOrigin = apiFactory.createMiddleware(async (context, 
 
 export const requireBrowserSession = apiFactory.createMiddleware(async (context, next) => {
   const authenticated = await authenticateBrowserSession(context.req.raw, context.env.AUTH_DB);
-  if (!authenticated.ok) return apiError(context, authenticated.error);
+  if (!authenticated.isOk()) return apiError(context, authenticated.error);
   context.set("user", authenticated.value);
   await next();
 });
 
 export const requireAgentBearer = apiFactory.createMiddleware(async (context, next) => {
   const authenticated = authenticateBearer(context.req.raw, context.env.AGENT_CALLBACK_TOKEN);
-  if (!authenticated.ok) return apiError(context, authenticated.error);
+  if (!authenticated.isOk()) return apiError(context, authenticated.error);
   await next();
 });
 
 export const requireEmptyBody = apiFactory.createMiddleware(async (context, next) => {
   const empty = await validateNoBody(context.req.raw);
-  if (!empty.ok) return apiError(context, empty.error);
+  if (!empty.isOk()) return apiError(context, empty.error);
   await next();
 });
 
@@ -246,7 +246,7 @@ export function methodNotAllowed(allowedMethods: readonly string[]) {
 }
 
 export function respond(context: Parameters<typeof apiError>[0], result: ApiResult<HttpResult>) {
-  if (!result.ok) return apiError(context, result.error);
+  if (!result.isOk()) return apiError(context, result.error);
   context.set("conversationId", result.value.conversationId);
   context.set("state", result.value.state ?? null);
   context.set("outcome", result.value.outcome);
@@ -294,17 +294,20 @@ export function internalError(cause: unknown): ApiError {
 }
 
 async function validateNoBody(request: Request): Promise<ApiResult<void>> {
-  if (request.body === null) return ok(undefined);
+  if (request.body === null) return Result.ok(undefined);
   const reader = request.body.getReader();
-  const read = await tryCatch(async () => {
-    const first = await reader.read();
-    await reader.cancel();
-    return first;
-  }, internalError);
-  if (!read.ok) return read;
+  const read = await Result.tryPromise({
+    try: async () => {
+      const first = await reader.read();
+      await reader.cancel();
+      return first;
+    },
+    catch: internalError,
+  });
+  if (!read.isOk()) return read;
   return read.value.done
-    ? ok(undefined)
-    : err(
+    ? Result.ok(undefined)
+    : Result.err(
         new ApiError(
           400,
           "unexpected_request_body",

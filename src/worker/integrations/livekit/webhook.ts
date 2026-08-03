@@ -5,6 +5,7 @@
  * Durable Object or R2 effects. Completed R2 objects are verified before the aggregate can mark an
  * artifact ready.
  */
+import { deserializeResult } from "@ai-oral-exam/conversation-contract";
 import { ALARM_SHUTDOWN_GRACE_MS } from "../../../domain/conversation-deadlines";
 import { TRANSPORT_RECOVERY_WINDOW_MS } from "../../../domain/conversation-deadlines";
 import {
@@ -20,10 +21,13 @@ import type {
   ApplyEventResult,
   ConversationSession,
 } from "../../../durable-object/conversation-session";
-import type { AggregateStoreResult } from "../../../durable-object/conversation-aggregate-store";
+import type {
+  AggregateStoreError,
+  AggregateStoreResult,
+} from "../../../durable-object/conversation-aggregate-store";
 import { ApiError } from "../../http/api-errors";
 import type { LiveKitWebhookDependencies } from "../../ports/foundation";
-import { err, ok, tryCatch, type Result } from "@ai-oral-exam/result";
+import { Result } from "better-result";
 import { applyIntegrationEventWithRetry } from "./integration-event-retry";
 import { reconcileCompositeReadiness } from "./readiness";
 import {
@@ -66,23 +70,28 @@ export async function handleLiveKitWebhook(
   dependencies: LiveKitWebhookDependencies,
 ): Promise<Result<LiveKitWebhookResult, ApiError>> {
   const validRequest = validateWebhookRequest(request);
-  if (!validRequest.ok) return validRequest;
+  if (!validRequest.isOk()) return validRequest;
   const validConfiguration = validateWebhookConfiguration(env);
-  if (!validConfiguration.ok) return validConfiguration;
+  if (!validConfiguration.isOk()) return validConfiguration;
 
-  const body = await tryCatch(() => request.text(), webhookOperationFailed);
-  if (!body.ok) return body;
+  const body = await Result.tryPromise({
+    try: () => request.text(),
+    catch: webhookOperationFailed,
+  });
+  if (!body.isOk()) return body;
   if (new TextEncoder().encode(body.value).byteLength > MAX_WEBHOOK_BODY_BYTES) {
-    return err(new ApiError(413, "livekit_webhook_too_large", "The webhook body is too large."));
+    return Result.err(
+      new ApiError(413, "livekit_webhook_too_large", "The webhook body is too large."),
+    );
   }
 
-  const received = await tryCatch(
-    () =>
+  const received = await Result.tryPromise({
+    try: () =>
       dependencies.liveKitWebhook.verify(
         body.value,
         request.headers.get("Authorization") ?? undefined,
       ),
-    (cause) =>
+    catch: (cause) =>
       new ApiError(
         401,
         "invalid_livekit_webhook",
@@ -90,27 +99,28 @@ export async function handleLiveKitWebhook(
         {},
         cause,
       ),
-  );
-  if (!received.ok) return received;
+  });
+  if (!received.isOk()) return received;
   const decoded = decodeLiveKitWebhook(received.value);
-  if (!decoded.ok) return err(webhookDecodeError(decoded.error));
+  if (!decoded.isOk()) return Result.err(webhookDecodeError(decoded.error));
   const observation = decoded.value;
   const conversationId = observation.conversationId;
   const stub = dependencies.conversations.get(conversationId);
-  const initial = await tryCatch(
-    async (): Promise<AggregateStoreResult<ConversationState | null>> => await stub.getState(),
-    webhookOperationFailed,
-  );
-  if (!initial.ok) return initial;
-  if (!initial.value.ok) return err(webhookOperationFailed(initial.value.error));
+  const initial = await Result.tryPromise({
+    try: async (): Promise<AggregateStoreResult<ConversationState | null>> =>
+      deserializeResult<ConversationState | null, AggregateStoreError>(await stub.getState()),
+    catch: webhookOperationFailed,
+  });
+  if (!initial.isOk()) return initial;
+  if (!initial.value.isOk()) return Result.err(webhookOperationFailed(initial.value.error));
   if (initial.value.value === null) {
-    return err(new ApiError(404, "conversation_not_found", "Conversation not found."));
+    return Result.err(new ApiError(404, "conversation_not_found", "Conversation not found."));
   }
   const correlatedEgress = await validateEgressCorrelation(observation, stub);
-  if (!correlatedEgress.ok) return correlatedEgress;
+  if (!correlatedEgress.isOk()) return correlatedEgress;
 
   const result = await translateWebhookEvent(observation, initial.value.value, stub, dependencies);
-  if (!result.ok) return result;
+  if (!result.isOk()) return result;
   console.log(
     JSON.stringify({
       kind: "livekit_webhook_processed",
@@ -122,13 +132,13 @@ export async function handleLiveKitWebhook(
       resultingRevision: result.value.state.revision,
     }),
   );
-  return ok({ conversationId, ...result.value });
+  return Result.ok({ conversationId, ...result.value });
 }
 
 function validateWebhookRequest(request: Request): Result<void, ApiError> {
   const contentType = request.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase();
   if (contentType !== LIVEKIT_WEBHOOK_CONTENT_TYPE) {
-    return err(
+    return Result.err(
       new ApiError(
         415,
         "unsupported_media_type",
@@ -138,31 +148,37 @@ function validateWebhookRequest(request: Request): Result<void, ApiError> {
   }
   const authorization = request.headers.get("Authorization");
   if (authorization === null || authorization.length === 0) {
-    return err(new ApiError(401, "invalid_livekit_webhook", "The LiveKit signature is required."));
+    return Result.err(
+      new ApiError(401, "invalid_livekit_webhook", "The LiveKit signature is required."),
+    );
   }
   if (authorization.length > MAX_AUTHORIZATION_LENGTH) {
-    return err(new ApiError(431, "request_header_too_large", "A request header is too large."));
+    return Result.err(
+      new ApiError(431, "request_header_too_large", "A request header is too large."),
+    );
   }
   const declaredLength = request.headers.get("Content-Length");
   if (declaredLength !== null) {
     const length = Number(declaredLength);
     if (!Number.isSafeInteger(length) || length < 0) {
-      return err(new ApiError(400, "invalid_content_length", "Content-Length is invalid."));
+      return Result.err(new ApiError(400, "invalid_content_length", "Content-Length is invalid."));
     }
     if (length > MAX_WEBHOOK_BODY_BYTES) {
-      return err(new ApiError(413, "livekit_webhook_too_large", "The webhook body is too large."));
+      return Result.err(
+        new ApiError(413, "livekit_webhook_too_large", "The webhook body is too large."),
+      );
     }
   }
-  return ok(undefined);
+  return Result.ok(undefined);
 }
 
 function validateWebhookConfiguration(env: Env): Result<void, ApiError> {
   if (env.LIVEKIT_API_KEY.length === 0 || env.LIVEKIT_API_SECRET.length === 0) {
-    return err(
+    return Result.err(
       new ApiError(500, "livekit_webhook_not_configured", "The LiveKit webhook is not configured."),
     );
   }
-  return ok(undefined);
+  return Result.ok(undefined);
 }
 
 async function translateWebhookEvent(
@@ -181,7 +197,7 @@ async function translateWebhookEvent(
     case "media":
       return handleMediaObservation(observation, state, stub, dependencies);
     case "acknowledged":
-      return ok({ state, outcome: "observation_acknowledged" });
+      return Result.ok({ state, outcome: "observation_acknowledged" });
   }
 }
 
@@ -192,9 +208,9 @@ async function handleEgressProgress(
   dependencies: Pick<LiveKitWebhookDependencies, "clock">,
 ): Promise<Result<TranslatedWebhookResult, ApiError>> {
   const decision = decideEgressProgress(observation, state);
-  if (!decision.ok) return err(webhookDecisionError(decision.error));
+  if (!decision.isOk()) return Result.err(webhookDecisionError(decision.error));
   if (decision.value.kind === "acknowledge") {
-    return ok({ state, outcome: decision.value.outcome });
+    return Result.ok({ state, outcome: decision.value.outcome });
   }
   if (decision.value.kind === "fail_artifact") {
     return failArtifact(observation, state, stub, decision.value.errorCode, dependencies.clock);
@@ -206,10 +222,10 @@ async function handleEgressProgress(
     at: value.unixMillis(observedAt),
     recordingId: value.recordingId(decision.value.recordingId),
   });
-  if (!applied.ok) return applied;
+  if (!applied.isOk()) return applied;
   const reconciled = await reconcileCompositeReadiness(stub, observedAt);
-  if (!reconciled.ok) return reconciled;
-  return ok({ state: reconciled.value, outcome: "recording_started" });
+  if (!reconciled.isOk()) return reconciled;
+  return Result.ok({ state: reconciled.value, outcome: "recording_started" });
 }
 
 async function handleMediaObservation(
@@ -218,19 +234,22 @@ async function handleMediaObservation(
   stub: DurableObjectStub<ConversationSession>,
   dependencies: Pick<LiveKitWebhookDependencies, "clock">,
 ): Promise<Result<TranslatedWebhookResult, ApiError>> {
-  const evidence = await tryCatch(() => stub.getLiveKitTransportEvidence(), webhookOperationFailed);
-  if (!evidence.ok) return evidence;
+  const evidence = await Result.tryPromise({
+    try: () => stub.getLiveKitTransportEvidence(),
+    catch: webhookOperationFailed,
+  });
+  if (!evidence.isOk()) return evidence;
   const kind = decideMediaObservationKind(
     observation,
     evidence.value?.agentParticipantIdentity ?? null,
   );
-  if (kind === null) return ok({ state, outcome: "observation_acknowledged" });
+  if (kind === null) return Result.ok({ state, outcome: "observation_acknowledged" });
   const transport = state.data.transport;
   if (transport.status === TransportStatus.Idle) {
-    return ok({ state, outcome: "observation_before_start" });
+    return Result.ok({ state, outcome: "observation_before_start" });
   }
-  const recorded = await tryCatch(
-    () =>
+  const recorded = await Result.tryPromise({
+    try: () =>
       stub.recordLiveKitMediaObservation({
         eventId: observation.eventId,
         kind,
@@ -238,14 +257,16 @@ async function handleMediaObservation(
         roomName: observation.roomName,
         transportEpoch: transport.epoch,
       }),
-    webhookOperationFailed,
-  );
-  if (!recorded.ok) return recorded;
+    catch: webhookOperationFailed,
+  });
+  if (!recorded.isOk()) return recorded;
   if (recorded.value.outcome === "rejected") {
     if (recorded.value.reason === null) {
-      return err(webhookOperationFailed(new Error("Rejected observation omitted its reason.")));
+      return Result.err(
+        webhookOperationFailed(new Error("Rejected observation omitted its reason.")),
+      );
     }
-    return err(mediaObservationCorrelationError(recorded.value.reason));
+    return Result.err(mediaObservationCorrelationError(recorded.value.reason));
   }
 
   if (
@@ -262,13 +283,13 @@ async function handleMediaObservation(
       errorCode: value.errorCode("transport.livekit_media_interrupted"),
       recoveryDeadlineAt: value.unixMillis(at + TRANSPORT_RECOVERY_WINDOW_MS),
     });
-    if (!interrupted.ok) return interrupted;
-    return ok({ state: interrupted.value, outcome: "transport_interrupted" });
+    if (!interrupted.isOk()) return interrupted;
+    return Result.ok({ state: interrupted.value, outcome: "transport_interrupted" });
   }
 
   const reconciled = await reconcileCompositeReadiness(stub, dependencies.clock.now());
-  if (!reconciled.ok) return reconciled;
-  return ok({
+  if (!reconciled.isOk()) return reconciled;
+  return Result.ok({
     state: reconciled.value,
     outcome:
       recorded.value.outcome === "duplicate" ? "observation_duplicate" : "readiness_reconciled",
@@ -296,7 +317,7 @@ async function handleEgressEnded(
   }
 
   const recording = completedEgressRecording(observation);
-  if (!recording.ok) {
+  if (!recording.isOk()) {
     return recording.error === "invalid_output_count" || recording.error === "invalid_output_key"
       ? failArtifact(
           observation,
@@ -305,12 +326,15 @@ async function handleEgressEnded(
           "artifact.livekit_output_invalid",
           dependencies.clock,
         )
-      : err(webhookDecisionError(recording.error));
+      : Result.err(webhookDecisionError(recording.error));
   }
   const { recordingId, r2Key } = recording.value;
   let current = state;
-  const provisioning = await tryCatch(() => stub.getLiveKitProvisioning(), webhookOperationFailed);
-  if (!provisioning.ok) return provisioning;
+  const provisioning = await Result.tryPromise({
+    try: () => stub.getLiveKitProvisioning(),
+    catch: webhookOperationFailed,
+  });
+  if (!provisioning.isOk()) return provisioning;
   if (provisioning.value === null || provisioning.value.expectedR2Key !== r2Key) {
     return failArtifact(
       observation,
@@ -350,15 +374,15 @@ async function handleEgressEnded(
       expectedR2Key: value.r2ObjectKey(r2Key),
       artifactDeadlineAt: value.unixMillis(uploadStartedAt + ARTIFACT_UPLOAD_WINDOW_MS),
     });
-    if (!applied.ok) return applied;
+    if (!applied.isOk()) return applied;
     current = applied.value;
   }
 
   if (current.data.artifact.status === ArtifactStatus.Ready) {
-    return ok({ state: current, outcome: "artifact_already_ready" });
+    return Result.ok({ state: current, outcome: "artifact_already_ready" });
   }
   if (current.data.artifact.status !== ArtifactStatus.Uploading) {
-    return ok({ state: current, outcome: "artifact_not_required" });
+    return Result.ok({ state: current, outcome: "artifact_not_required" });
   }
   if (
     current.data.artifact.recordingId !== recordingId ||
@@ -373,10 +397,13 @@ async function handleEgressEnded(
     );
   }
 
-  const object = await tryCatch(() => dependencies.recordings.head(r2Key), webhookOperationFailed);
-  if (!object.ok) return object;
+  const object = await Result.tryPromise({
+    try: () => dependencies.recordings.head(r2Key),
+    catch: webhookOperationFailed,
+  });
+  if (!object.isOk()) return object;
   if (object.value === null || object.value.size === 0) {
-    return err(
+    return Result.err(
       new ApiError(
         503,
         "recording_not_available",
@@ -394,8 +421,8 @@ async function handleEgressEnded(
     r2Key: value.r2ObjectKey(r2Key),
     r2Etag: value.r2Etag(object.value.etag),
   });
-  if (!verified.ok) return verified;
-  return ok({ state: verified.value, outcome: "recording_artifact_verified" });
+  if (!verified.isOk()) return verified;
+  return Result.ok({ state: verified.value, outcome: "recording_artifact_verified" });
 }
 
 async function validateEgressCorrelation(
@@ -403,16 +430,19 @@ async function validateEgressCorrelation(
   stub: DurableObjectStub<ConversationSession>,
 ): Promise<Result<void, ApiError>> {
   if (observation.kind !== "egress_progress" && observation.kind !== "egress_ended") {
-    return ok(undefined);
+    return Result.ok(undefined);
   }
-  const provisioning = await tryCatch(() => stub.getLiveKitProvisioning(), webhookOperationFailed);
-  if (!provisioning.ok) return provisioning;
+  const provisioning = await Result.tryPromise({
+    try: () => stub.getLiveKitProvisioning(),
+    catch: webhookOperationFailed,
+  });
+  if (!provisioning.isOk()) return provisioning;
   if (provisioning.value === null || provisioning.value.egressId !== observation.egressId) {
-    return err(
+    return Result.err(
       new ApiError(409, "livekit_egress_mismatch", "The LiveKit egress does not correlate."),
     );
   }
-  return ok(undefined);
+  return Result.ok(undefined);
 }
 
 async function handleRoomFinished(
@@ -423,7 +453,7 @@ async function handleRoomFinished(
 ): Promise<Result<TranslatedWebhookResult, ApiError>> {
   const decision = decideRoomFinished(state);
   if (decision.kind === "acknowledge") {
-    return ok({ state, outcome: decision.outcome });
+    return Result.ok({ state, outcome: decision.outcome });
   }
   const next = await applyIntegrationEvent(stub, state, {
     type: ConversationEventType.SessionClosed,
@@ -431,8 +461,8 @@ async function handleRoomFinished(
     at: value.unixMillis(dependencies.clock.now()),
     epoch: decision.epoch,
   });
-  if (!next.ok) return next;
-  return ok({ state: next.value, outcome: "session_closed" });
+  if (!next.isOk()) return next;
+  return Result.ok({ state: next.value, outcome: "session_closed" });
 }
 
 async function failArtifact(
@@ -444,7 +474,7 @@ async function failArtifact(
 ): Promise<Result<TranslatedWebhookResult, ApiError>> {
   const decision = decideArtifactFailure(observation, state, errorCode);
   if (decision.kind === "acknowledge") {
-    return ok({ state, outcome: decision.outcome });
+    return Result.ok({ state, outcome: decision.outcome });
   }
   const observedAt = clock.now();
   const next = await applyIntegrationEvent(stub, state, {
@@ -455,8 +485,8 @@ async function failArtifact(
     errorCode: value.errorCode(decision.errorCode),
     endingDeadlineAt: value.unixMillis(observedAt + ALARM_SHUTDOWN_GRACE_MS),
   });
-  if (!next.ok) return next;
-  return ok({ state: next.value, outcome: "artifact_failed" });
+  if (!next.isOk()) return next;
+  return Result.ok({ state: next.value, outcome: "artifact_failed" });
 }
 
 async function applyIntegrationEvent(

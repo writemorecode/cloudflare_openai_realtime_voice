@@ -2,7 +2,8 @@ export { HttpConversationApi, browserApiConfig, type BrowserApiConfig } from "./
 export { ConversationClientError, type ConversationClientErrorCode } from "./errors";
 export { createConversationRuntime } from "./runtime";
 export type { ConversationApi, ConversationRuntime, RuntimeEvents, RuntimeFactory } from "./types";
-export { err, ok, type Result } from "@ai-oral-exam/result";
+export { Result } from "better-result";
+export type { Result as ResultType } from "better-result";
 export {
   ArtifactStatus,
   ConversationStateTag,

@@ -29,14 +29,17 @@ describe("LiveKit access decisions", () => {
     const matching = { id: "AD_matching", agentName: "oral-exam-agent", metadata };
     const unrelated = { id: "AD_other", agentName: "other-agent", metadata };
 
-    expect(decideLiveKitDispatch([], metadata)).toEqual({ ok: true, value: { kind: "create" } });
+    expect(decideLiveKitDispatch([], metadata)).toEqual({
+      status: "ok",
+      value: { kind: "create" },
+    });
     expect(decideLiveKitDispatch([unrelated, matching], metadata)).toEqual({
-      ok: true,
+      status: "ok",
       value: { kind: "reuse", resource: matching },
     });
     expect(
       decideLiveKitDispatch([matching, { ...matching, id: "AD_duplicate" }], metadata),
-    ).toEqual({ ok: false, error: "dispatch_conflict" });
+    ).toEqual({ status: "error", error: "dispatch_conflict" });
   });
 
   it("rejects invalid dispatch identifiers", () => {
@@ -44,22 +47,22 @@ describe("LiveKit access decisions", () => {
     const dispatch = { id: "", agentName: "oral-exam-agent", metadata };
 
     expect(decideLiveKitDispatch([dispatch], metadata)).toEqual({
-      ok: false,
+      status: "error",
       error: "dispatch_invalid",
     });
-    expect(validLiveKitDispatch(dispatch)).toEqual({ ok: false, error: "dispatch_invalid" });
+    expect(validLiveKitDispatch(dispatch)).toEqual({ status: "error", error: "dispatch_invalid" });
   });
 
   it("creates or reuses exactly one active egress", () => {
     const egress = { egressId: "EG_active", active: true };
 
-    expect(decideLiveKitEgress([])).toEqual({ ok: true, value: { kind: "create" } });
+    expect(decideLiveKitEgress([])).toEqual({ status: "ok", value: { kind: "create" } });
     expect(decideLiveKitEgress([egress])).toEqual({
-      ok: true,
+      status: "ok",
       value: { kind: "reuse", resource: egress },
     });
     expect(decideLiveKitEgress([egress, { egressId: "EG_other", active: true }])).toEqual({
-      ok: false,
+      status: "error",
       error: "egress_conflict",
     });
   });
@@ -67,7 +70,7 @@ describe("LiveKit access decisions", () => {
   it("rejects invalid egress identifiers", () => {
     const egress = { egressId: "", active: true };
 
-    expect(decideLiveKitEgress([egress])).toEqual({ ok: false, error: "egress_invalid" });
-    expect(validLiveKitEgress(egress)).toEqual({ ok: false, error: "egress_invalid" });
+    expect(decideLiveKitEgress([egress])).toEqual({ status: "error", error: "egress_invalid" });
+    expect(validLiveKitEgress(egress)).toEqual({ status: "error", error: "egress_invalid" });
   });
 });

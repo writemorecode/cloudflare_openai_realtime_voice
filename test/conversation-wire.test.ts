@@ -73,9 +73,9 @@ describe("conversation.v1 generic wire protocol", () => {
 
     for (const message of messages) {
       const encoded = encodeWireMessage(message);
-      expect(encoded).toMatchObject({ ok: true });
-      if (!encoded.ok) throw encoded.error;
-      expect(decodeBrowserMessage(buffer(encoded.value))).toEqual({ ok: true, value: message });
+      expect(encoded).toMatchObject({ status: "ok" });
+      if (!encoded.isOk()) throw encoded.error;
+      expect(decodeBrowserMessage(buffer(encoded.value))).toEqual({ status: "ok", value: message });
     }
   });
 
@@ -99,8 +99,8 @@ describe("conversation.v1 generic wire protocol", () => {
     ];
     for (const [message, code] of cases) {
       const decoded = decodeBrowserMessage(buffer(encode(message)));
-      expect(decoded).toMatchObject({ ok: false });
-      if (decoded.ok) throw new Error("expected decoding to fail");
+      expect(decoded).toMatchObject({ status: "error" });
+      if (decoded.isOk()) throw new Error("expected decoding to fail");
       expect(decoded.error).toBeInstanceOf(WireProtocolError);
       expect(decoded.error.code).toBe(code);
     }

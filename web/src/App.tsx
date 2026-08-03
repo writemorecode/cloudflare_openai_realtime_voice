@@ -47,7 +47,9 @@ export function App({ services }: { readonly services?: Services }) {
     let disposed = false;
     void api
       .getSession()
-      .then((result) => !disposed && setAuthState(result.ok ? "authenticated" : "unauthenticated"));
+      .then(
+        (result) => !disposed && setAuthState(result.isOk() ? "authenticated" : "unauthenticated"),
+      );
     return () => {
       disposed = true;
     };
@@ -107,7 +109,7 @@ export function LoginPage({
     setSubmitting(true);
     setError(null);
     const authenticated = await api.login(username, password);
-    if (!authenticated.ok) {
+    if (!authenticated.isOk()) {
       setError(messageFor(authenticated.error));
       setSubmitting(false);
       return;
@@ -187,12 +189,12 @@ export function DashboardPage({
       api.listExaminations(),
       api.listExaminationSessions(),
     ]);
-    if (!examResult.ok) {
+    if (!examResult.isOk()) {
       setError(messageFor(examResult.error));
       setLoading(false);
       return;
     }
-    if (!sessionResult.ok) {
+    if (!sessionResult.isOk()) {
       setError(messageFor(sessionResult.error));
       setLoading(false);
       return;
@@ -210,7 +212,7 @@ export function DashboardPage({
     setCreating(true);
     setError(null);
     const result = await api.createExamination(request);
-    if (!result.ok) {
+    if (!result.isOk()) {
       setError(messageFor(result.error));
       setCreating(false);
       return false;
@@ -224,7 +226,7 @@ export function DashboardPage({
     setStartingId(examinationId);
     setError(null);
     const result = await api.createExaminationSession(examinationId);
-    if (!result.ok) {
+    if (!result.isOk()) {
       setError(messageFor(result.error));
       setStartingId(null);
       return;
@@ -234,7 +236,7 @@ export function DashboardPage({
 
   const logout = async () => {
     const result = await api.logout();
-    if (!result.ok) {
+    if (!result.isOk()) {
       setError(messageFor(result.error));
       return;
     }
@@ -484,7 +486,7 @@ export function ConversationPage({
 
     const connect = async () => {
       const current = await api.getState(conversationId);
-      if (!current.ok) {
+      if (!current.isOk()) {
         if (!disposed) setError(messageFor(current.error));
         return;
       }
@@ -492,7 +494,7 @@ export function ConversationPage({
         current.value.state === ConversationStateTag.Created
           ? await api.startConversation(conversationId)
           : current;
-      if (!started.ok) {
+      if (!started.isOk()) {
         if (!disposed) setError(messageFor(started.error));
         return;
       }
@@ -500,7 +502,7 @@ export function ConversationPage({
       setState(started.value);
       setPhase(labelForState(started.value));
       const connected = await instance.connect(started.value, audioHost.current);
-      if (!connected.ok && !disposed) setError(messageFor(connected.error));
+      if (!connected.isOk() && !disposed) setError(messageFor(connected.error));
     };
     void connect();
     return () => {
@@ -513,7 +515,7 @@ export function ConversationPage({
     if (runtime.current === null) return;
     const next = !muted;
     const changed = await runtime.current.setMicrophoneEnabled(!next);
-    if (!changed.ok) {
+    if (!changed.isOk()) {
       setError(messageFor(changed.error));
       return;
     }
@@ -525,7 +527,7 @@ export function ConversationPage({
     setEnding(true);
     setError(null);
     const ended = await runtime.current.requestEnd();
-    if (!ended.ok) {
+    if (!ended.isOk()) {
       setError(messageFor(ended.error));
       setEnding(false);
       return;
@@ -536,7 +538,7 @@ export function ConversationPage({
   const enableAudio = async () => {
     if (runtime.current === null) return;
     const enabled = await runtime.current.enableAudio();
-    if (!enabled.ok) setError(messageFor(enabled.error));
+    if (!enabled.isOk()) setError(messageFor(enabled.error));
   };
 
   const readyToEnd =
@@ -611,7 +613,7 @@ export function PostConversationPage({
     let timer: number | null = null;
     const refresh = async () => {
       const next = await api.getState(conversationId);
-      if (!next.ok) {
+      if (!next.isOk()) {
         if (!disposed) setError(messageFor(next.error));
         return;
       }

@@ -9,7 +9,7 @@ import {
   type ConversationState,
 } from "../../../domain/conversation-state-machine";
 import type { LiveKitMediaObservationKind } from "../../../durable-object/conversation-session";
-import { err, ok, type Result } from "@ai-oral-exam/result";
+import { Result } from "better-result";
 
 const LIVEKIT_EVENT_ID_PATTERN = /^EV_[A-Za-z0-9]{12}$/;
 const CONVERSATION_ID_PATTERN =
@@ -94,22 +94,22 @@ export interface CompletedEgressRecording {
 export function decodeLiveKitWebhook(
   event: WebhookEvent,
 ): Result<DecodedLiveKitWebhook, LiveKitWebhookDecodeError> {
-  if (!LIVEKIT_EVENT_ID_PATTERN.test(event.id)) return err("invalid_event");
-  if (event.event.length === 0) return err("event_type_missing");
+  if (!LIVEKIT_EVENT_ID_PATTERN.test(event.id)) return Result.err("invalid_event");
+  if (event.event.length === 0) return Result.err("event_type_missing");
 
   const egressRoomName = event.egressInfo?.roomName;
   const eventRoomName = event.room?.name;
   const roomName = egressRoomName || eventRoomName;
-  if (roomName === undefined || roomName.length === 0) return err("room_missing");
+  if (roomName === undefined || roomName.length === 0) return Result.err("room_missing");
   if (
     egressRoomName !== undefined &&
     eventRoomName !== undefined &&
     egressRoomName !== eventRoomName
   ) {
-    return err("room_mismatch");
+    return Result.err("room_mismatch");
   }
   const conversationId = LIVEKIT_ROOM_PATTERN.exec(roomName)?.[1];
-  if (conversationId === undefined) return err("invalid_room");
+  if (conversationId === undefined) return Result.err("invalid_room");
 
   const base = { eventId: event.id, eventType: event.event, conversationId, roomName };
   switch (event.event) {
@@ -117,8 +117,8 @@ export function decodeLiveKitWebhook(
     case "egress_updated":
     case "egress_ended": {
       const egress = event.egressInfo;
-      if (egress === undefined) return err("egress_missing");
-      return ok({
+      if (egress === undefined) return Result.err("egress_missing");
+      return Result.ok({
         ...base,
         kind: event.event === "egress_ended" ? "egress_ended" : "egress_progress",
         egressId: egress.egressId,
@@ -127,18 +127,18 @@ export function decodeLiveKitWebhook(
       });
     }
     case "room_finished":
-      return ok({ ...base, kind: "room_finished" });
+      return Result.ok({ ...base, kind: "room_finished" });
     case "room_started":
-      return ok({ ...base, kind: "acknowledged" });
+      return Result.ok({ ...base, kind: "acknowledged" });
     case "participant_joined":
     case "participant_left":
     case "participant_connection_aborted":
     case "track_published":
     case "track_unpublished": {
       const participant = event.participant;
-      if (participant === undefined) return err("participant_missing");
-      if (participant.identity.length === 0) return err("participant_identity_missing");
-      return ok({
+      if (participant === undefined) return Result.err("participant_missing");
+      if (participant.identity.length === 0) return Result.err("participant_identity_missing");
+      return Result.ok({
         ...base,
         kind: "media",
         participantIdentity: participant.identity,
@@ -149,9 +149,9 @@ export function decodeLiveKitWebhook(
     }
     case "ingress_started":
     case "ingress_ended":
-      return ok({ ...base, kind: "acknowledged" });
+      return Result.ok({ ...base, kind: "acknowledged" });
     default:
-      return err("unsupported_event");
+      return Result.err("unsupported_event");
   }
 }
 
@@ -160,16 +160,16 @@ export function decideEgressProgress(
   state: ConversationState,
 ): Result<EgressProgressDecision, LiveKitWebhookDecisionError> {
   const failureCode = egressFailureCode(observation.status);
-  if (failureCode !== null) return ok({ kind: "fail_artifact", errorCode: failureCode });
+  if (failureCode !== null) return Result.ok({ kind: "fail_artifact", errorCode: failureCode });
   if (observation.status !== "active") {
-    return ok({ kind: "acknowledge", outcome: "egress_observation_acknowledged" });
+    return Result.ok({ kind: "acknowledge", outcome: "egress_observation_acknowledged" });
   }
   if (state.data.artifact.status !== ArtifactStatus.Pending) {
-    return ok({ kind: "acknowledge", outcome: "recording_already_observed" });
+    return Result.ok({ kind: "acknowledge", outcome: "recording_already_observed" });
   }
-  if (state.tag !== ConversationStateTag.Starting) return err("conversation_not_ready");
-  if (!isValidEgressId(observation.egressId)) return err("invalid_egress");
-  return ok({ kind: "recording_started", recordingId: observation.egressId });
+  if (state.tag !== ConversationStateTag.Starting) return Result.err("conversation_not_ready");
+  if (!isValidEgressId(observation.egressId)) return Result.err("invalid_egress");
+  return Result.ok({ kind: "recording_started", recordingId: observation.egressId });
 }
 
 export function decideMediaObservationKind(
@@ -243,9 +243,9 @@ export function decideArtifactFailure(
 export function completedEgressRecording(
   observation: DecodedEgressWebhook,
 ): Result<CompletedEgressRecording, LiveKitWebhookDecisionError> {
-  if (!isValidEgressId(observation.egressId)) return err("invalid_egress");
+  if (!isValidEgressId(observation.egressId)) return Result.err("invalid_egress");
   const filenames = observation.outputFilenames.filter((filename) => filename.length > 0);
-  if (filenames.length !== 1) return err("invalid_output_count");
+  if (filenames.length !== 1) return Result.err("invalid_output_count");
   const key = filenames[0];
   const prefix = `conversations/${observation.conversationId}/`;
   if (
@@ -255,9 +255,9 @@ export function completedEgressRecording(
     key.includes("..") ||
     key.endsWith("/")
   ) {
-    return err("invalid_output_key");
+    return Result.err("invalid_output_key");
   }
-  return ok({ recordingId: observation.egressId, r2Key: key });
+  return Result.ok({ recordingId: observation.egressId, r2Key: key });
 }
 
 export function egressFailureCode(status: LiveKitEgressStatus): string | null {

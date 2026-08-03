@@ -5,8 +5,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   ConversationStateTag,
+  Result,
   TransportStatus,
-  ok,
   type ConversationApi,
   type ConversationRuntime,
   type ConversationStateDto,
@@ -33,23 +33,31 @@ function state(tag: ConversationStateTag): ConversationStateDto {
   } as ConversationStateDto;
 }
 
+function resolved<T>(value: T) {
+  return vi.fn(async () => value);
+}
+
+function okResolved<T>(value: T) {
+  return resolved(Result.ok(value));
+}
+
 function api(overrides: Partial<ConversationApi> = {}): ConversationApi {
   return {
-    login: vi.fn().mockResolvedValue(ok({ username: "examiner" })),
-    getSession: vi.fn().mockResolvedValue(ok({ username: "examiner" })),
-    logout: vi.fn().mockResolvedValue(ok(undefined)),
+    login: okResolved({ username: "examiner" }),
+    getSession: okResolved({ username: "examiner" }),
+    logout: okResolved(undefined),
     createExamination: vi.fn(),
-    listExaminations: vi.fn().mockResolvedValue(ok({ examinations: [] })),
+    listExaminations: okResolved({ examinations: [] }),
     getExamination: vi.fn(),
     createExaminationSession: vi.fn(),
-    listExaminationSessions: vi.fn().mockResolvedValue(ok({ sessions: [] })),
+    listExaminationSessions: okResolved({ sessions: [] }),
     getExaminationSession: vi.fn(),
     recordingUrl: vi.fn(),
-    createConversation: vi.fn().mockResolvedValue(ok(state(ConversationStateTag.Created))),
+    createConversation: okResolved(state(ConversationStateTag.Created)),
     startConversation: vi.fn(),
-    getState: vi.fn().mockResolvedValue(ok(state(ConversationStateTag.Completed))),
+    getState: okResolved(state(ConversationStateTag.Completed)),
     getLiveKitAccess: vi.fn(),
-    releaseLiveKitAccess: vi.fn().mockResolvedValue(ok(undefined)),
+    releaseLiveKitAccess: okResolved(undefined),
     websocketUrl: vi.fn(),
     websocketProtocols: vi.fn(),
     ...overrides,
@@ -67,23 +75,21 @@ describe("conversation pages", () => {
       createdAt: 1,
     };
     const conversationApi = api({
-      listExaminations: vi.fn().mockResolvedValue(ok({ examinations: [examination] })),
-      createExaminationSession: vi.fn().mockResolvedValue(
-        ok({
-          id: ID,
-          examinationId: examination.id,
-          examinationName: examination.name,
-          subject: examination.subject,
-          conversationId: ID,
-          questionState: "in_progress",
-          currentQuestionOrdinal: 1,
-          questionCount: 2,
-          createdAt: 1,
-          questionsCompletedAt: null,
-          conversationState: "created",
-          recordingAvailable: false,
-        }),
-      ),
+      listExaminations: okResolved({ examinations: [examination] }),
+      createExaminationSession: okResolved({
+        id: ID,
+        examinationId: examination.id,
+        examinationName: examination.name,
+        subject: examination.subject,
+        conversationId: ID,
+        questionState: "in_progress",
+        currentQuestionOrdinal: 1,
+        questionCount: 2,
+        createdAt: 1,
+        questionsCompletedAt: null,
+        conversationState: "created",
+        recordingAvailable: false,
+      }),
     });
     render(<DashboardPage api={conversationApi} navigate={navigate} onLogout={vi.fn()} />);
     await userEvent.click(await screen.findByRole("button", { name: "Start exam" }));
@@ -113,27 +119,25 @@ describe("conversation pages", () => {
 
   it("creates an examination with ordered questions from the dashboard", async () => {
     const conversationApi = api({
-      createExamination: vi.fn().mockResolvedValue(
-        ok({
-          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          name: "Operating systems oral",
-          subject: "Computer science",
-          questionCount: 2,
-          createdAt: 1,
-          questions: [
-            {
-              id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-              ordinal: 1,
-              text: "Explain virtual memory.",
-            },
-            {
-              id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-              ordinal: 2,
-              text: "What causes deadlock?",
-            },
-          ],
-        }),
-      ),
+      createExamination: okResolved({
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        name: "Operating systems oral",
+        subject: "Computer science",
+        questionCount: 2,
+        createdAt: 1,
+        questions: [
+          {
+            id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            ordinal: 1,
+            text: "Explain virtual memory.",
+          },
+          {
+            id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            ordinal: 2,
+            text: "What causes deadlock?",
+          },
+        ],
+      }),
     });
     const rendered = render(
       <DashboardPage api={conversationApi} navigate={vi.fn()} onLogout={vi.fn()} />,
@@ -177,16 +181,16 @@ describe("conversation pages", () => {
       ending: { target: "complete" as const },
     } as ConversationStateDto;
     const runtime: ConversationRuntime = {
-      connect: vi.fn().mockResolvedValue(ok(undefined)),
-      enableAudio: vi.fn().mockResolvedValue(ok(undefined)),
-      setMicrophoneEnabled: vi.fn().mockResolvedValue(ok(undefined)),
-      requestEnd: vi.fn().mockResolvedValue(ok(ending)),
-      close: vi.fn().mockResolvedValue(ok(undefined)),
+      connect: okResolved(undefined),
+      enableAudio: okResolved(undefined),
+      setMicrophoneEnabled: okResolved(undefined),
+      requestEnd: okResolved(ending),
+      close: okResolved(undefined),
     };
     const runtimeFactory: RuntimeFactory = vi.fn().mockReturnValue(runtime);
     const conversationApi = api({
-      getState: vi.fn().mockResolvedValue(ok(state(ConversationStateTag.Created))),
-      startConversation: vi.fn().mockResolvedValue(ok(starting)),
+      getState: okResolved(state(ConversationStateTag.Created)),
+      startConversation: okResolved(starting),
     });
 
     render(
@@ -213,11 +217,11 @@ describe("conversation pages", () => {
     } as ConversationStateDto;
     let events: RuntimeEvents | null = null;
     const runtime: ConversationRuntime = {
-      connect: vi.fn().mockResolvedValue(ok(undefined)),
-      enableAudio: vi.fn().mockResolvedValue(ok(undefined)),
-      setMicrophoneEnabled: vi.fn().mockResolvedValue(ok(undefined)),
+      connect: okResolved(undefined),
+      enableAudio: okResolved(undefined),
+      setMicrophoneEnabled: okResolved(undefined),
       requestEnd: vi.fn(),
-      close: vi.fn().mockResolvedValue(ok(undefined)),
+      close: okResolved(undefined),
     };
     const runtimeFactory: RuntimeFactory = vi.fn((_api, _conversationId, nextEvents) => {
       events = nextEvents;
@@ -227,8 +231,8 @@ describe("conversation pages", () => {
       <ConversationPage
         conversationId={ID}
         api={api({
-          getState: vi.fn().mockResolvedValue(ok(starting)),
-          startConversation: vi.fn().mockResolvedValue(ok(starting)),
+          getState: okResolved(starting),
+          startConversation: okResolved(starting),
         })}
         runtimeFactory={runtimeFactory}
         navigate={vi.fn()}

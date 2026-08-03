@@ -17,9 +17,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ai-oral-exam/result": "workspace:*",
     "@livekit/agents": "^1.5.2",
     "@livekit/agents-plugin-openai": "^1.5.2",
+    "better-result": "3.0.0",
     "dotenv": "^17.4.2",
     "zod": "^4.4.3"
   },

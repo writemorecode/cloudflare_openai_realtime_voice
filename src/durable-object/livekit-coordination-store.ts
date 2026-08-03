@@ -38,7 +38,7 @@ export class LiveKitCoordinationStore {
   ): Promise<BeginLiveKitProvisioningResult> {
     return this.storage.transaction(async (transaction) => {
       const decoded = decodeSnapshot(await transaction.get<PersistedSnapshot>(SNAPSHOT_KEY));
-      if (!decoded.ok) {
+      if (!decoded.isOk()) {
         return { outcome: "rejected", reason: "storage_corrupt" } as const;
       }
       const state = decoded.value;
@@ -116,7 +116,7 @@ export class LiveKitCoordinationStore {
   beginShutdown(command: BeginLiveKitShutdownCommand): Promise<BeginLiveKitShutdownResult> {
     return this.storage.transaction(async (transaction) => {
       const decoded = decodeSnapshot(await transaction.get<PersistedSnapshot>(SNAPSHOT_KEY));
-      if (!decoded.ok) {
+      if (!decoded.isOk()) {
         return { outcome: "rejected", reason: "storage_corrupt" } as const;
       }
       const state = decoded.value;

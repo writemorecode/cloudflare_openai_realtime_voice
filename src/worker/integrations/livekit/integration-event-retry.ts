@@ -1,4 +1,5 @@
 /** Applies revision-checked integration events with bounded, sequential retries. */
+import { deserializeResult } from "@ai-oral-exam/conversation-contract";
 import type {
   ConversationEvent,
   ConversationState,
@@ -7,8 +8,11 @@ import type {
   ApplyEventResult,
   ConversationSession,
 } from "../../../durable-object/conversation-session";
-import type { AggregateStoreResult } from "../../../durable-object/conversation-aggregate-store";
-import { err, ok, tryCatch, type Result } from "@ai-oral-exam/result";
+import type {
+  AggregateStoreError,
+  AggregateStoreResult,
+} from "../../../durable-object/conversation-aggregate-store";
+import { Result } from "better-result";
 
 const MAX_ATTEMPTS = 3;
 
@@ -36,22 +40,25 @@ async function applyAttempt<E>(
   errors: IntegrationEventRetryErrors<E>,
   attemptsRemaining: number,
 ): Promise<Result<ConversationState, E>> {
-  const applied = await tryCatch(
-    async (): Promise<AggregateStoreResult<ApplyEventResult>> =>
-      await stub.applyIntegrationEvent({
-        expectedRevision: state.revision,
-        event,
-      }),
-    errors.failed,
-  );
-  if (!applied.ok) return applied;
-  if (!applied.value.ok) return err(errors.failed(applied.value.error));
+  const applied = await Result.tryPromise({
+    try: async (): Promise<AggregateStoreResult<ApplyEventResult>> =>
+      deserializeResult<ApplyEventResult, AggregateStoreError>(
+        await stub.applyIntegrationEvent({
+          expectedRevision: state.revision,
+          event,
+        }),
+      ),
+    catch: errors.failed,
+  });
+  if (!applied.isOk()) return applied;
+  if (!applied.value.isOk()) return Result.err(errors.failed(applied.value.error));
 
   const result = applied.value.value;
-  if (result.outcome === "applied" || result.outcome === "duplicate") return ok(result.state);
+  if (result.outcome === "applied" || result.outcome === "duplicate")
+    return Result.ok(result.state);
   if (result.reason !== "revision_conflict" || result.state === null) {
-    return err(errors.rejected(result));
+    return Result.err(errors.rejected(result));
   }
-  if (attemptsRemaining === 1) return err(errors.exhausted());
+  if (attemptsRemaining === 1) return Result.err(errors.exhausted());
   return applyAttempt(stub, result.state, event, errors, attemptsRemaining - 1);
 }

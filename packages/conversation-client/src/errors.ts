@@ -1,3 +1,5 @@
+import { TaggedError } from "better-result";
+
 export type ConversationClientErrorCode =
   | "connection_not_ready"
   | "control_connection_failed"
@@ -10,14 +12,15 @@ export type ConversationClientErrorCode =
   | "wire_protocol_error";
 
 /** A stable error value returned by the browser conversation client. */
-export class ConversationClientError extends Error {
-  constructor(
-    readonly code: ConversationClientErrorCode,
-    message: string,
-    cause?: unknown,
-  ) {
-    super(message, { cause });
-    this.name = "ConversationClientError";
+const ConversationClientErrorBase = TaggedError("ConversationClientError");
+
+export class ConversationClientError extends ConversationClientErrorBase<{
+  readonly code: ConversationClientErrorCode;
+  readonly cause: unknown;
+  readonly message: string;
+}> {
+  constructor(code: ConversationClientErrorCode, message: string, cause?: unknown) {
+    super({ code, message, cause });
   }
 }
 

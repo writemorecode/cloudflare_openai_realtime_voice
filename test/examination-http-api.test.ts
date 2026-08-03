@@ -1,7 +1,7 @@
 import { env, exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 
-import { ok } from "@ai-oral-exam/result";
+import { Result } from "better-result";
 import type {
   CurrentExaminationQuestion,
   Examination,
@@ -229,7 +229,7 @@ describe("examination HTTP API", () => {
     const conversations: ConversationSessions = {
       get: () =>
         ({
-          getState: async () => ok(state),
+          getState: async () => Result.ok(state),
         }) as unknown as DurableObjectStub<ConversationSession>,
     };
     const response = await handleConversationRequest(

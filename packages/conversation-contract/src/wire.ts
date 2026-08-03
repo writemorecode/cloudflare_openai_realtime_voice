@@ -3,7 +3,7 @@
  * WebSocket implementation. This protocol exposes sanitized DTOs, never internal provider IDs.
  */
 import { decode, encode } from "@msgpack/msgpack";
-import { err, ok, tryCatchSync, type Result } from "@ai-oral-exam/result";
+import { Result } from "better-result";
 import { z } from "zod";
 
 import { ConversationStateTag, conversationStateSchema, type ConversationStateDto } from "./state";
@@ -200,17 +200,17 @@ export class WireProtocolError extends Error {
 export function encodeWireMessage(
   message: ServerWireMessage | BrowserWireMessage,
 ): Result<Uint8Array, WireProtocolError> {
-  return tryCatchSync(
-    () => encode(message),
-    (cause) => new WireProtocolError(ProtocolErrorCode.InternalError, null, cause),
-  );
+  return Result.try({
+    try: () => encode(message),
+    catch: (cause) => new WireProtocolError(ProtocolErrorCode.InternalError, null, cause),
+  });
 }
 
 export function decodeServerMessage(
   bytes: ArrayBuffer,
 ): Result<ServerWireMessage, WireProtocolError> {
   const envelope = decodeEnvelope(bytes);
-  if (!envelope.ok) return err(envelope.error);
+  if (!envelope.isOk()) return Result.err(envelope.error);
   const [version, type, id, body] = envelope.value;
   switch (type) {
     case ServerMessageType.ServerHello:
@@ -224,7 +224,7 @@ export function decodeServerMessage(
     case ServerMessageType.ServerPing:
       return serverMessage(version, type, id, body, serverPingBodySchema);
     default:
-      return err(new WireProtocolError(ProtocolErrorCode.UnknownMessageType, id));
+      return Result.err(new WireProtocolError(ProtocolErrorCode.UnknownMessageType, id));
   }
 }
 
@@ -232,7 +232,7 @@ export function decodeBrowserMessage(
   bytes: ArrayBuffer,
 ): Result<BrowserWireMessage, WireProtocolError> {
   const envelope = decodeEnvelope(bytes);
-  if (!envelope.ok) return err(envelope.error);
+  if (!envelope.isOk()) return Result.err(envelope.error);
   const [version, type, id, body] = envelope.value;
   switch (type) {
     case BrowserMessageType.ClientHello:
@@ -250,7 +250,7 @@ export function decodeBrowserMessage(
     case BrowserMessageType.ClientPing:
       return browserMessage(version, type, id, body, clientPingBodySchema);
     default:
-      return err(new WireProtocolError(ProtocolErrorCode.UnknownMessageType, id));
+      return Result.err(new WireProtocolError(ProtocolErrorCode.UnknownMessageType, id));
   }
 }
 
@@ -258,22 +258,22 @@ function decodeEnvelope(
   bytes: ArrayBuffer,
 ): Result<readonly [1, number, string, unknown], WireProtocolError> {
   if (bytes.byteLength > MAX_WIRE_MESSAGE_BYTES) {
-    return err(new WireProtocolError(ProtocolErrorCode.MessageTooLarge));
+    return Result.err(new WireProtocolError(ProtocolErrorCode.MessageTooLarge));
   }
-  const decodedResult = tryCatchSync(
-    () => decode(new Uint8Array(bytes)),
-    (cause) => new WireProtocolError(ProtocolErrorCode.MalformedEnvelope, null, cause),
-  );
-  if (!decodedResult.ok) {
-    return err(decodedResult.error);
+  const decodedResult = Result.try({
+    try: () => decode(new Uint8Array(bytes)),
+    catch: (cause) => new WireProtocolError(ProtocolErrorCode.MalformedEnvelope, null, cause),
+  });
+  if (!decodedResult.isOk()) {
+    return Result.err(decodedResult.error);
   }
   const decoded = decodedResult.value;
   if (!Array.isArray(decoded) || decoded.length !== 4) {
-    return err(new WireProtocolError(ProtocolErrorCode.MalformedEnvelope));
+    return Result.err(new WireProtocolError(ProtocolErrorCode.MalformedEnvelope));
   }
   const [version, type, id, body] = decoded;
   if (version !== WIRE_PROTOCOL_VERSION) {
-    return err(
+    return Result.err(
       new WireProtocolError(
         ProtocolErrorCode.UnsupportedVersion,
         typeof id === "string" ? id : null,
@@ -281,14 +281,14 @@ function decodeEnvelope(
     );
   }
   if (!Number.isInteger(type) || typeof id !== "string" || id.length === 0 || id.length > 128) {
-    return err(
+    return Result.err(
       new WireProtocolError(
         ProtocolErrorCode.MalformedEnvelope,
         typeof id === "string" ? id : null,
       ),
     );
   }
-  return ok([version, type as number, id, body]);
+  return Result.ok([version, type as number, id, body]);
 }
 
 function serverMessage<T extends ServerWireMessage[1], B>(
@@ -300,8 +300,8 @@ function serverMessage<T extends ServerWireMessage[1], B>(
 ): Result<ServerWireMessage, WireProtocolError> {
   const parsed = schema.safeParse(body);
   return parsed.success
-    ? ok([version, type, id, parsed.data] as ServerWireMessage)
-    : err(new WireProtocolError(ProtocolErrorCode.InvalidBody, id, parsed.error));
+    ? Result.ok([version, type, id, parsed.data] as ServerWireMessage)
+    : Result.err(new WireProtocolError(ProtocolErrorCode.InvalidBody, id, parsed.error));
 }
 
 function browserMessage<T extends BrowserWireMessage[1], B>(
@@ -313,6 +313,6 @@ function browserMessage<T extends BrowserWireMessage[1], B>(
 ): Result<BrowserWireMessage, WireProtocolError> {
   const parsed = schema.safeParse(body);
   return parsed.success
-    ? ok([version, type, id, parsed.data] as BrowserWireMessage)
-    : err(new WireProtocolError(ProtocolErrorCode.InvalidBody, id, parsed.error));
+    ? Result.ok([version, type, id, parsed.data] as BrowserWireMessage)
+    : Result.err(new WireProtocolError(ProtocolErrorCode.InvalidBody, id, parsed.error));
 }

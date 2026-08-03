@@ -2,7 +2,7 @@
 import { pbkdf2Sync } from "node:crypto";
 
 import { ApiError } from "./api-errors";
-import { err, ok, tryCatch, type Result } from "@ai-oral-exam/result";
+import { Result } from "better-result";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -55,94 +55,100 @@ export async function login(
   database: D1Database,
 ): Promise<Result<Response, ApiError>> {
   const credentials = await readCredentials(request);
-  if (!credentials.ok) return credentials;
+  if (!credentials.isOk()) return credentials;
 
-  const operation = await tryCatch(async (): Promise<Result<Response, ApiError>> => {
-    const now = Date.now();
-    const attemptKey = await loginAttemptKey(request);
-    const attempt = await database
-      .prepare("SELECT window_started_at, attempts FROM login_attempts WHERE attempt_key = ?")
-      .bind(attemptKey)
-      .first<AttemptRow>();
+  const operation = await Result.tryPromise({
+    try: async (): Promise<Result<Response, ApiError>> => {
+      const now = Date.now();
+      const attemptKey = await loginAttemptKey(request);
+      const attempt = await database
+        .prepare("SELECT window_started_at, attempts FROM login_attempts WHERE attempt_key = ?")
+        .bind(attemptKey)
+        .first<AttemptRow>();
 
-    if (
-      attempt !== null &&
-      now - attempt.window_started_at < LOGIN_WINDOW_MS &&
-      attempt.attempts >= MAX_LOGIN_ATTEMPTS
-    ) {
-      return err(
-        new ApiError(429, "login_rate_limited", "Too many login attempts. Try again later.", {
-          "Retry-After": String(
-            Math.ceil((LOGIN_WINDOW_MS - (now - attempt.window_started_at)) / 1_000),
-          ),
-        }),
+      if (
+        attempt !== null &&
+        now - attempt.window_started_at < LOGIN_WINDOW_MS &&
+        attempt.attempts >= MAX_LOGIN_ATTEMPTS
+      ) {
+        return Result.err(
+          new ApiError(429, "login_rate_limited", "Too many login attempts. Try again later.", {
+            "Retry-After": String(
+              Math.ceil((LOGIN_WINDOW_MS - (now - attempt.window_started_at)) / 1_000),
+            ),
+          }),
+        );
+      }
+
+      const user = await database
+        .prepare("SELECT id, username, password_hash FROM users WHERE username = ? COLLATE NOCASE")
+        .bind(credentials.value.username)
+        .first<UserRow>();
+      const valid = await verifyPassword(
+        credentials.value.password,
+        user?.password_hash ?? DUMMY_PASSWORD_HASH,
       );
-    }
+      if (!valid.isOk()) return valid;
 
-    const user = await database
-      .prepare("SELECT id, username, password_hash FROM users WHERE username = ? COLLATE NOCASE")
-      .bind(credentials.value.username)
-      .first<UserRow>();
-    const valid = await verifyPassword(
-      credentials.value.password,
-      user?.password_hash ?? DUMMY_PASSWORD_HASH,
-    );
-    if (!valid.ok) return valid;
+      if (!valid.value || user === null) {
+        await recordFailedLogin(database, attemptKey, attempt, now);
+        return Result.err(invalidCredentials());
+      }
 
-    if (!valid.value || user === null) {
-      await recordFailedLogin(database, attemptKey, attempt, now);
-      return err(invalidCredentials());
-    }
+      const token = randomBase64Url(SESSION_TOKEN_BYTES);
+      const tokenHash = await sha256Base64Url(token);
+      const expiresAt = now + SESSION_TTL_SECONDS * 1_000;
+      await database.batch([
+        database.prepare("DELETE FROM login_attempts WHERE attempt_key = ?").bind(attemptKey),
+        database.prepare("DELETE FROM sessions WHERE expires_at <= ?").bind(now),
+        database.prepare("DELETE FROM sessions WHERE user_id = ?").bind(user.id),
+        database
+          .prepare(
+            "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+          )
+          .bind(tokenHash, user.id, now, expiresAt),
+      ]);
 
-    const token = randomBase64Url(SESSION_TOKEN_BYTES);
-    const tokenHash = await sha256Base64Url(token);
-    const expiresAt = now + SESSION_TTL_SECONDS * 1_000;
-    await database.batch([
-      database.prepare("DELETE FROM login_attempts WHERE attempt_key = ?").bind(attemptKey),
-      database.prepare("DELETE FROM sessions WHERE expires_at <= ?").bind(now),
-      database.prepare("DELETE FROM sessions WHERE user_id = ?").bind(user.id),
-      database
-        .prepare(
-          "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
-        )
-        .bind(tokenHash, user.id, now, expiresAt),
-    ]);
-
-    return ok(
-      Response.json(
-        { username: user.username },
-        {
-          headers: {
-            "Cache-Control": "no-store",
-            "Set-Cookie": sessionCookie(token, SESSION_TTL_SECONDS),
+      return Result.ok(
+        Response.json(
+          { username: user.username },
+          {
+            headers: {
+              "Cache-Control": "no-store",
+              "Set-Cookie": sessionCookie(token, SESSION_TTL_SECONDS),
+            },
           },
-        },
-      ),
-    );
-  }, authenticationOperationFailed);
-  return operation.ok ? operation.value : operation;
+        ),
+      );
+    },
+    catch: authenticationOperationFailed,
+  });
+  return operation.isOk() ? operation.value : operation;
 }
 
 export async function logout(
   request: Request,
   database: D1Database,
 ): Promise<Result<Response, ApiError>> {
-  return tryCatch(async () => {
-    const token = readSessionToken(request);
-    if (token !== null) {
-      await database
-        .prepare("DELETE FROM sessions WHERE token_hash = ?")
-        .bind(await sha256Base64Url(token))
-        .run();
-    }
-    return new Response(null, {
-      status: 204,
-      headers: {
-        "Cache-Control": "no-store",
-        "Set-Cookie": sessionCookie("", 0),
-      },
-    });
-  }, authenticationOperationFailed);
+  return Result.tryPromise({
+    try: async () => {
+      const token = readSessionToken(request);
+      if (token !== null) {
+        await database
+          .prepare("DELETE FROM sessions WHERE token_hash = ?")
+          .bind(await sha256Base64Url(token))
+          .run();
+      }
+      return new Response(null, {
+        status: 204,
+        headers: {
+          "Cache-Control": "no-store",
+          "Set-Cookie": sessionCookie("", 0),
+        },
+      });
+    },
+    catch: authenticationOperationFailed,
+  });
 }
 
 export async function authenticateBrowserSession(
@@ -150,10 +156,10 @@ export async function authenticateBrowserSession(
   database: D1Database,
 ): Promise<Result<AuthenticatedUser, ApiError>> {
   const token = readSessionToken(request);
-  if (token === null) return err(sessionUnauthorized());
+  if (token === null) return Result.err(sessionUnauthorized());
 
-  const row = await tryCatch(
-    async () =>
+  const row = await Result.tryPromise({
+    try: async () =>
       database
         .prepare(
           `SELECT users.id, users.username
@@ -162,23 +168,26 @@ export async function authenticateBrowserSession(
         )
         .bind(await sha256Base64Url(token), Date.now())
         .first<SessionRow>(),
-    authenticationOperationFailed,
-  );
-  if (!row.ok) return row;
-  return row.value === null ? err(sessionUnauthorized()) : ok(row.value);
+    catch: authenticationOperationFailed,
+  });
+  if (!row.isOk()) return row;
+  return row.value === null ? Result.err(sessionUnauthorized()) : Result.ok(row.value);
 }
 
 export async function hashPassword(password: string): Promise<Result<string, ApiError>> {
-  return tryCatch(async () => {
-    const salt = crypto.getRandomValues(new Uint8Array(PASSWORD_SALT_BYTES));
-    const derived = await derivePassword(password, salt, PASSWORD_HASH_ITERATIONS);
-    return [
-      PASSWORD_HASH_ALGORITHM,
-      String(PASSWORD_HASH_ITERATIONS),
-      encodeBase64Url(salt),
-      encodeBase64Url(derived),
-    ].join("$");
-  }, authenticationOperationFailed);
+  return Result.tryPromise({
+    try: async () => {
+      const salt = crypto.getRandomValues(new Uint8Array(PASSWORD_SALT_BYTES));
+      const derived = await derivePassword(password, salt, PASSWORD_HASH_ITERATIONS);
+      return [
+        PASSWORD_HASH_ALGORITHM,
+        String(PASSWORD_HASH_ITERATIONS),
+        encodeBase64Url(salt),
+        encodeBase64Url(derived),
+      ].join("$");
+    },
+    catch: authenticationOperationFailed,
+  });
 }
 
 export async function verifyPassword(
@@ -186,42 +195,46 @@ export async function verifyPassword(
   encodedHash: string,
 ): Promise<Result<boolean, ApiError>> {
   const parts = encodedHash.split("$");
-  if (parts.length !== 4 || parts[0] !== PASSWORD_HASH_ALGORITHM) return ok(false);
+  if (parts.length !== 4 || parts[0] !== PASSWORD_HASH_ALGORITHM) return Result.ok(false);
   const iterations = Number(parts[1]);
-  if (iterations !== PASSWORD_HASH_ITERATIONS) return ok(false);
+  if (iterations !== PASSWORD_HASH_ITERATIONS) return Result.ok(false);
   const salt = decodeBase64Url(parts[2] ?? "");
   const expected = decodeBase64Url(parts[3] ?? "");
-  if (salt === null || expected === null) return ok(false);
+  if (salt === null || expected === null) return Result.ok(false);
   if (salt.byteLength !== PASSWORD_SALT_BYTES || expected.byteLength !== PASSWORD_HASH_BYTES) {
-    return ok(false);
+    return Result.ok(false);
   }
-  return tryCatch(
-    async () => passwordDigestsEqual(await derivePassword(password, salt, iterations), expected),
-    authenticationOperationFailed,
-  );
+  return Result.tryPromise({
+    try: async () =>
+      passwordDigestsEqual(await derivePassword(password, salt, iterations), expected),
+    catch: authenticationOperationFailed,
+  });
 }
 
 async function readCredentials(request: Request): Promise<Result<LoginCredentials, ApiError>> {
   const contentType = request.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase();
   if (contentType !== "application/json") {
-    return err(
+    return Result.err(
       new ApiError(415, "unsupported_media_type", "Login requests must use application/json."),
     );
   }
   const declaredLength = Number(request.headers.get("Content-Length") ?? 0);
-  if (declaredLength > MAX_LOGIN_BODY_BYTES) return err(loginBodyTooLarge());
-  const body = await tryCatch(() => request.arrayBuffer(), authenticationOperationFailed);
-  if (!body.ok) return body;
+  if (declaredLength > MAX_LOGIN_BODY_BYTES) return Result.err(loginBodyTooLarge());
+  const body = await Result.tryPromise({
+    try: () => request.arrayBuffer(),
+    catch: authenticationOperationFailed,
+  });
+  if (!body.isOk()) return body;
   const bytes = new Uint8Array(body.value);
-  if (bytes.byteLength > MAX_LOGIN_BODY_BYTES) return err(loginBodyTooLarge());
+  if (bytes.byteLength > MAX_LOGIN_BODY_BYTES) return Result.err(loginBodyTooLarge());
 
-  const parsed = await tryCatch(
-    () => JSON.parse(decoder.decode(bytes)) as unknown,
-    () => new ApiError(400, "invalid_login_request", "The login request is invalid."),
-  );
-  if (!parsed.ok) return parsed;
+  const parsed = Result.try({
+    try: () => JSON.parse(decoder.decode(bytes)) as unknown,
+    catch: () => new ApiError(400, "invalid_login_request", "The login request is invalid."),
+  });
+  if (!parsed.isOk()) return parsed;
   const value = parsed.value;
-  if (typeof value !== "object" || value === null) return err(invalidLoginRequest());
+  if (typeof value !== "object" || value === null) return Result.err(invalidLoginRequest());
   const record = value as Record<string, unknown>;
   if (
     typeof record.username !== "string" ||
@@ -231,9 +244,9 @@ async function readCredentials(request: Request): Promise<Result<LoginCredential
     record.password.length === 0 ||
     record.password.length > MAX_PASSWORD_LENGTH
   ) {
-    return err(invalidLoginRequest());
+    return Result.err(invalidLoginRequest());
   }
-  return ok({ username: record.username, password: record.password });
+  return Result.ok({ username: record.username, password: record.password });
 }
 
 async function derivePassword(

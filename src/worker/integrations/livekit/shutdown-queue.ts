@@ -1,6 +1,6 @@
 /** Processes retryable queue messages that clean up provisioned LiveKit conversation resources. */
 import { ApiError } from "../../http/api-errors";
-import type { Result } from "@ai-oral-exam/result";
+import type { Result } from "better-result";
 import {
   isLiveKitShutdownMessage,
   type LiveKitShutdownMessage,
@@ -31,7 +31,7 @@ export async function handleLiveKitShutdownBatch(
 
       try {
         const outcome = await stop(message.body.conversationId);
-        if (!outcome.ok) {
+        if (!outcome.isOk()) {
           if (outcome.error.code === "livekit_not_provisioned") {
             console.warn(
               JSON.stringify({

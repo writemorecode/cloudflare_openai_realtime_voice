@@ -57,7 +57,7 @@ export class ConversationSocketGateway {
       return new Response("WebSocket upgrade required", { status: 426 });
     }
     const stored = this.commands.getState();
-    if (!stored.ok) {
+    if (!stored.isOk()) {
       return new Response("Conversation storage is unavailable", { status: 500 });
     }
     if (stored.value === null) {
@@ -91,7 +91,7 @@ export class ConversationSocketGateway {
     }
 
     const decoded = decodeBrowserMessage(rawMessage);
-    if (!decoded.ok) {
+    if (!decoded.isOk()) {
       const protocolError = decoded.error;
       const state = this.stateOrNull();
       this.sendProtocolError(
@@ -294,7 +294,7 @@ export class ConversationSocketGateway {
     event: ConversationEvent,
   ): Promise<void> {
     const stored = await this.commands.applyEvent({ expectedRevision, event });
-    if (!stored.ok) {
+    if (!stored.isOk()) {
       this.sendProtocolError(ws, messageId, ProtocolErrorCode.InternalError, null);
       return;
     }
@@ -372,7 +372,7 @@ export class ConversationSocketGateway {
 
   private sendWire(ws: WebSocket, message: ServerWireMessage): void {
     const encoded = encodeWireMessage(message);
-    if (!encoded.ok) {
+    if (!encoded.isOk()) {
       console.error(
         JSON.stringify({
           kind: "conversation_websocket_encode_failed",
@@ -388,7 +388,7 @@ export class ConversationSocketGateway {
 
   private stateOrNull(): ConversationState | null {
     const stored = this.commands.getState();
-    if (stored.ok) return stored.value;
+    if (stored.isOk()) return stored.value;
     console.error(
       JSON.stringify({
         kind: "conversation_snapshot_decode_failed",

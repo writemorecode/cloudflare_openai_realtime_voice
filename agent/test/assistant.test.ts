@@ -96,6 +96,19 @@ import type {
 
 const conversationId = "e570d451-98dc-4ba8-867b-735c652114b7";
 
+function resolved<T>(value: T) {
+  return vi.fn(async () => value);
+}
+
+function resolvedSequence<T>(...values: readonly T[]) {
+  const pending = [...values];
+  return vi.fn(async () => {
+    const next = pending.shift();
+    if (next === undefined) throw new Error("mock sequence exhausted");
+    return next;
+  });
+}
+
 initializeLogger({ pretty: false, level: "warn" });
 
 describe("oral examination assistant", () => {
@@ -137,8 +150,8 @@ describe("oral examination assistant", () => {
       revision: 7,
     };
     const client: ExaminationQuestionClient = {
-      getCurrent: vi.fn().mockResolvedValue(first),
-      completeCurrent: vi.fn().mockResolvedValueOnce(second).mockResolvedValueOnce(complete),
+      getCurrent: resolved(first),
+      completeCurrent: resolvedSequence(second, complete),
     };
     const assistant = createAssistant({ client, conversationId });
 
@@ -173,7 +186,7 @@ describe("oral examination assistant", () => {
 
   it("returns immediately when authoritative progress is already complete", async () => {
     const client: ExaminationQuestionClient = {
-      getCurrent: vi.fn().mockResolvedValue({
+      getCurrent: resolved({
         status: "complete",
         examinationSessionId: "c13475ec-bf0c-4c22-842a-2ef04d160e42",
         examinationName: "Oral assessment",
@@ -193,8 +206,8 @@ describe("oral examination assistant", () => {
   it("returns an explicit error result when the task group ends before examination completion", async () => {
     const first = question(1, 1, 5);
     const client: ExaminationQuestionClient = {
-      getCurrent: vi.fn().mockResolvedValue(first),
-      completeCurrent: vi.fn().mockResolvedValue(question(1, 1, 6)),
+      getCurrent: resolved(first),
+      completeCurrent: resolved(question(1, 1, 6)),
     };
     const assistant = createAssistant({ client, conversationId });
 

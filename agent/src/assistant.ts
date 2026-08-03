@@ -1,7 +1,7 @@
 /** Constructs the oral examiner and its shared-context fixed-question TaskGroup. */
 import { existsSync, readFileSync } from "node:fs";
 
-import { err, ok, tryCatch, type Result } from "@ai-oral-exam/result";
+import { Result } from "better-result";
 import { llm, voice, workflows } from "@livekit/agents";
 import { z } from "zod";
 
@@ -50,7 +50,7 @@ export function createAssistant(options?: ExaminationAssistantOptions): voice.Ag
               excludeInstructions: true,
             }),
           );
-          if (!questionTasks.ok) {
+          if (!questionTasks.isOk()) {
             return {
               status: "error",
               code: questionTasks.error.code,
@@ -76,7 +76,7 @@ async function runQuestionTaskGroup(
   initial: CurrentExaminationQuestion,
   chatCtx: llm.ChatContext,
 ): Promise<Result<void, QuestionTaskGroupError>> {
-  if (initial.status === "complete") return ok(undefined);
+  if (initial.status === "complete") return Result.ok(undefined);
 
   const progress: { current: CurrentExaminationQuestion } = { current: initial };
   const taskGroup = new workflows.TaskGroup({
@@ -91,7 +91,7 @@ async function runQuestionTaskGroup(
     taskGroup.add(
       () => {
         const active = questionAtOrdinal(progress.current, ordinal);
-        return active.ok
+        return active.isOk()
           ? createQuestionTask(examinerInstructions, client, conversationId, active.value)
           : createFailedQuestionTask(active.error);
       },
@@ -104,18 +104,18 @@ async function runQuestionTaskGroup(
     );
   }
 
-  const completed = await tryCatch(
-    () => taskGroup.run(),
-    (cause) => taskGroupError(cause, progress.current),
-  );
-  if (!completed.ok) return err(completed.error);
+  const completed = await Result.tryPromise({
+    try: () => taskGroup.run(),
+    catch: (cause) => taskGroupError(cause, progress.current),
+  });
+  if (!completed.isOk()) return Result.err(completed.error);
   if (progress.current.status !== "complete") {
-    return err({
+    return Result.err({
       code: "incomplete_examination",
       message: `Expected the examination to be complete after the task group, received ${questionPosition(progress.current)}`,
     });
   }
-  return ok(undefined);
+  return Result.ok(undefined);
 }
 
 type ActiveExaminationQuestion = Extract<CurrentExaminationQuestion, { status: "question" }>;
@@ -137,9 +137,9 @@ function questionAtOrdinal(
   ordinal: number,
 ): Result<ActiveExaminationQuestion, QuestionTaskGroupError> {
   if (current.status === "question" && current.question.ordinal === ordinal) {
-    return ok(current);
+    return Result.ok(current);
   }
-  return err({
+  return Result.err({
     code: "unexpected_question",
     message: `Expected authoritative examination question ${ordinal}, received ${questionPosition(current)}`,
   });

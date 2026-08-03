@@ -7,7 +7,7 @@ import {
   type ConversationState,
   type UnixMillis,
 } from "../domain/conversation-state-machine";
-import { err, ok, type Result } from "@ai-oral-exam/result";
+import { Result } from "better-result";
 import {
   LIVEKIT_SHUTDOWN_MESSAGE_VERSION,
   type LiveKitShutdownMessage,
@@ -46,8 +46,8 @@ export class ConversationAggregateStore {
   ): Promise<AggregateStoreResult<InitializeResult>> {
     if (objectName !== sessionId) {
       const current = this.getState();
-      if (!current.ok) return current;
-      return ok({
+      if (!current.isOk()) return current;
+      return Result.ok({
         status: "rejected",
         reason: "identity_mismatch",
         state: current.value,
@@ -55,10 +55,10 @@ export class ConversationAggregateStore {
     }
     return this.storage.transaction(async (transaction) => {
       const current = await this.readState(transaction);
-      if (!current.ok) return current;
+      if (!current.isOk()) return current;
       if (current.value !== null) {
         await reconcileAlarm(transaction, current.value);
-        return ok(
+        return Result.ok(
           current.value.data.sessionId === sessionId
             ? ({ status: "existing", state: current.value } as const)
             : ({
@@ -71,7 +71,7 @@ export class ConversationAggregateStore {
       const state = createConversation(sessionId, at);
       await this.writeState(transaction, state);
       await reconcileAlarm(transaction, state);
-      return ok({ status: "initialized", state } as const);
+      return Result.ok({ status: "initialized", state } as const);
     });
   }
 
@@ -91,11 +91,11 @@ export class ConversationAggregateStore {
   ): Promise<AggregateStoreResult<AlarmExecution>> {
     return this.storage.transaction<AggregateStoreResult<AlarmExecution>>(async (transaction) => {
       const decoded = await this.readState(transaction);
-      if (!decoded.ok) return decoded;
+      if (!decoded.isOk()) return decoded;
       const state = decoded.value;
       if (state === null) {
         await transaction.deleteAlarm();
-        return ok({
+        return Result.ok({
           outcome: "no_state",
           state: null,
           deadline: null,
@@ -108,7 +108,7 @@ export class ConversationAggregateStore {
       observeContext({ state, deadline, event });
       if (deadline === null || event === null) {
         await transaction.deleteAlarm();
-        return ok({
+        return Result.ok({
           outcome: "no_deadline",
           state,
           deadline: null,
@@ -118,16 +118,22 @@ export class ConversationAggregateStore {
       }
       if (Number(now) < Number(deadline)) {
         await transaction.setAlarm(Number(deadline));
-        return ok({ outcome: "rescheduled_early", state, deadline, event, transition: null });
+        return Result.ok({
+          outcome: "rescheduled_early",
+          state,
+          deadline,
+          event,
+          transition: null,
+        });
       }
       const applied = await this.applyEventInTransaction(transaction, {
         expectedRevision: state.revision,
         event,
       });
-      if (!applied.ok) return applied;
+      if (!applied.isOk()) return applied;
       const transition = applied.value;
       if (transition.outcome === "rejected") {
-        return ok({
+        return Result.ok({
           outcome: "transition_rejected",
           state,
           deadline,
@@ -135,7 +141,7 @@ export class ConversationAggregateStore {
           transition: null,
         });
       }
-      return ok({
+      return Result.ok({
         outcome: transition.outcome === "applied" ? "transition_applied" : "transition_duplicate",
         state,
         deadline,
@@ -151,24 +157,24 @@ export class ConversationAggregateStore {
   ): Promise<AggregateStoreResult<ApplyEventResult>> {
     const receipt = await transaction.get<TransitionReceipt>(receiptKey(command.event.eventId));
     const decoded = await this.readState(transaction);
-    if (!decoded.ok) return decoded;
+    if (!decoded.isOk()) return decoded;
     const current = decoded.value;
     if (receipt !== undefined) {
       if (current === null) {
-        return err({ kind: "inconsistent_storage" });
+        return Result.err({ kind: "inconsistent_storage" });
       }
       await reconcileAlarm(transaction, current);
-      return ok({ outcome: "duplicate", state: current, receipt });
+      return Result.ok({ outcome: "duplicate", state: current, receipt });
     }
     if (current === null) {
-      return ok({ outcome: "rejected", reason: "not_initialized", state: null });
+      return Result.ok({ outcome: "rejected", reason: "not_initialized", state: null });
     }
     if (current.revision !== command.expectedRevision) {
-      return ok({ outcome: "rejected", reason: "revision_conflict", state: current });
+      return Result.ok({ outcome: "rejected", reason: "revision_conflict", state: current });
     }
     const transitioned = transitionRuntime(current, command.event);
-    if (!transitioned.ok) {
-      return ok({
+    if (!transitioned.isOk()) {
+      return Result.ok({
         outcome: "rejected",
         reason:
           transitioned.error.kind === "illegal_transition" ? "illegal_transition" : "guard_failed",
@@ -196,7 +202,7 @@ export class ConversationAggregateStore {
       } satisfies LiveKitShutdownMessage);
     }
     await reconcileAlarm(transaction, next);
-    return ok({ outcome: "applied", state: next, receipt: appliedReceipt });
+    return Result.ok({ outcome: "applied", state: next, receipt: appliedReceipt });
   }
 
   private async readState(
