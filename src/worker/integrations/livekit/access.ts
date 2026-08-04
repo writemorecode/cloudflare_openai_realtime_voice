@@ -322,17 +322,17 @@ function validateLiveKitAccessConfiguration(env: Env): Result<void, ApiError> {
     env.LIVEKIT_URL,
     env.LIVEKIT_API_KEY,
     env.LIVEKIT_API_SECRET,
-    env.R2_S3_ENDPOINT,
+    env.R2_ENDPOINT,
     env.R2_BUCKET_NAME,
-    env.R2_S3_ACCESS_KEY_ID,
-    env.R2_S3_SECRET_ACCESS_KEY,
+    env.R2_ACCESS_KEY_ID,
+    env.R2_SECRET_ACCESS_KEY,
   ];
   if (values.some((value) => value.length === 0)) {
     return Result.err(
       new ApiError(500, "livekit_access_not_configured", "LiveKit access is not configured."),
     );
   }
-  if (!env.LIVEKIT_URL.startsWith("wss://") || !env.R2_S3_ENDPOINT.startsWith("https://")) {
+  if (!env.LIVEKIT_URL.startsWith("wss://") || !env.R2_ENDPOINT.startsWith("https://")) {
     return Result.err(
       new ApiError(500, "livekit_access_not_configured", "LiveKit access is not configured."),
     );

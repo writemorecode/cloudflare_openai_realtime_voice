@@ -72,9 +72,9 @@ export function liveKitControlPort(env: Env): LiveKitControlPort {
             output: {
               case: "s3",
               value: new S3Upload({
-                accessKey: env.R2_S3_ACCESS_KEY_ID,
-                secret: env.R2_S3_SECRET_ACCESS_KEY,
-                endpoint: env.R2_S3_ENDPOINT,
+                accessKey: env.R2_ACCESS_KEY_ID,
+                secret: env.R2_SECRET_ACCESS_KEY,
+                endpoint: env.R2_ENDPOINT,
                 bucket: env.R2_BUCKET_NAME,
                 forcePathStyle: true,
               }),

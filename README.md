@@ -169,11 +169,11 @@ pnpm exec wrangler secret put AGENT_CALLBACK_TOKEN
 pnpm exec wrangler secret put CONVERSATION_ID_SECRET
 pnpm exec wrangler secret put LIVEKIT_API_KEY
 pnpm exec wrangler secret put LIVEKIT_API_SECRET
-pnpm exec wrangler secret put R2_S3_ACCESS_KEY_ID
-pnpm exec wrangler secret put R2_S3_SECRET_ACCESS_KEY
+pnpm exec wrangler secret put R2_ACCESS_KEY_ID
+pnpm exec wrangler secret put R2_SECRET_ACCESS_KEY
 ```
 
-`LIVEKIT_URL`, `R2_BUCKET_NAME`, `R2_S3_ENDPOINT`, and `ALLOWED_ORIGIN` are non-secret settings
+`LIVEKIT_URL`, `R2_BUCKET_NAME`, `R2_ENDPOINT`, and `ALLOWED_ORIGIN` are non-secret settings
 configured per environment. Browser API and `conversation.v1` WebSocket access use the opaque D1
 session cookie. Authentication stays in `oral-exam-auth`; examination content and sessions use the
 separate EU-jurisdiction `oral-exam-data-dev` database through `EXAM_DB`.
