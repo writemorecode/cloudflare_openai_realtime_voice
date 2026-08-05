@@ -97,12 +97,22 @@ export const initializeRequest = (dependencies: FoundationDependencies) =>
   });
 
 export const requireConfiguration = apiFactory.createMiddleware(async (context, next) => {
-  if (
-    context.env.AGENT_CALLBACK_TOKEN.length === 0 ||
-    context.env.CONVERSATION_ID_SECRET.length === 0 ||
-    context.env.ALLOWED_ORIGIN.length === 0
-  ) {
-    return apiError(context, new ApiError(500, "api_not_configured", "The API is not configured."));
+  const missingBindings = missingRequiredApiBindings(context.env);
+  if (missingBindings.length > 0) {
+    return apiError(
+      context,
+      new ApiError(
+        500,
+        "api_not_configured",
+        "The API is not configured.",
+        {},
+        new Error(`Required Worker bindings are missing: ${missingBindings.join(", ")}.`),
+        {
+          component: "worker_configuration",
+          missingBindings: missingBindings.join(","),
+        },
+      ),
+    );
   }
   await next();
 });
@@ -258,16 +268,17 @@ export function apiError(
   error: ApiError,
 ): Response {
   context.set("outcome", error.code);
-  if (error.status >= 500 && error.cause !== undefined) {
-    const cause = error.cause;
-    console.error(
-      JSON.stringify({
-        kind: "conversation_http_error",
-        requestId: context.get("requestId"),
-        error: cause instanceof Error ? cause.name : "unknown_error",
-      }),
-    );
-  }
+  console.error({
+    kind: "conversation_http_error",
+    requestId: context.get("requestId"),
+    method: context.req.method,
+    path: new URL(context.req.url).pathname,
+    route: context.get("routeName"),
+    status: error.status,
+    code: error.code,
+    ...error.telemetry,
+    error: observableError(error),
+  });
   return problemResponse(error, context.get("requestId"));
 }
 
@@ -318,6 +329,49 @@ async function validateNoBody(request: Request): Promise<ApiResult<void>> {
 
 function isUuid(value: string | undefined): value is string {
   return value !== undefined && UUID_PATTERN.test(value);
+}
+
+type RequiredApiBindingName = "AGENT_CALLBACK_TOKEN" | "CONVERSATION_ID_SECRET" | "ALLOWED_ORIGIN";
+
+export function missingRequiredApiBindings(
+  env: Partial<Record<RequiredApiBindingName, unknown>>,
+): readonly string[] {
+  return [
+    requiredStringBinding("AGENT_CALLBACK_TOKEN", env.AGENT_CALLBACK_TOKEN),
+    requiredStringBinding("CONVERSATION_ID_SECRET", env.CONVERSATION_ID_SECRET),
+    requiredStringBinding("ALLOWED_ORIGIN", env.ALLOWED_ORIGIN),
+  ].filter((binding): binding is string => binding !== null);
+}
+
+function requiredStringBinding(name: string, value: unknown): string | null {
+  return typeof value !== "string" || value.length === 0 ? name : null;
+}
+
+interface ObservableError {
+  readonly name: string;
+  readonly message: string;
+  readonly stack: string | null;
+  readonly cause?: ObservableError;
+  readonly valueType?: string;
+}
+
+function observableError(value: unknown, depth = 0): ObservableError {
+  if (!(value instanceof Error)) {
+    return {
+      name: "NonErrorThrown",
+      message: "A non-Error value was thrown.",
+      stack: null,
+      valueType: value === null ? "null" : typeof value,
+    };
+  }
+
+  const observed: ObservableError = {
+    name: value.name,
+    message: value.message,
+    stack: value.stack ?? null,
+  };
+  if (depth >= 3 || value.cause === undefined) return observed;
+  return { ...observed, cause: observableError(value.cause, depth + 1) };
 }
 
 function parseOrigin(value: string): URL | null {

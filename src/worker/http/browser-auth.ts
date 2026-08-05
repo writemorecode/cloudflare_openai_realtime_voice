@@ -50,6 +50,14 @@ interface AttemptRow {
   readonly attempts: number;
 }
 
+type AuthenticationOperation =
+  | "login"
+  | "logout"
+  | "authenticate_session"
+  | "hash_password"
+  | "verify_password"
+  | "read_login_request_body";
+
 export async function login(
   request: Request,
   database: D1Database,
@@ -72,11 +80,18 @@ export async function login(
         attempt.attempts >= MAX_LOGIN_ATTEMPTS
       ) {
         return Result.err(
-          new ApiError(429, "login_rate_limited", "Too many login attempts. Try again later.", {
-            "Retry-After": String(
-              Math.ceil((LOGIN_WINDOW_MS - (now - attempt.window_started_at)) / 1_000),
-            ),
-          }),
+          new ApiError(
+            429,
+            "login_rate_limited",
+            "Too many login attempts. Try again later.",
+            {
+              "Retry-After": String(
+                Math.ceil((LOGIN_WINDOW_MS - (now - attempt.window_started_at)) / 1_000),
+              ),
+            },
+            undefined,
+            authenticationTelemetry("login"),
+          ),
         );
       }
 
@@ -121,7 +136,7 @@ export async function login(
         ),
       );
     },
-    catch: authenticationOperationFailed,
+    catch: (cause) => authenticationOperationFailed("login", cause),
   });
   return operation.isOk() ? operation.value : operation;
 }
@@ -147,7 +162,7 @@ export async function logout(
         },
       });
     },
-    catch: authenticationOperationFailed,
+    catch: (cause) => authenticationOperationFailed("logout", cause),
   });
 }
 
@@ -168,7 +183,7 @@ export async function authenticateBrowserSession(
         )
         .bind(await sha256Base64Url(token), Date.now())
         .first<SessionRow>(),
-    catch: authenticationOperationFailed,
+    catch: (cause) => authenticationOperationFailed("authenticate_session", cause),
   });
   if (!row.isOk()) return row;
   return row.value === null ? Result.err(sessionUnauthorized()) : Result.ok(row.value);
@@ -186,7 +201,7 @@ export async function hashPassword(password: string): Promise<Result<string, Api
         encodeBase64Url(derived),
       ].join("$");
     },
-    catch: authenticationOperationFailed,
+    catch: (cause) => authenticationOperationFailed("hash_password", cause),
   });
 }
 
@@ -207,7 +222,7 @@ export async function verifyPassword(
   return Result.tryPromise({
     try: async () =>
       passwordDigestsEqual(await derivePassword(password, salt, iterations), expected),
-    catch: authenticationOperationFailed,
+    catch: (cause) => authenticationOperationFailed("verify_password", cause),
   });
 }
 
@@ -222,7 +237,7 @@ async function readCredentials(request: Request): Promise<Result<LoginCredential
   if (declaredLength > MAX_LOGIN_BODY_BYTES) return Result.err(loginBodyTooLarge());
   const body = await Result.tryPromise({
     try: () => request.arrayBuffer(),
-    catch: authenticationOperationFailed,
+    catch: (cause) => authenticationOperationFailed("read_login_request_body", cause),
   });
   if (!body.isOk()) return body;
   const bytes = new Uint8Array(body.value);
@@ -230,7 +245,15 @@ async function readCredentials(request: Request): Promise<Result<LoginCredential
 
   const parsed = Result.try({
     try: () => JSON.parse(decoder.decode(bytes)) as unknown,
-    catch: () => new ApiError(400, "invalid_login_request", "The login request is invalid."),
+    catch: (cause) =>
+      new ApiError(
+        400,
+        "invalid_login_request",
+        "The login request is invalid.",
+        {},
+        cause,
+        authenticationTelemetry("read_login_request_body"),
+      ),
   });
   if (!parsed.isOk()) return parsed;
   const value = parsed.value;
@@ -330,28 +353,66 @@ function decodeBase64Url(value: string): Uint8Array<ArrayBuffer> | null {
   return Uint8Array.from(atob(base64 + padding), (character) => character.charCodeAt(0));
 }
 
-function authenticationOperationFailed(cause: unknown): ApiError {
+function authenticationOperationFailed(
+  operation: AuthenticationOperation,
+  cause: unknown,
+): ApiError {
   return new ApiError(
     500,
     "authentication_operation_failed",
     "Authentication could not be completed.",
     {},
     cause,
+    authenticationTelemetry(operation),
   );
 }
 
 function invalidLoginRequest(): ApiError {
-  return new ApiError(400, "invalid_login_request", "A username and password are required.");
+  return new ApiError(
+    400,
+    "invalid_login_request",
+    "A username and password are required.",
+    {},
+    undefined,
+    authenticationTelemetry("read_login_request_body"),
+  );
 }
 
 function loginBodyTooLarge(): ApiError {
-  return new ApiError(413, "login_request_too_large", "The login request is too large.");
+  return new ApiError(
+    413,
+    "login_request_too_large",
+    "The login request is too large.",
+    {},
+    undefined,
+    authenticationTelemetry("read_login_request_body"),
+  );
 }
 
 function invalidCredentials(): ApiError {
-  return new ApiError(401, "invalid_credentials", "The username or password is incorrect.");
+  return new ApiError(
+    401,
+    "invalid_credentials",
+    "The username or password is incorrect.",
+    {},
+    undefined,
+    authenticationTelemetry("login"),
+  );
 }
 
 function sessionUnauthorized(): ApiError {
-  return new ApiError(401, "unauthorized", "A valid browser session is required.");
+  return new ApiError(
+    401,
+    "unauthorized",
+    "A valid browser session is required.",
+    {},
+    undefined,
+    authenticationTelemetry("authenticate_session"),
+  );
+}
+
+function authenticationTelemetry(
+  operation: AuthenticationOperation,
+): Readonly<Record<string, string>> {
+  return { component: "browser_auth", operation };
 }

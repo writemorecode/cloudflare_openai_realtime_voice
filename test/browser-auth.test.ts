@@ -1,7 +1,8 @@
 import { exports } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { verifyPassword } from "../src/worker/http/browser-auth";
+import { missingRequiredApiBindings } from "../src/worker/http/hono-api";
 
 const API_ORIGIN = "https://api.example.test";
 const BROWSER_ORIGIN = "http://localhost:5173";
@@ -16,7 +17,20 @@ async function login(username: string, password: string): Promise<Response> {
   );
 }
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 describe("browser authentication", () => {
+  it("reports absent configuration without dereferencing missing bindings", () => {
+    expect(
+      missingRequiredApiBindings({
+        ALLOWED_ORIGIN: BROWSER_ORIGIN,
+        CONVERSATION_ID_SECRET: "configured",
+      }),
+    ).toEqual(["AGENT_CALLBACK_TOKEN"]);
+  });
+
   it("verifies script-generated hashes without including terminal line endings", async () => {
     const encoded =
       "pbkdf2_sha256$100000$ABEiM0RVZneImaq7zN3u_w$9oIHRTR2PJCfUzwstKO7f-gw8RcJlgLsWRclYh47pLM";
@@ -46,6 +60,7 @@ describe("browser authentication", () => {
   });
 
   it("rejects invalid credentials without identifying the missing user", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const response = await login("missing-user", "incorrect-password");
     expect(response.status).toBe(401);
     expect(await response.json()).toMatchObject({
@@ -53,6 +68,50 @@ describe("browser authentication", () => {
       title: "The username or password is incorrect.",
     });
     expect(response.headers.get("Set-Cookie")).toBeNull();
+
+    expect(errorLog).toHaveBeenCalledTimes(1);
+    const entry = errorLog.mock.calls[0]?.[0];
+    expect(entry).toMatchObject({
+      kind: "conversation_http_error",
+      method: "POST",
+      path: "/v1/auth/login",
+      route: "login",
+      status: 401,
+      code: "invalid_credentials",
+      component: "browser_auth",
+      operation: "login",
+    });
+    expect(JSON.stringify(entry)).not.toContain("missing-user");
+    expect(JSON.stringify(entry)).not.toContain("incorrect-password");
+  });
+
+  it("preserves and logs the cause of a malformed login request", async () => {
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const response = await exports.default.fetch(
+      new Request(`${API_ORIGIN}/v1/auth/login`, {
+        method: "POST",
+        headers: { Origin: BROWSER_ORIGIN, "Content-Type": "application/json" },
+        body: "{",
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      code: "invalid_login_request",
+      title: "The login request is invalid.",
+    });
+    expect(errorLog).toHaveBeenCalledTimes(1);
+    expect(errorLog.mock.calls[0]?.[0]).toMatchObject({
+      kind: "conversation_http_error",
+      route: "login",
+      code: "invalid_login_request",
+      component: "browser_auth",
+      operation: "read_login_request_body",
+      error: {
+        name: "ApiError",
+        cause: { name: "SyntaxError" },
+      },
+    });
   });
 
   it("creates, validates, and revokes an opaque cookie session", async () => {

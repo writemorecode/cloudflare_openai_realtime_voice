@@ -9,6 +9,9 @@ export interface ProblemDetails {
   readonly requestId: string;
 }
 
+export type ApiErrorTelemetryValue = string | number | boolean | null;
+export type ApiErrorTelemetry = Readonly<Record<string, ApiErrorTelemetryValue>>;
+
 const ApiErrorBase = TaggedError("ApiError");
 
 export class ApiError extends ApiErrorBase<{
@@ -17,6 +20,7 @@ export class ApiError extends ApiErrorBase<{
   readonly title: string;
   readonly headers: Readonly<Record<string, string>>;
   readonly cause: unknown;
+  readonly telemetry: ApiErrorTelemetry;
   readonly message: string;
 }> {
   constructor(
@@ -25,8 +29,9 @@ export class ApiError extends ApiErrorBase<{
     title: string,
     headers: Readonly<Record<string, string>> = {},
     cause?: unknown,
+    telemetry: ApiErrorTelemetry = {},
   ) {
-    super({ status, code, title, headers, cause, message: title });
+    super({ status, code, title, headers, cause, telemetry, message: title });
   }
 }
 
