@@ -9,5 +9,25 @@
   "rules": {},
   "env": {
     "builtin": true
+  },
+
+  "jsPlugins": [
+    {
+      "name": "eslint-js",
+      "specifier": "oxlint-plugin-eslint"
+    }
+  ],
+  "rules": {
+    "eslint-js/no-restricted-syntax": [
+      "warn",
+      {
+        "selector": "ThrowStatement",
+        "message": "Do not throw exceptions. Return a Result object instead."
+      },
+      {
+        "selector": "TryStatement",
+        "message": "Do not use try-catch blocks. Handle returned Result objects explicitly."
+      }
+    ]
   }
 }
