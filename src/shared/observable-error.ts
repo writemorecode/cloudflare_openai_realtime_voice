@@ -120,11 +120,11 @@ function readString(value: object, property: string): string | null {
 }
 
 function readProperty(value: object, property: string): unknown {
-  try {
-    return Reflect.get(value, property);
-  } catch {
-    return undefined;
-  }
+  const read = Result.try({
+    try: () => Reflect.get(value, property) as unknown,
+    catch: () => undefined,
+  });
+  return read.isOk() ? read.value : undefined;
 }
 
 function isObject(value: unknown): value is object {
@@ -134,3 +134,4 @@ function isObject(value: unknown): value is object {
 function truncate(value: string, maximumLength: number): string {
   return value.length <= maximumLength ? value : `${value.slice(0, maximumLength - 1)}…`;
 }
+import { Result } from "better-result";

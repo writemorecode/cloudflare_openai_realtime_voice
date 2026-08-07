@@ -63,10 +63,11 @@ export async function createExamination(
         questionIds,
         createdAt: dependencies.clock.now(),
       }),
-    catch: examinationOperationFailed,
+    catch: examinationOperationFailed("insert_examination"),
   });
   if (!inserted.isOk()) return inserted;
-  if (!inserted.value.isOk()) return Result.err(examinationOperationFailed(inserted.value.error));
+  if (!inserted.value.isOk())
+    return Result.err(examinationFailure("insert_examination", inserted.value.error));
   return Result.ok({
     response: Response.json(inserted.value.value, { status: 201 }),
     conversationId: null,
@@ -77,7 +78,7 @@ export async function createExamination(
 export async function getExaminations(env: Env): Promise<ApiResult<ExaminationApiResult>> {
   const examinations = await Result.tryPromise({
     try: () => listExaminations(env.EXAM_DB),
-    catch: examinationOperationFailed,
+    catch: examinationOperationFailed("list_examinations"),
   });
   if (!examinations.isOk()) return examinations;
   return Result.ok({
@@ -93,7 +94,7 @@ export async function getExamination(
 ): Promise<ApiResult<ExaminationApiResult>> {
   const examination = await Result.tryPromise({
     try: () => findExamination(env.EXAM_DB, examinationId),
-    catch: examinationOperationFailed,
+    catch: examinationOperationFailed("find_examination"),
   });
   if (!examination.isOk()) return examination;
   if (examination.value === null) {
@@ -115,7 +116,7 @@ export async function createExaminationSession(
 ): Promise<ApiResult<ExaminationApiResult>> {
   const examination = await Result.tryPromise({
     try: () => findExamination(env.EXAM_DB, examinationId),
-    catch: examinationOperationFailed,
+    catch: examinationOperationFailed("find_examination_for_session"),
   });
   if (!examination.isOk()) return examination;
   if (examination.value === null) {
@@ -143,7 +144,7 @@ export async function createExaminationSession(
         conversationId,
         createdAt: dependencies.clock.now(),
       }),
-    catch: examinationOperationFailed,
+    catch: examinationOperationFailed("insert_examination_session"),
   });
   if (!session.isOk()) return session;
   if (session.value === null) {
@@ -186,7 +187,7 @@ export async function getExaminationSessions(
 ): Promise<ApiResult<ExaminationApiResult>> {
   const stored = await Result.tryPromise({
     try: () => listExaminationSessions(env.EXAM_DB, user.id),
-    catch: examinationOperationFailed,
+    catch: examinationOperationFailed("list_examination_sessions"),
   });
   if (!stored.isOk()) return stored;
   const hydrated = await Promise.all(
@@ -246,7 +247,7 @@ export async function getExaminationSessionRecording(
   const objectKey = state.value.data.artifact.r2Key;
   const head = await Result.tryPromise({
     try: () => env.RECORDINGS.head(objectKey),
-    catch: examinationOperationFailed,
+    catch: examinationOperationFailed("head_examination_recording"),
   });
   if (!head.isOk()) return head;
   if (head.value === null) {
@@ -259,7 +260,7 @@ export async function getExaminationSessionRecording(
   const object = await Result.tryPromise({
     try: () =>
       env.RECORDINGS.get(objectKey, range.value === null ? undefined : { range: range.value }),
-    catch: examinationOperationFailed,
+    catch: examinationOperationFailed("get_examination_recording"),
   });
   if (!object.isOk()) return object;
   if (object.value === null) {
@@ -300,10 +301,11 @@ export async function getAgentCurrentQuestion(
 ): Promise<ApiResult<ExaminationApiResult>> {
   const current = await Result.tryPromise({
     try: () => getCurrentExaminationQuestion(env.EXAM_DB, conversationId),
-    catch: examinationOperationFailed,
+    catch: examinationOperationFailed("get_current_examination_question"),
   });
   if (!current.isOk()) return current;
-  if (!current.value.isOk()) return Result.err(examinationOperationFailed(current.value.error));
+  if (!current.value.isOk())
+    return Result.err(examinationFailure("get_current_examination_question", current.value.error));
   if (current.value.value === null) {
     return Result.err(
       new ApiError(404, "examination_session_not_found", "Examination session not found."),
@@ -329,10 +331,13 @@ export async function completeAgentCurrentQuestion(
         ...parsed.value,
         completedAt: dependencies.clock.now(),
       }),
-    catch: examinationOperationFailed,
+    catch: examinationOperationFailed("complete_current_examination_question"),
   });
   if (!completed.isOk()) return completed;
-  if (!completed.value.isOk()) return Result.err(examinationOperationFailed(completed.value.error));
+  if (!completed.value.isOk())
+    return Result.err(
+      examinationFailure("complete_current_examination_question", completed.value.error),
+    );
   if (completed.value.value.status === "not_found") {
     return Result.err(
       new ApiError(404, "examination_session_not_found", "Examination session not found."),
@@ -365,7 +370,7 @@ async function ownedSession(
 ): Promise<ApiResult<StoredExaminationSession>> {
   const stored = await Result.tryPromise({
     try: () => findExaminationSessionById(env.EXAM_DB, examinationSessionId),
-    catch: examinationOperationFailed,
+    catch: examinationOperationFailed("find_owned_examination_session"),
   });
   if (!stored.isOk()) return stored;
   if (stored.value === null || stored.value.userId !== user.id) {
@@ -395,11 +400,11 @@ async function initializeConversation(
             value.unixMillis(dependencies.clock.now()),
           ),
       ),
-    catch: examinationOperationFailed,
+    catch: examinationOperationFailed("initialize_conversation"),
   });
   if (!initialized.isOk()) return initialized;
   if (!initialized.value.isOk())
-    return Result.err(examinationOperationFailed(initialized.value.error));
+    return Result.err(examinationFailure("initialize_conversation", initialized.value.error));
   if (initialized.value.value.status === "rejected") {
     return Result.err(
       new ApiError(409, "conversation_identity_conflict", "Conversation identity conflict."),
@@ -435,12 +440,12 @@ async function readConversationState(
       deserializeResult<ConversationState | null, AggregateStoreError>(
         await dependencies.conversations.get(conversationId).getState(),
       ),
-    catch: examinationOperationFailed,
+    catch: examinationOperationFailed("read_conversation_state"),
   });
   if (!stored.isOk()) return stored;
   return stored.value.isOk()
     ? Result.ok(stored.value.value)
-    : Result.err(examinationOperationFailed(stored.value.error));
+    : Result.err(examinationFailure("read_conversation_state", stored.value.error));
 }
 
 function isRecordingAvailable(state: ConversationState): boolean {
@@ -482,7 +487,7 @@ async function readJson<T>(
   }
   const body = await Result.tryPromise({
     try: () => request.arrayBuffer(),
-    catch: examinationOperationFailed,
+    catch: examinationOperationFailed("read_examination_request_body"),
   });
   if (!body.isOk()) return body;
   if (body.value.byteLength > MAX_EXAMINATION_BODY_BYTES) {
@@ -501,13 +506,18 @@ async function readJson<T>(
     : Result.err(new ApiError(400, "invalid_examination_request", "The request body is invalid."));
 }
 
-function examinationOperationFailed(cause: unknown): ApiError {
+function examinationOperationFailed(operation: string): (cause: unknown) => ApiError {
+  return (cause) => examinationFailure(operation, cause);
+}
+
+function examinationFailure(operation: string, cause: unknown): ApiError {
   return new ApiError(
     500,
     "examination_operation_failed",
     "The examination operation could not be completed.",
     {},
     cause,
+    { component: "examination", operation },
   );
 }
 

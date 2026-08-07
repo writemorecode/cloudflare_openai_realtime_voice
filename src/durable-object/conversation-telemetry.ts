@@ -10,6 +10,7 @@ import type {
   ApplyEventResult,
   TransitionTrigger,
 } from "./conversation-session-contract";
+import { observableError, type ObservableError } from "../shared/observable-error";
 
 export interface TransitionTelemetryRecord {
   readonly kind: "conversation_transition";
@@ -43,7 +44,7 @@ export interface AlarmTelemetryRecord {
   readonly eventId: string | null;
   readonly eventType: ConversationEventType | null;
   readonly outcome: AlarmOutcome;
-  readonly error: string | null;
+  readonly error: ObservableError | null;
 }
 
 export function emitTransitionTelemetry(
@@ -94,7 +95,9 @@ export function emitAlarmTelemetry(
     eventId: execution.event?.eventId ?? null,
     eventType: execution.event?.type ?? null,
     outcome: execution.outcome,
-    error: error instanceof Error ? error.name : error === null ? null : "UnknownError",
+    error: error === null ? null : observableError(error),
   };
-  console.log(JSON.stringify(record));
+  const serialized = JSON.stringify(record);
+  if (execution.outcome === "failed") console.error(serialized);
+  else console.log(serialized);
 }

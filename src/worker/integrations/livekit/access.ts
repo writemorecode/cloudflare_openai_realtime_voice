@@ -15,6 +15,7 @@ import type {
   AggregateStoreError,
   AggregateStoreResult,
 } from "../../../durable-object/conversation-aggregate-store";
+import { observableError } from "../../../shared/observable-error";
 import { ApiError } from "../../http/api-errors";
 import type {
   LiveKitAccessDependencies,
@@ -399,7 +400,9 @@ function logLiveKitFailure(kind: string, conversationId: string, error: ApiError
     JSON.stringify({
       kind,
       conversationId,
-      error: error.cause instanceof Error ? error.cause.name : error.name,
+      operation:
+        kind === "livekit_access_failed" ? "provision_livekit_access" : "stop_livekit_resources",
+      error: observableError(error),
     }),
   );
 }

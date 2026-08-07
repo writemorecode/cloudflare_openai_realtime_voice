@@ -1,6 +1,7 @@
 /** Processes retryable queue messages that clean up provisioned LiveKit conversation resources. */
 import { ApiError } from "../../http/api-errors";
 import { Result } from "better-result";
+import { observableError } from "../../../shared/observable-error";
 import {
   isLiveKitShutdownMessage,
   type LiveKitShutdownMessage,
@@ -70,7 +71,6 @@ export async function handleLiveKitShutdownBatch(
 }
 
 function retryMessage(message: Message<LiveKitShutdownMessage>, error: unknown): void {
-  const cause = error instanceof ApiError && error.cause !== undefined ? error.cause : error;
   const delaySeconds = Math.min(
     MAX_RETRY_DELAY_SECONDS,
     2 ** Math.max(0, message.attempts - 1) * 5,
@@ -82,7 +82,8 @@ function retryMessage(message: Message<LiveKitShutdownMessage>, error: unknown):
       conversationId: message.body.conversationId,
       attempt: message.attempts,
       delaySeconds,
-      error: cause instanceof Error ? cause.name : "unknown_error",
+      operation: "stop_livekit_resources",
+      error: observableError(error),
     }),
   );
   message.retry({ delaySeconds });

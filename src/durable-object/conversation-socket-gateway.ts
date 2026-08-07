@@ -21,6 +21,7 @@ import {
   type ServerWireMessage,
 } from "@ai-oral-exam/conversation-contract";
 import { toConversationStateDto } from "../worker/http/conversation-state-dto";
+import { observableError } from "../shared/observable-error";
 import type { AggregateStoreResult } from "./conversation-aggregate-store";
 import type { ApplyEventCommand, ApplyEventResult } from "./conversation-session-contract";
 import { Result } from "better-result";
@@ -126,7 +127,9 @@ export class ConversationSocketGateway {
           kind: "conversation_websocket_error",
           sessionId: this.ctx.id.name ?? null,
           messageType: message[1],
-          error: error instanceof Error ? error.name : "UnknownError",
+          messageId: message[2],
+          operation: "handle_browser_message",
+          error: observableError(error),
         }),
       );
       const state = this.stateOrNull();
@@ -155,7 +158,8 @@ export class ConversationSocketGateway {
       JSON.stringify({
         kind: "conversation_websocket_error",
         sessionId: this.ctx.id.name ?? null,
-        error: error instanceof Error ? error.name : "UnknownError",
+        operation: "websocket_event",
+        error: observableError(error),
       }),
     );
   }
@@ -176,7 +180,8 @@ export class ConversationSocketGateway {
             kind: "conversation_snapshot_broadcast_failed",
             sessionId: this.ctx.id.name ?? null,
             revision: state.revision,
-            error: error instanceof Error ? error.name : "UnknownError",
+            operation: "broadcast_state_snapshot",
+            error: observableError(error),
           }),
         );
         ws.close(1011, "Snapshot delivery failed");
