@@ -123,6 +123,8 @@ package.
   adapter outside the Durable Object transaction.
 - Receives time, identifiers, Durable Object lookup, R2 lookup, webhook verification, and LiveKit
   control through explicit ports assembled by the Worker entrypoint.
+- Returns sanitized problem details to clients while emitting bounded structured error cause chains,
+  operation names, request IDs, and available conversation correlation to Worker observability.
 - Does not proxy, decode, resample, or persist live audio.
 
 ### Conversation Durable Object
@@ -135,6 +137,8 @@ package.
 - Returns explicit `Result` values for reducer, snapshot, aggregate-storage, and alarm failures.
   Failed alarm work is logged and explicitly rescheduled rather than retried through a thrown
   handler exception.
+- Emits bounded structured error cause chains for alarm, WebSocket, and shutdown failures without
+  copying arbitrary request, provider, or credential-bearing objects into logs.
 - Stores internal provider identifiers only when needed for correlation; public DTOs remain
   provider-neutral and sanitized.
 - Does not call OpenAI or process media.

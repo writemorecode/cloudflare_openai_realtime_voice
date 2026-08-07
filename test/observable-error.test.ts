@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { observableError } from "../src/shared/observable-error";
+import { ApiError } from "../src/worker/http/api-errors";
 
 describe("observableError", () => {
   it("preserves native and structured cause details", () => {
@@ -10,12 +11,19 @@ describe("observableError", () => {
       message: "Unable to complete the examination question.",
       cause: underlying,
     };
-    const apiError = new Error("The examination operation could not be completed.", {
-      cause: repositoryError,
-    });
+    const apiError = new ApiError(
+      500,
+      "examination_operation_failed",
+      "The examination operation could not be completed.",
+      {},
+      repositoryError,
+      { operation: "complete_current_examination_question" },
+    );
 
     expect(observableError(apiError)).toMatchObject({
-      name: "Error",
+      name: "ApiError",
+      code: "examination_operation_failed",
+      status: 500,
       message: "The examination operation could not be completed.",
       cause: {
         name: "StructuredError",
