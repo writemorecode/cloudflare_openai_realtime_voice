@@ -1,1 +1,5 @@
+# The browser origin used by Vite during local development. This overrides the
+# deployed Worker origin in wrangler.jsonc; do not use it for production.
+ALLOWED_ORIGIN="http://localhost:5173/"
+
 CONVERSATION_ID_SECRET="replace-with-a-separate-development-secret"

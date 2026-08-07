@@ -38,6 +38,7 @@ pnpm auth:change-password -- --remote oral-exam-auth <username>
 For local development, apply the migration and create a separate local user:
 
 ```sh
+cp .dev.vars.example .dev.vars # if you do not already have a local secrets file
 pnpm exec wrangler d1 migrations apply oral-exam-auth --local
 pnpm exec wrangler d1 migrations apply EXAM_DB --local
 pnpm auth:create-user -- --local oral-exam-auth <username>
@@ -47,7 +48,9 @@ pnpm dev
 ```
 
 Vite proxies `/v1` and its WebSocket upgrades to Wrangler on port 8787. No browser-readable
-`VITE_*` credential is required.
+`VITE_*` credential is required. The browser request has origin `http://localhost:5173`, so
+`.dev.vars` must set `ALLOWED_ORIGIN="http://localhost:5173/"`. This local override keeps the
+deployed Worker restricted to its configured public origin.
 
 ## Session security
 

@@ -86,6 +86,7 @@
     {
       "bucket_name": "oral-exam-recordings-dev",
       "binding": "RECORDINGS",
+      "remote": true,
     },
   ],
 }
