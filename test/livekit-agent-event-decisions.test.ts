@@ -67,7 +67,7 @@ function live(): LiveState {
 
 function decoded(type: AgentEvent["type"], transportEpoch = 1): AgentEvent {
   const result = decodeAgentEvent(JSON.stringify(event(type, transportEpoch)));
-  if (!result.isOk()) throw new Error(`expected decoded event: ${result.error.code}`);
+  if (!result.isOk()) expect.fail(`expected decoded event: ${result.error.code}`);
   return result.value;
 }
 

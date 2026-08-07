@@ -12,7 +12,7 @@ import {
 } from "./auth-user-utils.mjs";
 
 test("parses pnpm separators and explicit D1 location", () => {
-  assert.deepEqual(parseUserArguments(["--", "--local", "custom-auth", "examiner"]), {
+  assert.deepEqual(parseUserArguments(["--", "--local", "custom-auth", "examiner"]).value, {
     location: "--local",
     database: "custom-auth",
     username: "examiner",
@@ -20,7 +20,7 @@ test("parses pnpm separators and explicit D1 location", () => {
 });
 
 test("defaults to the remote oral-exam database", () => {
-  assert.deepEqual(parseUserArguments(["examiner"]), {
+  assert.deepEqual(parseUserArguments(["examiner"]).value, {
     location: "--remote",
     database: "oral-exam-auth",
     username: "examiner",
@@ -28,13 +28,14 @@ test("defaults to the remote oral-exam database", () => {
 });
 
 test("rejects extra arguments", () => {
-  assert.throws(() => parseUserArguments(["database", "username", "extra"]));
+  assert.equal(parseUserArguments(["database", "username", "extra"]).isErr(), true);
 });
 
 test("creates a verifiable salted password hash", async () => {
   const password = "correct horse battery staple";
   const encoded = await hashPassword(password);
-  const [scheme, iterations, salt, expected] = encoded.split("$");
+  assert.equal(encoded.isOk(), true);
+  const [scheme, iterations, salt, expected] = encoded.value.split("$");
   assert.equal(scheme, "pbkdf2_sha256");
   assert.equal(iterations, "100000");
   const actual = await promisify(pbkdf2)(

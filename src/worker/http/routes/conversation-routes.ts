@@ -73,11 +73,14 @@ export function createConversationRoutes() {
     requireBrowserOrigin,
     requireBrowserSession,
     requireEmptyBody,
-    async (context) =>
-      respond(
+    async (context) => {
+      const conversationId = getConversationId(context);
+      if (!conversationId.isOk()) return respond(context, Result.err(conversationId.error));
+      return respond(
         context,
-        await startConversation(getConversationId(context), context.get("dependencies")),
-      ),
+        await startConversation(conversationId.value, context.get("dependencies")),
+      );
+    },
   );
   app.all(
     "/:conversationId/start",
@@ -93,11 +96,14 @@ export function createConversationRoutes() {
     conversationIdParam,
     requireBrowserSession,
     requireEmptyBody,
-    async (context) =>
-      respond(
+    async (context) => {
+      const conversationId = getConversationId(context);
+      if (!conversationId.isOk()) return respond(context, Result.err(conversationId.error));
+      return respond(
         context,
-        await getConversationState(getConversationId(context), context.get("dependencies")),
-      ),
+        await getConversationState(conversationId.value, context.get("dependencies")),
+      );
+    },
   );
   app.all(
     "/:conversationId/state",
@@ -114,15 +120,18 @@ export function createConversationRoutes() {
     requireBrowserOrigin,
     requireBrowserSession,
     requireEmptyBody,
-    async (context) =>
-      respond(
+    async (context) => {
+      const conversationId = getConversationId(context);
+      if (!conversationId.isOk()) return respond(context, Result.err(conversationId.error));
+      return respond(
         context,
         await connectConversation(
           context.req.raw,
-          getConversationId(context),
+          conversationId.value,
           context.get("dependencies"),
         ),
-      ),
+      );
+    },
   );
   app.all(
     "/:conversationId/connect",
@@ -143,15 +152,14 @@ export function createConversationRoutes() {
     requireBrowserOrigin,
     requireBrowserSession,
     requireEmptyBody,
-    async (context) =>
-      respond(
+    async (context) => {
+      const conversationId = getConversationId(context);
+      if (!conversationId.isOk()) return respond(context, Result.err(conversationId.error));
+      return respond(
         context,
-        await provideLiveKitAccess(
-          context.env,
-          getConversationId(context),
-          context.get("dependencies"),
-        ),
-      ),
+        await provideLiveKitAccess(context.env, conversationId.value, context.get("dependencies")),
+      );
+    },
   );
   app.delete(
     "/:conversationId/livekit-access",
@@ -160,15 +168,14 @@ export function createConversationRoutes() {
     requireBrowserOrigin,
     requireBrowserSession,
     requireEmptyBody,
-    async (context) =>
-      respond(
+    async (context) => {
+      const conversationId = getConversationId(context);
+      if (!conversationId.isOk()) return respond(context, Result.err(conversationId.error));
+      return respond(
         context,
-        await releaseLiveKitAccess(
-          context.env,
-          getConversationId(context),
-          context.get("dependencies"),
-        ),
-      ),
+        await releaseLiveKitAccess(context.env, conversationId.value, context.get("dependencies")),
+      );
+    },
   );
   app.all(
     "/:conversationId/livekit-access",

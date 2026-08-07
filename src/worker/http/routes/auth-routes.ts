@@ -55,18 +55,21 @@ export function createAuthRoutes() {
     namedRoute("auth_session"),
     requireBrowserSession,
     requireEmptyBody,
-    (context) =>
-      respond(
+    (context) => {
+      const user = currentUser(context);
+      if (!user.isOk()) return respond(context, Result.err(user.error));
+      return respond(
         context,
         Result.ok({
           response: Response.json(
-            { username: currentUser(context).username },
+            { username: user.value.username },
             { headers: { "Cache-Control": "no-store" } },
           ),
           conversationId: null,
           outcome: "session_returned",
         }),
-      ),
+      );
+    },
   );
   app.all("/session", namedRoute("auth_session"), ...methodNotAllowed(["GET"]));
 

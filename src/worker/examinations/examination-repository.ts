@@ -7,6 +7,7 @@ import {
   type ExaminationSummary,
   type QuestionDisposition,
 } from "@ai-oral-exam/conversation-contract";
+import { Result } from "better-result";
 
 interface ExaminationRow {
   readonly id: string;
@@ -44,6 +45,12 @@ interface CurrentQuestionRow extends SessionRow {
 
 interface CompletionRow {
   readonly question_id: string;
+}
+
+export interface ExaminationRepositoryError {
+  readonly code: "missing_question_id" | "missing_current_question" | "database_operation_failed";
+  readonly message: string;
+  readonly cause?: unknown;
 }
 
 const CURRENT_QUESTION_SQL = `SELECT s.id, s.examination_id, e.name AS examination_name, e.subject,
@@ -88,7 +95,19 @@ export interface CreateExaminationInput {
 export async function insertExamination(
   database: D1Database,
   input: CreateExaminationInput,
-): Promise<Examination> {
+): Promise<Result<Examination, ExaminationRepositoryError>> {
+  const questions: Array<{ readonly id: string; readonly ordinal: number; readonly text: string }> =
+    [];
+  for (const [index, text] of input.request.questions.entries()) {
+    const id = input.questionIds[index];
+    if (id === undefined) {
+      return Result.err({
+        code: "missing_question_id",
+        message: "A question identifier is missing.",
+      });
+    }
+    questions.push({ id, ordinal: index + 1, text });
+  }
   const statements = [
     database
       .prepare(
@@ -96,28 +115,24 @@ export async function insertExamination(
          VALUES (?, ?, ?, ?, ?)`,
       )
       .bind(input.id, input.userId, input.request.name, input.request.subject, input.createdAt),
-    ...input.request.questions.map((text, index) =>
+    ...questions.map((question) =>
       database
         .prepare(
           `INSERT INTO examination_questions (id, examination_id, ordinal, text)
            VALUES (?, ?, ?, ?)`,
         )
-        .bind(requiredQuestionId(input.questionIds, index), input.id, index + 1, text),
+        .bind(question.id, input.id, question.ordinal, question.text),
     ),
   ];
   await database.batch(statements);
-  return {
+  return Result.ok({
     id: input.id,
     name: input.request.name,
     subject: input.request.subject,
     questionCount: input.request.questions.length,
     createdAt: input.createdAt,
-    questions: input.request.questions.map((text, index) => ({
-      id: requiredQuestionId(input.questionIds, index),
-      ordinal: index + 1,
-      text,
-    })),
-  };
+    questions,
+  });
 }
 
 export async function listExaminations(database: D1Database): Promise<ExaminationSummary[]> {
@@ -208,13 +223,20 @@ export async function listExaminationSessions(
 export async function getCurrentExaminationQuestion(
   database: D1Database,
   conversationId: string,
-): Promise<CurrentExaminationQuestion | null> {
+): Promise<Result<CurrentExaminationQuestion | null, ExaminationRepositoryError>> {
   const row = await database
     .prepare(CURRENT_QUESTION_SQL)
     .bind(conversationId)
     .first<CurrentQuestionRow>();
-  return row === null ? null : currentQuestion(row);
+  if (row === null) return Result.ok(null);
+  return currentQuestion(row);
 }
+
+type CompletedExaminationQuestion =
+  | { readonly status: "advanced"; readonly current: CurrentExaminationQuestion }
+  | { readonly status: "already_applied"; readonly current: CurrentExaminationQuestion }
+  | { readonly status: "not_found" }
+  | { readonly status: "conflict" };
 
 export async function completeExaminationQuestion(
   database: D1Database,
@@ -225,17 +247,12 @@ export async function completeExaminationQuestion(
     readonly disposition: QuestionDisposition;
     readonly completedAt: number;
   },
-): Promise<
-  | { readonly status: "advanced"; readonly current: CurrentExaminationQuestion }
-  | { readonly status: "already_applied"; readonly current: CurrentExaminationQuestion }
-  | { readonly status: "not_found" }
-  | { readonly status: "conflict" }
-> {
+): Promise<Result<CompletedExaminationQuestion, ExaminationRepositoryError>> {
   const row = await database
     .prepare(CURRENT_QUESTION_SQL)
     .bind(input.conversationId)
     .first<CurrentQuestionRow>();
-  if (row === null) return { status: "not_found" };
+  if (row === null) return Result.ok({ status: "not_found" });
 
   const previous = await database
     .prepare(
@@ -246,47 +263,53 @@ export async function completeExaminationQuestion(
     .bind(row.id, input.questionId)
     .first<CompletionRow>();
   if (previous !== null) {
-    return { status: "already_applied", current: currentQuestion(row) };
+    const current = currentQuestion(row);
+    return current.isOk()
+      ? Result.ok({ status: "already_applied", current: current.value })
+      : current;
   }
   if (
     row.question_state !== "in_progress" ||
     row.question_id !== input.questionId ||
     row.question_revision !== input.expectedRevision
   ) {
-    return { status: "conflict" };
+    return Result.ok({ status: "conflict" });
   }
 
   const finalQuestion = row.current_question_ordinal >= row.question_count;
-  try {
-    await database.batch([
-      database
-        .prepare(
-          `UPDATE examination_sessions
+  const batchResult = await Result.tryPromise({
+    try: () =>
+      database.batch([
+        database
+          .prepare(
+            `UPDATE examination_sessions
            SET question_state = ?,
                current_question_ordinal = ?,
                question_revision = question_revision + 1,
                questions_completed_at = ?
            WHERE id = ? AND question_state = 'in_progress'
              AND current_question_ordinal = ? AND question_revision = ?`,
-        )
-        .bind(
-          finalQuestion ? "complete" : "in_progress",
-          finalQuestion ? row.current_question_ordinal : row.current_question_ordinal + 1,
-          finalQuestion ? input.completedAt : null,
-          row.id,
-          row.current_question_ordinal,
-          row.question_revision,
-        ),
-      database
-        .prepare(
-          `INSERT INTO examination_question_completions (
+          )
+          .bind(
+            finalQuestion ? "complete" : "in_progress",
+            finalQuestion ? row.current_question_ordinal : row.current_question_ordinal + 1,
+            finalQuestion ? input.completedAt : null,
+            row.id,
+            row.current_question_ordinal,
+            row.question_revision,
+          ),
+        database
+          .prepare(
+            `INSERT INTO examination_question_completions (
              session_id, question_id, disposition, completed_at
            )
            VALUES (?, ?, ?, ?)`,
-        )
-        .bind(row.id, input.questionId, input.disposition, input.completedAt),
-    ]);
-  } catch (cause) {
+          )
+          .bind(row.id, input.questionId, input.disposition, input.completedAt),
+      ]),
+    catch: (cause) => cause,
+  });
+  if (batchResult.isErr()) {
     const repeated = await database
       .prepare(
         `SELECT question_id
@@ -295,21 +318,31 @@ export async function completeExaminationQuestion(
       )
       .bind(row.id, input.questionId)
       .first<CompletionRow>();
-    if (repeated === null) throw cause;
+    if (repeated === null) {
+      return Result.err({
+        code: "database_operation_failed",
+        message: "Unable to complete the examination question.",
+        cause: batchResult.error,
+      });
+    }
     const latest = await database
       .prepare(CURRENT_QUESTION_SQL)
       .bind(input.conversationId)
       .first<CurrentQuestionRow>();
-    if (latest === null) return { status: "not_found" };
-    return { status: "already_applied", current: currentQuestion(latest) };
+    if (latest === null) return Result.ok({ status: "not_found" });
+    const current = currentQuestion(latest);
+    return current.isOk()
+      ? Result.ok({ status: "already_applied", current: current.value })
+      : current;
   }
 
   const latest = await database
     .prepare(CURRENT_QUESTION_SQL)
     .bind(input.conversationId)
     .first<CurrentQuestionRow>();
-  if (latest === null) return { status: "not_found" };
-  return { status: "advanced", current: currentQuestion(latest) };
+  if (latest === null) return Result.ok({ status: "not_found" });
+  const current = currentQuestion(latest);
+  return current.isOk() ? Result.ok({ status: "advanced", current: current.value }) : current;
 }
 
 export function publicExaminationSession(
@@ -383,7 +416,9 @@ function storedSession(row: SessionRow): StoredExaminationSession {
   };
 }
 
-function currentQuestion(row: CurrentQuestionRow): CurrentExaminationQuestion {
+function currentQuestion(
+  row: CurrentQuestionRow,
+): Result<CurrentExaminationQuestion, ExaminationRepositoryError> {
   const base = {
     examinationSessionId: row.id,
     examinationName: row.examination_name,
@@ -392,12 +427,15 @@ function currentQuestion(row: CurrentQuestionRow): CurrentExaminationQuestion {
     revision: row.question_revision,
   };
   if (row.question_state === "complete") {
-    return { status: "complete", ...base };
+    return Result.ok({ status: "complete", ...base });
   }
   if (row.question_id === null || row.question_text === null) {
-    throw new Error("The current examination question is missing.");
+    return Result.err({
+      code: "missing_current_question",
+      message: "The current examination question is missing.",
+    });
   }
-  return {
+  return Result.ok({
     status: "question",
     ...base,
     question: {
@@ -405,11 +443,5 @@ function currentQuestion(row: CurrentQuestionRow): CurrentExaminationQuestion {
       ordinal: row.current_question_ordinal,
       text: row.question_text,
     },
-  };
-}
-
-function requiredQuestionId(questionIds: readonly string[], index: number): string {
-  const questionId = questionIds[index];
-  if (questionId === undefined) throw new Error("A question identifier is missing.");
-  return questionId;
+  });
 }

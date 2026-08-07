@@ -11,16 +11,17 @@ const conversationId = "e570d451-98dc-4ba8-867b-735c652114b7";
 
 describe("parseDispatchMetadata", () => {
   it("accepts versioned, correlated dispatch metadata", () => {
-    expect(
-      parseDispatchMetadata(
-        JSON.stringify({
-          version: 1,
-          conversationId,
-          roomName: `conversation-${conversationId}`,
-          transportEpoch: 1,
-        }),
-      ),
-    ).toEqual({
+    const result = parseDispatchMetadata(
+      JSON.stringify({
+        version: 1,
+        conversationId,
+        roomName: `conversation-${conversationId}`,
+        transportEpoch: 1,
+      }),
+    );
+    expect(result.isOk()).toBe(true);
+    if (!result.isOk()) return;
+    expect(result.value).toEqual({
       version: 1,
       conversationId,
       roomName: `conversation-${conversationId}`,
@@ -67,7 +68,10 @@ describe("parseDispatchMetadata", () => {
       }),
     ],
   ])("rejects %s", (_label, metadata) => {
-    expect(() => parseDispatchMetadata(metadata)).toThrow("Invalid agent dispatch metadata");
+    expect(parseDispatchMetadata(metadata)).toMatchObject({
+      status: "error",
+      error: { code: "invalid_metadata", message: "Invalid agent dispatch metadata" },
+    });
   });
 
   it("creates explicit local-only synthetic metadata", () => {
@@ -87,26 +91,30 @@ describe("dispatchMetadataForJob", () => {
   });
 
   it("validates against the assigned job room before the RTC room is connected", () => {
-    expect(
-      dispatchMetadataForJob(
-        {
-          isFakeJob: false,
-          job: {
-            metadata: serializedMetadata,
-            room: { name: `conversation-${conversationId}` },
-          },
-          room: { name: "" },
+    const result = dispatchMetadataForJob(
+      {
+        isFakeJob: false,
+        job: {
+          metadata: serializedMetadata,
+          room: { name: `conversation-${conversationId}` },
         },
-        false,
-      ),
-    ).toMatchObject({ conversationId, roomName: `conversation-${conversationId}` });
+        room: { name: "" },
+      },
+      false,
+    );
+    expect(result.isOk()).toBe(true);
+    if (!result.isOk()) return;
+    expect(result.value).toMatchObject({
+      conversationId,
+      roomName: `conversation-${conversationId}`,
+    });
   });
 
   it.each([
     ["missing", undefined],
     ["mismatched", { name: "conversation-e74e2c1d-1b6c-47dc-bda3-af026159945d" }],
   ])("rejects a %s assigned job room", (_label, room) => {
-    expect(() =>
+    expect(
       dispatchMetadataForJob(
         {
           isFakeJob: false,
@@ -115,6 +123,12 @@ describe("dispatchMetadataForJob", () => {
         },
         false,
       ),
-    ).toThrow("Agent dispatch room does not match the assigned room");
+    ).toMatchObject({
+      status: "error",
+      error: {
+        code: "room_mismatch",
+        message: "Agent dispatch room does not match the assigned room",
+      },
+    });
   });
 });

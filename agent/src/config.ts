@@ -1,4 +1,5 @@
 /** Parses and validates the environment configuration for the long-running agent process. */
+import { Result } from "better-result";
 import { z } from "zod";
 
 export const DEFAULT_REALTIME_MODEL = "gpt-realtime-2.1";
@@ -13,58 +14,96 @@ export interface AgentRuntimeConfig {
   readonly callbackToken: string | null;
 }
 
+export interface AgentRuntimeConfigError {
+  readonly code:
+    | "missing_openai_api_key"
+    | "invalid_synthetic_metadata_flag"
+    | "invalid_control_plane_url"
+    | "invalid_callback_token"
+    | "invalid_setting";
+  readonly message: string;
+}
+
 const nonemptySecret = z.string().trim().min(1);
 const nonemptySetting = z.string().trim().min(1);
 
 export function readAgentRuntimeConfig(
   environment: Readonly<Record<string, string | undefined>>,
-): AgentRuntimeConfig {
+): Result<AgentRuntimeConfig, AgentRuntimeConfigError> {
   const openAIApiKey = nonemptySecret.safeParse(environment.OPENAI_API_KEY);
-  if (!openAIApiKey.success) throw new Error("OPENAI_API_KEY is required");
+  if (!openAIApiKey.success) {
+    return Result.err({ code: "missing_openai_api_key", message: "OPENAI_API_KEY is required" });
+  }
 
   const realtimeModel = optionalSetting(
     environment.OPENAI_REALTIME_MODEL,
     DEFAULT_REALTIME_MODEL,
     "OPENAI_REALTIME_MODEL",
   );
+  if (!realtimeModel.isOk()) return realtimeModel;
   const realtimeVoice = optionalSetting(
     environment.OPENAI_REALTIME_VOICE,
     DEFAULT_REALTIME_VOICE,
     "OPENAI_REALTIME_VOICE",
   );
+  if (!realtimeVoice.isOk()) return realtimeVoice;
 
   const syntheticFlag = environment.AGENT_ALLOW_SYNTHETIC_METADATA ?? "false";
   if (syntheticFlag !== "true" && syntheticFlag !== "false") {
-    throw new Error("AGENT_ALLOW_SYNTHETIC_METADATA must be true or false");
+    return Result.err({
+      code: "invalid_synthetic_metadata_flag",
+      message: "AGENT_ALLOW_SYNTHETIC_METADATA must be true or false",
+    });
   }
 
-  return {
+  const controlPlaneUrl = optionalUrl(environment.AGENT_CONTROL_PLANE_URL);
+  if (!controlPlaneUrl.isOk()) return controlPlaneUrl;
+  const callbackToken = optionalSecret(environment.AGENT_CALLBACK_TOKEN);
+  if (!callbackToken.isOk()) return callbackToken;
+
+  return Result.ok({
     openAIApiKey: openAIApiKey.data,
-    realtimeModel,
-    realtimeVoice,
+    realtimeModel: realtimeModel.value,
+    realtimeVoice: realtimeVoice.value,
     allowSyntheticMetadata: syntheticFlag === "true",
-    controlPlaneUrl: optionalUrl(environment.AGENT_CONTROL_PLANE_URL),
-    callbackToken: optionalSecret(environment.AGENT_CALLBACK_TOKEN),
-  };
+    controlPlaneUrl: controlPlaneUrl.value,
+    callbackToken: callbackToken.value,
+  });
 }
 
-function optionalUrl(value: string | undefined): string | null {
-  if (value === undefined) return null;
+function optionalUrl(value: string | undefined): Result<string | null, AgentRuntimeConfigError> {
+  if (value === undefined) return Result.ok(null);
   const parsed = z.url({ protocol: /^https?$/ }).safeParse(value);
-  if (!parsed.success) throw new Error("AGENT_CONTROL_PLANE_URL must be an HTTP(S) URL");
-  return parsed.data.replace(/\/$/, "");
+  if (!parsed.success) {
+    return Result.err({
+      code: "invalid_control_plane_url",
+      message: "AGENT_CONTROL_PLANE_URL must be an HTTP(S) URL",
+    });
+  }
+  return Result.ok(parsed.data.replace(/\/$/, ""));
 }
 
-function optionalSecret(value: string | undefined): string | null {
-  if (value === undefined) return null;
+function optionalSecret(value: string | undefined): Result<string | null, AgentRuntimeConfigError> {
+  if (value === undefined) return Result.ok(null);
   const parsed = nonemptySecret.safeParse(value);
-  if (!parsed.success) throw new Error("AGENT_CALLBACK_TOKEN must not be empty");
-  return parsed.data;
+  if (!parsed.success) {
+    return Result.err({
+      code: "invalid_callback_token",
+      message: "AGENT_CALLBACK_TOKEN must not be empty",
+    });
+  }
+  return Result.ok(parsed.data);
 }
 
-function optionalSetting(value: string | undefined, fallback: string, name: string): string {
-  if (value === undefined) return fallback;
+function optionalSetting(
+  value: string | undefined,
+  fallback: string,
+  name: string,
+): Result<string, AgentRuntimeConfigError> {
+  if (value === undefined) return Result.ok(fallback);
   const parsed = nonemptySetting.safeParse(value);
-  if (!parsed.success) throw new Error(`${name} must not be empty`);
-  return parsed.data;
+  if (!parsed.success) {
+    return Result.err({ code: "invalid_setting", message: `${name} must not be empty` });
+  }
+  return Result.ok(parsed.data);
 }

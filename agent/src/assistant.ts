@@ -38,9 +38,17 @@ export function createAssistant(options?: ExaminationAssistantOptions): voice.Ag
           "Start or resume the examination by loading the authoritative current fixed question. Call this once at the beginning of the session.",
         onDuplicate: "reject",
         execute: async (_arguments, context) => {
-          const current = await questionOperation(() =>
+          const currentResult = await questionOperation(() =>
             options.client.getCurrent(options.conversationId),
           );
+          if (!currentResult.isOk()) {
+            return {
+              status: "error",
+              code: currentResult.error.code,
+              message: currentResult.error.message,
+            };
+          }
+          const current = currentResult.value;
           const questionTasks = await runQuestionTaskGroup(
             examinerInstructions,
             options.client,
@@ -188,13 +196,26 @@ function createQuestionTask(
         onDuplicate: "reject",
         execute: async ({ disposition }, context) => {
           context.ctx.disallowInterruptions();
-          const next = await questionOperation(() =>
+          const nextResult = await questionOperation(() =>
             client.completeCurrent(conversationId, {
               questionId: current.question.id,
               expectedRevision: current.revision,
               disposition,
             }),
           );
+          if (!nextResult.isOk()) {
+            const failure: QuestionTaskGroupError = {
+              code: "task_group_failed",
+              message: nextResult.error.message,
+            };
+            task.complete(new QuestionTaskGroupFailure(failure));
+            return {
+              status: "error",
+              code: failure.code,
+              message: failure.message,
+            };
+          }
+          const next = nextResult.value;
           task.complete(next);
           return next;
         },
@@ -240,17 +261,31 @@ function questionPosition(current: CurrentExaminationQuestion): string {
     : `question ${current.question.ordinal}`;
 }
 
-async function questionOperation<T>(operation: () => Promise<T>): Promise<T> {
-  try {
-    return await operation();
-  } catch (cause) {
-    if (cause instanceof ExaminationClientError) {
-      throw new llm.ToolError(
-        "The examination question service is temporarily unavailable. Do not invent a question.",
-      );
-    }
-    throw cause;
-  }
+interface QuestionOperationError {
+  readonly code: "question_service_unavailable" | "question_operation_failed";
+  readonly message: string;
+  readonly cause?: unknown;
+}
+
+async function questionOperation<T>(
+  operation: () => Promise<T>,
+): Promise<Result<T, QuestionOperationError>> {
+  return Result.tryPromise({
+    try: operation,
+    catch: (cause): QuestionOperationError =>
+      cause instanceof ExaminationClientError
+        ? {
+            code: "question_service_unavailable",
+            message:
+              "The examination question service is temporarily unavailable. Do not invent a question.",
+            cause,
+          }
+        : {
+            code: "question_operation_failed",
+            message: "The examination question operation failed.",
+            cause,
+          },
+  });
 }
 
 function loadExaminerSystemPrompt(): string {
@@ -259,7 +294,13 @@ function loadExaminerSystemPrompt(): string {
     new URL("../examiner_agent_system_prompt.md", import.meta.url),
   ];
   for (const candidate of candidates) {
-    if (existsSync(candidate)) return readFileSync(candidate, "utf8");
+    if (existsSync(candidate)) {
+      const content = Result.try({
+        try: () => readFileSync(candidate, "utf8"),
+        catch: () => "",
+      });
+      if (content.isOk()) return content.value;
+    }
   }
-  throw new Error("examiner_agent_system_prompt.md is missing");
+  return "The examiner instructions are unavailable. Do not invent examination questions.";
 }

@@ -77,20 +77,19 @@ describe("runAgentJob", () => {
       sessionClosed: vi.fn(async () => undefined),
     };
 
-    await expect(
-      runAgentJob({
-        metadata,
-        room: {},
-        connect: async () => undefined,
-        createSession: () => {
-          const session = new TestAgentSession();
-          session.start.mockRejectedValue(new Error("provider secret detail"));
-          return session;
-        },
-        createAssistant: () => ({}),
-        reporter,
-      }),
-    ).rejects.toThrow("agent.initialization_failed");
+    const result = await runAgentJob({
+      metadata,
+      room: {},
+      connect: async () => undefined,
+      createSession: () => {
+        const session = new TestAgentSession();
+        session.start.mockRejectedValue(new Error("provider secret detail"));
+        return session;
+      },
+      createAssistant: () => ({}),
+      reporter,
+    });
+    expect(result).toMatchObject({ status: "error", error: { code: "initialization_failed" } });
 
     expect(reporter.realtimeFailed).toHaveBeenCalledWith(
       expect.objectContaining({ errorCode: "agent.initialization_failed" }),
@@ -129,19 +128,18 @@ describe("runAgentJob", () => {
       realtimeFailed: vi.fn(async () => undefined),
     };
 
-    await expect(
-      runAgentJob({
-        metadata,
-        room: {},
-        connect: async () => undefined,
-        createSession: (observer) => {
-          queueMicrotask(() => observer.failed());
-          return new TestAgentSession();
-        },
-        createAssistant: () => ({}),
-        reporter,
-      }),
-    ).rejects.toThrow("agent.initialization_failed");
+    const result = await runAgentJob({
+      metadata,
+      room: {},
+      connect: async () => undefined,
+      createSession: (observer) => {
+        queueMicrotask(() => observer.failed());
+        return new TestAgentSession();
+      },
+      createAssistant: () => ({}),
+      reporter,
+    });
+    expect(result).toMatchObject({ status: "error", error: { code: "initialization_failed" } });
 
     expect(reporter.realtimeReady).not.toHaveBeenCalled();
     expect(reporter.realtimeFailed).toHaveBeenCalledOnce();

@@ -1,4 +1,5 @@
 import { WebhookEvent } from "livekit-server-sdk";
+import { expect } from "vitest";
 
 import {
   ConversationEventType,
@@ -88,7 +89,7 @@ export class InMemoryRecordingStore implements RecordingStore {
     if (this.nextFailure !== undefined) {
       const failure = this.nextFailure;
       this.nextFailure = undefined;
-      throw failure;
+      return Promise.reject(failure);
     }
     return this.objects.get(objectKey) ?? null;
   }
@@ -111,10 +112,10 @@ export class DeterministicWebhookVerifier implements LiveKitWebhookVerifier {
     if (this.nextFailure !== undefined) {
       const failure = this.nextFailure;
       this.nextFailure = undefined;
-      throw failure;
+      return Promise.reject(failure);
     }
     if (authorization !== WEBHOOK_AUTHORIZATION) {
-      throw new Error("invalid harness webhook authorization");
+      return Promise.reject(new Error("invalid harness webhook authorization"));
     }
     return WebhookEvent.fromJsonString(rawBody, { ignoreUnknownFields: true });
   }
@@ -134,22 +135,26 @@ export class InMemoryLiveKitControl implements LiveKitControlPort {
   private egressSequence = 1;
 
   async roomExists(roomName: string): Promise<boolean> {
-    this.record({ kind: "room_exists", roomName });
+    const failure = this.record({ kind: "room_exists", roomName });
+    if (failure !== undefined) return Promise.reject(failure);
     return this.rooms.has(roomName);
   }
 
   async createRoom(roomName: string, metadata: string): Promise<void> {
-    this.record({ kind: "create_room", roomName });
+    const failure = this.record({ kind: "create_room", roomName });
+    if (failure !== undefined) return Promise.reject(failure);
     this.rooms.set(roomName, metadata);
   }
 
   async listDispatches(roomName: string): Promise<readonly LiveKitDispatchResource[]> {
-    this.record({ kind: "list_dispatches", roomName });
+    const failure = this.record({ kind: "list_dispatches", roomName });
+    if (failure !== undefined) return Promise.reject(failure);
     return [...(this.dispatches.get(roomName) ?? [])];
   }
 
   async createDispatch(roomName: string, metadata: string): Promise<LiveKitDispatchResource> {
-    this.record({ kind: "create_dispatch", roomName });
+    const failure = this.record({ kind: "create_dispatch", roomName });
+    if (failure !== undefined) return Promise.reject(failure);
     const dispatch = {
       id: `AD_${String(this.dispatchSequence++).padStart(4, "0")}`,
       agentName: "oral-exam-agent",
@@ -160,14 +165,16 @@ export class InMemoryLiveKitControl implements LiveKitControlPort {
   }
 
   async listActiveEgress(roomName: string): Promise<readonly LiveKitEgressResource[]> {
-    this.record({ kind: "list_active_egress", roomName });
+    const failure = this.record({ kind: "list_active_egress", roomName });
+    if (failure !== undefined) return Promise.reject(failure);
     return [...this.egress.values()].filter(
       (resource) => resource.roomName === roomName && resource.active,
     );
   }
 
   async startEgress(roomName: string, _objectKey: string): Promise<LiveKitEgressResource> {
-    this.record({ kind: "start_egress", roomName });
+    const failure = this.record({ kind: "start_egress", roomName });
+    if (failure !== undefined) return Promise.reject(failure);
     const resource = {
       egressId: `EG_${String(this.egressSequence++).padStart(4, "0")}`,
       active: true,
@@ -178,17 +185,20 @@ export class InMemoryLiveKitControl implements LiveKitControlPort {
   }
 
   async mintParticipantToken(roomName: string, identity: string): Promise<string> {
-    this.record({ kind: "mint_token", roomName });
+    const failure = this.record({ kind: "mint_token", roomName });
+    if (failure !== undefined) return Promise.reject(failure);
     return `harness-token:${roomName}:${identity}`;
   }
 
   async getEgress(egressId: string): Promise<LiveKitEgressResource | undefined> {
-    this.record({ kind: "get_egress", resourceId: egressId });
+    const failure = this.record({ kind: "get_egress", resourceId: egressId });
+    if (failure !== undefined) return Promise.reject(failure);
     return this.egress.get(egressId);
   }
 
   async stopEgress(egressId: string): Promise<void> {
-    this.record({ kind: "stop_egress", resourceId: egressId });
+    const failure = this.record({ kind: "stop_egress", resourceId: egressId });
+    if (failure !== undefined) return Promise.reject(failure);
     const resource = this.egress.get(egressId);
     if (resource !== undefined) this.egress.set(egressId, { ...resource, active: false });
   }
@@ -197,12 +207,14 @@ export class InMemoryLiveKitControl implements LiveKitControlPort {
     dispatchId: string,
     roomName: string,
   ): Promise<LiveKitDispatchResource | undefined> {
-    this.record({ kind: "get_dispatch", roomName, resourceId: dispatchId });
+    const failure = this.record({ kind: "get_dispatch", roomName, resourceId: dispatchId });
+    if (failure !== undefined) return Promise.reject(failure);
     return this.dispatches.get(roomName)?.find((dispatch) => dispatch.id === dispatchId);
   }
 
   async deleteDispatch(dispatchId: string, roomName: string): Promise<void> {
-    this.record({ kind: "delete_dispatch", roomName, resourceId: dispatchId });
+    const failure = this.record({ kind: "delete_dispatch", roomName, resourceId: dispatchId });
+    if (failure !== undefined) return Promise.reject(failure);
     this.dispatches.set(
       roomName,
       (this.dispatches.get(roomName) ?? []).filter((dispatch) => dispatch.id !== dispatchId),
@@ -210,7 +222,8 @@ export class InMemoryLiveKitControl implements LiveKitControlPort {
   }
 
   async deleteRoom(roomName: string): Promise<void> {
-    this.record({ kind: "delete_room", roomName });
+    const failure = this.record({ kind: "delete_room", roomName });
+    if (failure !== undefined) return Promise.reject(failure);
     this.rooms.delete(roomName);
   }
 
@@ -229,11 +242,11 @@ export class InMemoryLiveKitControl implements LiveKitControlPort {
     return [...this.egress.values()].find((resource) => resource.roomName === roomName);
   }
 
-  private record(operation: LiveKitOperation): void {
+  private record(operation: LiveKitOperation): unknown {
     this.operations.push(operation);
     const queued = this.failures.get(operation.kind);
     const failure = queued?.shift();
-    if (failure !== undefined) throw failure;
+    return failure;
   }
 }
 
@@ -279,7 +292,7 @@ export class FoundationHarness {
     const state = aggregateValue<ConversationState | null>(
       await this.dependencies.conversations.get(conversationId).getState(),
     );
-    if (state === null) throw new Error("conversation is not initialized");
+    if (state === null) expect.fail("conversation is not initialized");
     return state;
   }
 
@@ -340,7 +353,7 @@ export class FoundationHarness {
     const provisioning = await this.dependencies.conversations
       .get(conversationId)
       .getLiveKitProvisioning();
-    if (provisioning === null) throw new Error("conversation is not provisioned");
+    if (provisioning === null) expect.fail("conversation is not provisioned");
     return provisioning;
   }
 
@@ -348,7 +361,7 @@ export class FoundationHarness {
     const evidence = await this.dependencies.conversations
       .get(conversationId)
       .getLiveKitTransportEvidence();
-    if (evidence === null) throw new Error("conversation has no LiveKit transport evidence");
+    if (evidence === null) expect.fail("conversation has no LiveKit transport evidence");
     return evidence;
   }
 
@@ -526,7 +539,7 @@ export class FoundationHarness {
       }),
     );
     if (result.outcome !== "applied") {
-      throw new Error(`could not begin ending: ${result.outcome}`);
+      expect.fail(`could not begin ending: ${result.outcome}`);
     }
   }
 
@@ -544,7 +557,9 @@ async function responseJson<T>(
   expectedStatuses: readonly number[],
 ): Promise<T> {
   if (!expectedStatuses.includes(response.status)) {
-    throw new Error(`unexpected response ${response.status}: ${await response.text()}`);
+    return Promise.reject(
+      new Error(`unexpected response ${response.status}: ${await response.text()}`),
+    );
   }
   return response.json<T>();
 }
@@ -552,7 +567,9 @@ async function responseJson<T>(
 async function expectStatus(response: Promise<Response>, expectedStatus: number): Promise<void> {
   const resolved = await response;
   if (resolved.status !== expectedStatus) {
-    throw new Error(`unexpected response ${resolved.status}: ${await resolved.text()}`);
+    return Promise.reject(
+      new Error(`unexpected response ${resolved.status}: ${await resolved.text()}`),
+    );
   }
 }
 

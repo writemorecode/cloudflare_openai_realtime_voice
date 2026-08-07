@@ -23,6 +23,7 @@ import {
 import { toConversationStateDto } from "../worker/http/conversation-state-dto";
 import type { AggregateStoreResult } from "./conversation-aggregate-store";
 import type { ApplyEventCommand, ApplyEventResult } from "./conversation-session-contract";
+import { Result } from "better-result";
 
 const INTERNAL_CONVERSATION_HEADER = "X-Conversation-Id";
 const CLIENT_WEBSOCKET_TAG = "conversation-client";
@@ -114,9 +115,12 @@ export class ConversationSocketGateway {
     }
     const message = decoded.value;
 
-    try {
-      await this.handleBrowserMessage(ws, message);
-    } catch (error) {
+    const handled = await Result.tryPromise({
+      try: () => this.handleBrowserMessage(ws, message),
+      catch: (error) => error,
+    });
+    if (handled.isErr()) {
+      const error = handled.error;
       console.error(
         JSON.stringify({
           kind: "conversation_websocket_error",
@@ -158,10 +162,15 @@ export class ConversationSocketGateway {
 
   broadcastStateSnapshot(state: ConversationState): void {
     for (const ws of this.ctx.getWebSockets(CLIENT_WEBSOCKET_TAG)) {
-      try {
-        const attachment = socketAttachment(ws);
-        if (attachment.phase === "active") this.sendStateSnapshot(ws, state);
-      } catch (error) {
+      const delivered = Result.try({
+        try: () => {
+          const attachment = socketAttachment(ws);
+          if (attachment.phase === "active") this.sendStateSnapshot(ws, state);
+        },
+        catch: (error) => error,
+      });
+      if (delivered.isErr()) {
+        const error = delivered.error;
         console.warn(
           JSON.stringify({
             kind: "conversation_snapshot_broadcast_failed",

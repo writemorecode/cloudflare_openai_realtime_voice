@@ -37,11 +37,11 @@ async function apply(stub: DurableObjectStub<ConversationSession>, event: Conver
   const current = aggregateValue<
     import("../src/domain/conversation-state-machine").ConversationState | null
   >(await stub.getState());
-  if (current === null) throw new Error("missing state");
+  if (current === null) expect.fail("missing state");
   const result = aggregateValue<ApplyEventResult>(
     await stub.applyEvent({ expectedRevision: current.revision, event }),
   );
-  if (result.outcome !== "applied") throw new Error(`unexpected ${result.outcome}`);
+  if (result.outcome !== "applied") expect.fail(`unexpected ${result.outcome}`);
   return result.state;
 }
 

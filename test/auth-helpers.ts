@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { expect } from "vitest";
 
 import { SESSION_COOKIE_NAME } from "../src/worker/http/browser-auth";
 
@@ -32,7 +33,9 @@ async function createSessionCookie(): Promise<string> {
   const user = await env.AUTH_DB.prepare("SELECT id FROM users WHERE username = ?")
     .bind("examiner")
     .first<{ id: number }>();
-  if (user === null) throw new Error("test user is missing");
+  if (user === null) {
+    expect.fail("test user is missing");
+  }
   const now = Date.now();
   await env.AUTH_DB.prepare(
     "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",

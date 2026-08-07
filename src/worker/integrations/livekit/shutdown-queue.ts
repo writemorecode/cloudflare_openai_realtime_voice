@@ -1,6 +1,6 @@
 /** Processes retryable queue messages that clean up provisioned LiveKit conversation resources. */
 import { ApiError } from "../../http/api-errors";
-import type { Result } from "better-result";
+import { Result } from "better-result";
 import {
   isLiveKitShutdownMessage,
   type LiveKitShutdownMessage,
@@ -29,8 +29,16 @@ export async function handleLiveKitShutdownBatch(
         return;
       }
 
-      try {
-        const outcome = await stop(message.body.conversationId);
+      const outcomeResult = await Result.tryPromise({
+        try: () => stop(message.body.conversationId),
+        catch: (error) => error,
+      });
+      if (outcomeResult.isErr()) {
+        retryMessage(message, outcomeResult.error);
+        return;
+      }
+      {
+        const outcome = outcomeResult.value;
         if (!outcome.isOk()) {
           if (outcome.error.code === "livekit_not_provisioned") {
             console.warn(
@@ -56,8 +64,6 @@ export async function handleLiveKitShutdownBatch(
           }),
         );
         message.ack();
-      } catch (error) {
-        retryMessage(message, error);
       }
     }),
   );

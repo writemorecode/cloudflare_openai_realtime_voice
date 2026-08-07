@@ -52,7 +52,7 @@ const taskGroupHarness = vi.hoisted(() => {
         await previousTask;
         const task = taskDefinition.factory();
         const completionTool = task.toolCtx.functionTools.complete_current_examination_question;
-        if (completionTool === undefined) throw new Error("completion tool is missing");
+        if (completionTool === undefined) expect.fail("completion tool is missing");
         const result = await completionTool.execute(
           { disposition: "answered" },
           {
@@ -104,7 +104,7 @@ function resolvedSequence<T>(...values: readonly T[]) {
   const pending = [...values];
   return vi.fn(async () => {
     const next = pending.shift();
-    if (next === undefined) throw new Error("mock sequence exhausted");
+    if (next === undefined) expect.fail("mock sequence exhausted");
     return next;
   });
 }
@@ -151,7 +151,7 @@ describe("oral examination assistant", () => {
     };
     const client: ExaminationQuestionClient = {
       getCurrent: resolved(first),
-      completeCurrent: resolvedSequence(second, complete),
+      completeCurrent: resolvedSequence<CurrentExaminationQuestion>(second, complete),
     };
     const assistant = createAssistant({ client, conversationId });
 
@@ -245,7 +245,7 @@ function question(
 
 async function executeStartTool(assistant: ReturnType<typeof createAssistant>): Promise<unknown> {
   const tool = assistant.toolCtx.functionTools.get_current_examination_question;
-  if (tool === undefined) throw new Error("start tool is missing");
+  if (tool === undefined) expect.fail("start tool is missing");
   return tool.execute({}, {
     ctx: {
       session: {

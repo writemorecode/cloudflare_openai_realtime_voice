@@ -1,5 +1,6 @@
 /** Coordinates agent-session startup, Realtime lifecycle reporting, and graceful shutdown. */
 import type { AgentDispatchMetadataV1 } from "./dispatch-metadata.js";
+import { Result } from "better-result";
 import type { RealtimeLifecycleObserver } from "./model.js";
 import { lifecycleEvent, type AgentLifecycleReporter, type AgentFailureEvent } from "./reporter.js";
 
@@ -37,42 +38,54 @@ export interface RunAgentJobOptions<Room, Assistant> {
   readonly onBackgroundReportError?: (error: unknown) => void;
 }
 
+export interface AgentJobError {
+  readonly code: "initialization_failed";
+  readonly cause?: unknown;
+}
+
 export async function runAgentJob<Room, Assistant>(
   options: RunAgentJobOptions<Room, Assistant>,
-): Promise<void> {
+): Promise<Result<void, AgentJobError>> {
   const lifecycle = new AgentLifecycleCoordinator(
     options.metadata,
     options.reporter,
     options.onBackgroundReportError,
   );
   options.registerShutdownCallback?.(() => lifecycle.flush());
-  try {
-    const session = options.createSession(lifecycle.providerObserver);
-    session.on("error", (event) => lifecycle.sessionError(event));
-    session.on("close", () => lifecycle.sessionClosed());
-    await session.start({ agent: options.createAssistant(), room: options.room });
-    await options.connect();
-    await lifecycle.confirmInitialReadiness();
-    await session.generateReply({
-      instructions: options.initialReplyInstructions ?? INITIAL_GREETING_INSTRUCTIONS,
-      ...(options.requireInitialTool !== true ? {} : { toolChoice: "required" as const }),
-    });
-  } catch {
+  const startup = await Result.tryPromise({
+    try: async () => {
+      const session = options.createSession(lifecycle.providerObserver);
+      session.on("error", (event) => lifecycle.sessionError(event));
+      session.on("close", () => lifecycle.sessionClosed());
+      await session.start({ agent: options.createAssistant(), room: options.room });
+      await options.connect();
+      const readiness = await lifecycle.confirmInitialReadiness();
+      if (!readiness.isOk()) return Promise.reject(new Error(readiness.error.code));
+      await session.generateReply({
+        instructions: options.initialReplyInstructions ?? INITIAL_GREETING_INSTRUCTIONS,
+        ...(options.requireInitialTool !== true ? {} : { toolChoice: "required" as const }),
+      });
+    },
+    catch: () => undefined,
+  });
+  if (startup.isErr()) {
     const failure: AgentFailureEvent = {
       ...lifecycleEvent(options.metadata, "realtime-failed"),
       errorCode: "agent.initialization_failed",
     };
     await options.reporter.realtimeFailed(failure);
-    throw new Error(failure.errorCode);
+    return Result.err({ code: "initialization_failed", cause: startup.error });
   }
+  return Result.ok(undefined);
 }
 
 class AgentLifecycleCoordinator {
   readonly providerObserver: RealtimeLifecycleObserver;
 
-  private readonly initialReadiness: Promise<void>;
-  private resolveInitialReadiness!: () => void;
-  private rejectInitialReadiness!: (error: Error) => void;
+  private readonly initialReadiness: Promise<Result<void, { readonly code: "realtime_not_ready" }>>;
+  private resolveInitialReadiness!: (
+    result: Result<void, { readonly code: "realtime_not_ready" }>,
+  ) => void;
   private currentEpoch: number;
   private providerReady = false;
   private initialFailed = false;
@@ -87,15 +100,14 @@ class AgentLifecycleCoordinator {
     private readonly onBackgroundReportError: (error: unknown) => void = () => undefined,
   ) {
     this.currentEpoch = metadata.transportEpoch;
-    this.initialReadiness = new Promise<void>((resolve, reject) => {
+    this.initialReadiness = new Promise((resolve) => {
       this.resolveInitialReadiness = resolve;
-      this.rejectInitialReadiness = reject;
     });
     this.providerObserver = {
       ready: () => {
         if (this.providerReady || this.initialFailed) return;
         this.providerReady = true;
-        this.resolveInitialReadiness();
+        this.resolveInitialReadiness(Result.ok(undefined));
       },
       failed: () => this.failBeforeReady(),
       interrupted: () => this.providerInterrupted(),
@@ -103,11 +115,12 @@ class AgentLifecycleCoordinator {
     };
   }
 
-  async confirmInitialReadiness(): Promise<void> {
-    await this.initialReadiness;
-    if (this.initialFailed) throw new Error("agent.realtime_not_ready");
+  async confirmInitialReadiness(): Promise<Result<void, { readonly code: "realtime_not_ready" }>> {
+    const readiness = await this.initialReadiness;
+    if (!readiness.isOk()) return readiness;
     this.live = true;
     await this.reporter.realtimeReady(this.event("realtime-ready"));
+    return Result.ok(undefined);
   }
 
   sessionError(event: AgentSessionErrorEvent): void {
@@ -156,7 +169,7 @@ class AgentLifecycleCoordinator {
   private failBeforeReady(): void {
     if (this.live || this.initialFailed) return;
     this.initialFailed = true;
-    this.rejectInitialReadiness(new Error("agent.realtime_not_ready"));
+    this.resolveInitialReadiness(Result.err({ code: "realtime_not_ready" }));
   }
 
   private event(kind: string) {

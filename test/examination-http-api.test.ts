@@ -150,7 +150,7 @@ describe("examination HTTP API", () => {
       question: { ordinal: 1, text: "Question one?" },
       revision: 0,
     });
-    if (current.status !== "question") throw new Error("Expected the first question.");
+    if (current.status !== "question") expect.fail("Expected the first question.");
 
     const completionBody = {
       questionId: current.question.id,
@@ -176,7 +176,7 @@ describe("examination HTTP API", () => {
     });
     expect(await duplicate.json()).toEqual(second);
 
-    if (second.status !== "question") throw new Error("Expected the second question.");
+    if (second.status !== "question") expect.fail("Expected the second question.");
     const finished = await agentApi(`${path}/complete-question`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

@@ -1,3 +1,5 @@
+import { Result } from "better-result";
+
 import {
   completeAgentCurrentQuestion,
   createExamination,
@@ -55,16 +57,19 @@ export function createExaminationRoutes() {
     namedRoute("examinations"),
     requireBrowserOrigin,
     requireBrowserSession,
-    async (context) =>
-      respond(
+    async (context) => {
+      const user = currentUser(context);
+      if (!user.isOk()) return respond(context, Result.err(user.error));
+      return respond(
         context,
         await createExamination(
           context.req.raw,
-          currentUser(context),
+          user.value,
           context.env,
           context.get("dependencies"),
         ),
-      ),
+      );
+    },
   );
   app.all("/", namedRoute("examinations"), ...methodNotAllowed(["GET", "POST"]));
 
@@ -80,17 +85,22 @@ export function createExaminationRoutes() {
     requireBrowserOrigin,
     requireBrowserSession,
     requireEmptyBody,
-    async (context) =>
-      respond(
+    async (context) => {
+      const examinationId = getResourceId(context);
+      if (!examinationId.isOk()) return respond(context, Result.err(examinationId.error));
+      const user = currentUser(context);
+      if (!user.isOk()) return respond(context, Result.err(user.error));
+      return respond(
         context,
         await createExaminationSession(
           context.req.raw,
-          getResourceId(context),
-          currentUser(context),
+          examinationId.value,
+          user.value,
           context.env,
           context.get("dependencies"),
         ),
-      ),
+      );
+    },
   );
   app.all(
     "/:examinationId/sessions",
@@ -106,7 +116,11 @@ export function createExaminationRoutes() {
     examinationIdParam,
     requireBrowserSession,
     requireEmptyBody,
-    async (context) => respond(context, await getExamination(getResourceId(context), context.env)),
+    async (context) => {
+      const examinationId = getResourceId(context);
+      if (!examinationId.isOk()) return respond(context, Result.err(examinationId.error));
+      return respond(context, await getExamination(examinationId.value, context.env));
+    },
   );
   app.all(
     "/:examinationId",
@@ -128,15 +142,14 @@ export function createExaminationSessionRoutes() {
     namedRoute("examination_sessions"),
     requireBrowserSession,
     requireEmptyBody,
-    async (context) =>
-      respond(
+    async (context) => {
+      const user = currentUser(context);
+      if (!user.isOk()) return respond(context, Result.err(user.error));
+      return respond(
         context,
-        await getExaminationSessions(
-          currentUser(context),
-          context.env,
-          context.get("dependencies"),
-        ),
-      ),
+        await getExaminationSessions(user.value, context.env, context.get("dependencies")),
+      );
+    },
   );
   app.all("/", namedRoute("examination_sessions"), ...methodNotAllowed(["GET"]));
 
@@ -150,17 +163,23 @@ export function createExaminationSessionRoutes() {
     namedRoute("examination_recording"),
     examinationSessionIdParam,
     requireBrowserSession,
-    async (context) =>
-      respond(
+    async (context) => {
+      const examinationSessionId = getResourceId(context);
+      if (!examinationSessionId.isOk())
+        return respond(context, Result.err(examinationSessionId.error));
+      const user = currentUser(context);
+      if (!user.isOk()) return respond(context, Result.err(user.error));
+      return respond(
         context,
         await getExaminationSessionRecording(
           context.req.raw,
-          getResourceId(context),
-          currentUser(context),
+          examinationSessionId.value,
+          user.value,
           context.env,
           context.get("dependencies"),
         ),
-      ),
+      );
+    },
   );
   app.all(
     "/:examinationSessionId/recording",
@@ -176,16 +195,22 @@ export function createExaminationSessionRoutes() {
     examinationSessionIdParam,
     requireBrowserSession,
     requireEmptyBody,
-    async (context) =>
-      respond(
+    async (context) => {
+      const examinationSessionId = getResourceId(context);
+      if (!examinationSessionId.isOk())
+        return respond(context, Result.err(examinationSessionId.error));
+      const user = currentUser(context);
+      if (!user.isOk()) return respond(context, Result.err(user.error));
+      return respond(
         context,
         await getExaminationSession(
-          getResourceId(context),
-          currentUser(context),
+          examinationSessionId.value,
+          user.value,
           context.env,
           context.get("dependencies"),
         ),
-      ),
+      );
+    },
   );
   app.all(
     "/:examinationSessionId",
@@ -212,8 +237,11 @@ export function createAgentQuestionRoutes() {
     conversationIdParam,
     requireAgentBearer,
     requireEmptyBody,
-    async (context) =>
-      respond(context, await getAgentCurrentQuestion(getConversationId(context), context.env)),
+    async (context) => {
+      const conversationId = getConversationId(context);
+      if (!conversationId.isOk()) return respond(context, Result.err(conversationId.error));
+      return respond(context, await getAgentCurrentQuestion(conversationId.value, context.env));
+    },
   );
   app.all(
     "/:conversationId/current-question",
@@ -232,16 +260,19 @@ export function createAgentQuestionRoutes() {
     namedRoute("agent_complete_examination_question"),
     conversationIdParam,
     requireAgentBearer,
-    async (context) =>
-      respond(
+    async (context) => {
+      const conversationId = getConversationId(context);
+      if (!conversationId.isOk()) return respond(context, Result.err(conversationId.error));
+      return respond(
         context,
         await completeAgentCurrentQuestion(
           context.req.raw,
-          getConversationId(context),
+          conversationId.value,
           context.env,
           context.get("dependencies"),
         ),
-      ),
+      );
+    },
   );
   app.all(
     "/:conversationId/complete-question",

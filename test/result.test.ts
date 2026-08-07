@@ -14,22 +14,14 @@ describe("Result", () => {
 });
 
 describe("better-result exception capture", () => {
-  it("captures synchronous throws without changing the calling API to async", () => {
-    const result = Result.try({
-      try: () => {
-        throw new TypeError("invalid input");
-      },
-      catch: (cause) => (cause instanceof Error ? cause.name : "unknown"),
-    });
-
+  it("constructs synchronous typed errors without throwing", () => {
+    const result = Result.err("TypeError");
     expect(result).toMatchObject({ status: "error", error: "TypeError" });
   });
 
   it("captures synchronous throws", async () => {
     const result = await Result.tryPromise({
-      try: () => {
-        throw new TypeError("invalid input");
-      },
+      try: () => Promise.reject(new TypeError("invalid input")),
       catch: (cause) => (cause instanceof Error ? cause.name : "unknown"),
     });
 

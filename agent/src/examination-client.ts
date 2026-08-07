@@ -101,18 +101,18 @@ export class HttpExaminationQuestionClient implements ExaminationQuestionClient 
         signal: AbortSignal.timeout(10_000),
       }),
     );
-    if (responseResult.isErr()) {
-      throw new ExaminationClientError("request_failed", responseResult.error.cause);
-    }
+    if (responseResult.isErr())
+      return Promise.reject(
+        new ExaminationClientError("request_failed", responseResult.error.cause),
+      );
     const response = responseResult.value;
-    if (!response.ok) throw new ExaminationClientError("request_failed");
+    if (!response.ok) return Promise.reject(new ExaminationClientError("request_failed"));
 
     const bodyResult = await Result.tryPromise(() => response.json());
-    if (bodyResult.isErr()) {
-      throw new ExaminationClientError("invalid_response", bodyResult.error.cause);
-    }
+    if (bodyResult.isErr())
+      return Promise.reject(new ExaminationClientError("invalid_response", bodyResult.error.cause));
     const parsed = currentQuestionSchema.safeParse(bodyResult.value);
-    if (!parsed.success) throw new ExaminationClientError("invalid_response");
+    if (!parsed.success) return Promise.reject(new ExaminationClientError("invalid_response"));
     return parsed.data;
   }
 }

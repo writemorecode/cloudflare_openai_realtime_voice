@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { pbkdf2, randomBytes } from "node:crypto";
 import { promisify } from "node:util";
+import { Result } from "better-result";
 
 const derive = promisify(pbkdf2);
 
@@ -12,9 +13,9 @@ export function parseUserArguments(argv) {
   const username = args.shift();
 
   if (username === undefined || username.length === 0 || username.length > 64 || args.length > 0) {
-    throw new Error("invalid user command arguments");
+    return Result.err(new Error("invalid user command arguments"));
   }
-  return { location, database, username };
+  return Result.ok({ location, database, username });
 }
 
 export async function readPassword(prompt = "Password: ") {
@@ -57,13 +58,13 @@ export function stripTrailingLineEndings(value) {
 
 export async function hashPassword(password) {
   if (password.length < 12 || password.length > 256) {
-    throw new Error("Password must contain 12 to 256 characters.");
+    return Result.err(new Error("Password must contain 12 to 256 characters."));
   }
   // Keep this synchronized with PASSWORD_HASH_ITERATIONS in browser-auth.ts.
   const iterations = 100_000;
   const salt = randomBytes(16);
   const digest = await derive(password, salt, iterations, 32, "sha256");
-  return ["pbkdf2_sha256", iterations, base64Url(salt), base64Url(digest)].join("$");
+  return Result.ok(["pbkdf2_sha256", iterations, base64Url(salt), base64Url(digest)].join("$"));
 }
 
 export function quoteSql(value) {
@@ -92,14 +93,23 @@ export async function executeD1({ database, location, sql, json = false }) {
   );
   if (json) child.stdout.on("data", (chunk) => stdout.push(chunk));
 
-  const exitCode = await new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", (code) => resolve(code ?? 1));
+  const exitCode = await Result.tryPromise({
+    try: () =>
+      new Promise((resolve, reject) => {
+        child.once("error", reject);
+        child.once("exit", (code) => resolve(code ?? 1));
+      }),
+    catch: (error) => error,
   });
-  if (exitCode !== 0) throw new Error(`Wrangler exited with status ${exitCode}.`);
-  if (!json) return undefined;
+  if (!exitCode.isOk()) return exitCode;
+  if (exitCode.value !== 0)
+    return Result.err(new Error(`Wrangler exited with status ${exitCode.value}.`));
+  if (!json) return Result.ok(undefined);
 
-  return JSON.parse(Buffer.concat(stdout).toString("utf8"));
+  return Result.try({
+    try: () => JSON.parse(Buffer.concat(stdout).toString("utf8")),
+    catch: (error) => error,
+  });
 }
 
 export function firstStatementRows(output) {

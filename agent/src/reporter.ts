@@ -1,4 +1,5 @@
 /** Reports agent lifecycle observations to the authenticated Worker control-plane endpoint. */
+import { Result } from "better-result";
 import type { AgentDispatchMetadataV1 } from "./dispatch-metadata.js";
 
 export interface AgentLifecycleEvent {
@@ -82,7 +83,9 @@ export class HttpAgentLifecycleReporter implements AgentLifecycleReporter {
     event: AgentLifecycleEvent | AgentFailureEvent,
   ): Promise<void> {
     const body = JSON.stringify({ version: 1, type, ...event });
-    if (this.maxAttempts < 1) throw new Error("agent.lifecycle_report_failed:network");
+    if (this.maxAttempts < 1) {
+      return Promise.reject(new Error("agent.lifecycle_report_failed:network"));
+    }
     return this.sendAttempt(body, 1, "network");
   }
 
@@ -90,29 +93,36 @@ export class HttpAgentLifecycleReporter implements AgentLifecycleReporter {
     let nextFailureCode = failureCode;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
-    try {
-      const response = await this.fetch(this.endpoint, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.callbackToken}`,
-          "Content-Type": "application/json",
-        },
-        body,
-        signal: controller.signal,
-      });
+    const responseResult = await Result.tryPromise({
+      try: () =>
+        this.fetch(this.endpoint, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${this.callbackToken}`,
+            "Content-Type": "application/json",
+          },
+          body,
+          signal: controller.signal,
+        }),
+      catch: (error) => error,
+    });
+    if (responseResult.isOk()) {
+      const response = responseResult.value;
       if (response.ok) return;
       nextFailureCode = String(response.status);
       if (!isRetryableStatus(response.status)) {
-        throw new Error(`agent.lifecycle_report_failed:${nextFailureCode}`);
+        return Promise.reject(new Error(`agent.lifecycle_report_failed:${nextFailureCode}`));
       }
-    } catch (error) {
+    } else {
       if (controller.signal.aborted) nextFailureCode = "timeout";
-      if (isLifecycleReportFailure(error)) throw error;
-    } finally {
-      clearTimeout(timeout);
     }
+    clearTimeout(timeout);
     if (attempt >= this.maxAttempts) {
-      throw new Error(`agent.lifecycle_report_failed:${nextFailureCode}`);
+      return Promise.reject(
+        new Error(`agent.lifecycle_report_failed:${nextFailureCode}`, {
+          cause: responseResult.isErr() ? responseResult.error : undefined,
+        }),
+      );
     }
     await this.sleep(this.retryBaseDelayMs * 2 ** (attempt - 1));
     return this.sendAttempt(body, attempt + 1, nextFailureCode);
@@ -123,10 +133,6 @@ function isRetryableStatus(status: number): boolean {
   return status === 408 || status === 429 || status >= 500;
 }
 
-function isLifecycleReportFailure(error: unknown): boolean {
-  return error instanceof Error && error.message.startsWith("agent.lifecycle_report_failed:");
-}
-
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -134,13 +140,21 @@ function delay(milliseconds: number): Promise<void> {
 export function createLifecycleReporter(config: {
   readonly controlPlaneUrl: string | null;
   readonly callbackToken: string | null;
-}): AgentLifecycleReporter {
+}): Result<
+  AgentLifecycleReporter,
+  { readonly code: "reporter_not_configured"; readonly message: string }
+> {
   if (config.controlPlaneUrl === null || config.callbackToken === null) {
-    throw new Error("Agent control-plane reporting is not configured");
+    return Result.err({
+      code: "reporter_not_configured",
+      message: "Agent control-plane reporting is not configured",
+    });
   }
-  return new HttpAgentLifecycleReporter(
-    `${config.controlPlaneUrl}/v1/integrations/livekit/agent-events`,
-    config.callbackToken,
+  return Result.ok(
+    new HttpAgentLifecycleReporter(
+      `${config.controlPlaneUrl}/v1/integrations/livekit/agent-events`,
+      config.callbackToken,
+    ),
   );
 }
 

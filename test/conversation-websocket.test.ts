@@ -36,7 +36,7 @@ async function connect(conversationId: string): Promise<WebSocket> {
   );
   expect(response.status).toBe(101);
   const socket = response.webSocket;
-  if (socket === null) throw new Error("missing websocket");
+  if (socket === null) expect.fail("missing websocket");
   socket.binaryType = "arraybuffer";
   socket.accept();
   return socket;
@@ -45,7 +45,8 @@ async function connect(conversationId: string): Promise<WebSocket> {
 async function derivedConversationId(name: string): Promise<string> {
   const result = await deriveConversationId(ID_SECRET, name);
   expect(result).toMatchObject({ status: "ok" });
-  if (!result.isOk()) throw result.error;
+  if (!result.isOk())
+    expect.fail(`conversation ID derivation failed unexpectedly: ${result.error}`);
   return result.value;
 }
 
@@ -77,7 +78,7 @@ async function setup(name: string, start = false) {
 function send(socket: WebSocket, message: BrowserWireMessage): void {
   const encoded = encodeWireMessage(message);
   expect(encoded).toMatchObject({ status: "ok" });
-  if (!encoded.isOk()) throw encoded.error;
+  if (!encoded.isOk()) expect.fail(`wire encoding failed unexpectedly: ${encoded.error}`);
   socket.send(encoded.value);
 }
 
@@ -88,7 +89,8 @@ async function receive(socket: WebSocket): Promise<ServerWireMessage> {
   const data = event.data;
   if (data instanceof ArrayBuffer) {
     const decoded = decodeServerMessage(data);
-    if (!decoded.isOk()) throw decoded.error;
+    if (!decoded.isOk())
+      expect.fail(`server message decoding failed unexpectedly: ${decoded.error}`);
     return decoded.value;
   }
   if (ArrayBuffer.isView(data)) {
@@ -96,10 +98,11 @@ async function receive(socket: WebSocket): Promise<ServerWireMessage> {
     const decoded = decodeServerMessage(
       view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength) as ArrayBuffer,
     );
-    if (!decoded.isOk()) throw decoded.error;
+    if (!decoded.isOk())
+      expect.fail(`server message decoding failed unexpectedly: ${decoded.error}`);
     return decoded.value;
   }
-  throw new Error("expected binary message");
+  expect.fail("expected binary message");
 }
 
 async function hello(socket: WebSocket, conversationId: string, epoch: number) {

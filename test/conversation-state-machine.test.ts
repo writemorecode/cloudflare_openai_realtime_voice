@@ -203,7 +203,7 @@ describe("conversation aggregate transitions", () => {
       r2Etag: value.r2Etag("etag-1"),
     });
     expect(state.tag).toBe(ConversationStateTag.Ending);
-    if (state.tag !== ConversationStateTag.Ending) throw new Error("expected ending state");
+    if (state.tag !== ConversationStateTag.Ending) expect.fail("expected ending state");
     const completed = transition(state, {
       type: ConversationEventType.SessionClosed,
       eventId: "closed",

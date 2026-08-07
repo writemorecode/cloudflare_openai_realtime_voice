@@ -66,8 +66,9 @@ export async function createExamination(
     catch: examinationOperationFailed,
   });
   if (!inserted.isOk()) return inserted;
+  if (!inserted.value.isOk()) return Result.err(examinationOperationFailed(inserted.value.error));
   return Result.ok({
-    response: Response.json(inserted.value, { status: 201 }),
+    response: Response.json(inserted.value.value, { status: 201 }),
     conversationId: null,
     outcome: "examination_created",
   });
@@ -191,15 +192,14 @@ export async function getExaminationSessions(
   const hydrated = await Promise.all(
     stored.value.map((session) => hydrateSession(session, dependencies)),
   );
+  const sessions: ExaminationSession[] = [];
   for (const result of hydrated) {
     if (!result.isOk()) return result;
+    sessions.push(result.value);
   }
   return Result.ok({
     response: Response.json({
-      sessions: hydrated.map((result) => {
-        if (!result.isOk()) throw result.error;
-        return result.value;
-      }),
+      sessions,
     }),
     conversationId: null,
     outcome: "examination_sessions_returned",
@@ -303,12 +303,15 @@ export async function getAgentCurrentQuestion(
     catch: examinationOperationFailed,
   });
   if (!current.isOk()) return current;
-  if (current.value === null) {
+  if (!current.value.isOk()) return Result.err(examinationOperationFailed(current.value.error));
+  if (current.value.value === null) {
     return Result.err(
       new ApiError(404, "examination_session_not_found", "Examination session not found."),
     );
   }
-  return Result.ok(questionResult(current.value, conversationId, "current_question_returned"));
+  return Result.ok(
+    questionResult(current.value.value, conversationId, "current_question_returned"),
+  );
 }
 
 export async function completeAgentCurrentQuestion(
@@ -329,12 +332,13 @@ export async function completeAgentCurrentQuestion(
     catch: examinationOperationFailed,
   });
   if (!completed.isOk()) return completed;
-  if (completed.value.status === "not_found") {
+  if (!completed.value.isOk()) return Result.err(examinationOperationFailed(completed.value.error));
+  if (completed.value.value.status === "not_found") {
     return Result.err(
       new ApiError(404, "examination_session_not_found", "Examination session not found."),
     );
   }
-  if (completed.value.status === "conflict") {
+  if (completed.value.value.status === "conflict") {
     return Result.err(
       new ApiError(
         409,
@@ -345,9 +349,9 @@ export async function completeAgentCurrentQuestion(
   }
   return Result.ok(
     questionResult(
-      completed.value.current,
+      completed.value.value.current,
       conversationId,
-      completed.value.status === "advanced"
+      completed.value.value.status === "advanced"
         ? "examination_question_completed"
         : "examination_question_already_completed",
     ),

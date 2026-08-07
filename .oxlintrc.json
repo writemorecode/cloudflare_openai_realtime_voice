@@ -27,6 +27,10 @@
       {
         "selector": "TryStatement",
         "message": "Do not use try-catch blocks. Handle returned Result objects explicitly."
+      },
+      {
+        "selector": "CallExpression[callee.name='panic']",
+        "message": "Do not use panic. Return a Result object instead."
       }
     ]
   }

@@ -282,22 +282,35 @@ export function apiError(
   return problemResponse(error, context.get("requestId"));
 }
 
-export function currentUser(context: import("hono").Context<ApiEnvironment>): AuthenticatedUser {
+export function currentUser(
+  context: import("hono").Context<ApiEnvironment>,
+): Result<AuthenticatedUser, ApiError> {
   const user = context.get("user");
-  if (user === null) throw new Error("Authenticated route did not set the user.");
-  return user;
+  return user === null
+    ? Result.err(new ApiError(500, "internal_error", "The authenticated user was not initialized."))
+    : Result.ok(user);
 }
 
-export function getConversationId(context: import("hono").Context<ApiEnvironment>): string {
+export function getConversationId(
+  context: import("hono").Context<ApiEnvironment>,
+): Result<string, ApiError> {
   const value = context.get("conversationId");
-  if (value === null) throw new Error("Conversation route did not set its identifier.");
-  return value;
+  return value === null
+    ? Result.err(
+        new ApiError(500, "internal_error", "The conversation identifier was not initialized."),
+      )
+    : Result.ok(value);
 }
 
-export function getResourceId(context: import("hono").Context<ApiEnvironment>): string {
+export function getResourceId(
+  context: import("hono").Context<ApiEnvironment>,
+): Result<string, ApiError> {
   const value = context.get("resourceId");
-  if (value === null) throw new Error("Resource route did not set its identifier.");
-  return value;
+  return value === null
+    ? Result.err(
+        new ApiError(500, "internal_error", "The resource identifier was not initialized."),
+      )
+    : Result.ok(value);
 }
 
 export function internalError(cause: unknown): ApiError {

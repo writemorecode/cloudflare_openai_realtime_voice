@@ -43,9 +43,13 @@ describe("HttpAgentLifecycleReporter", () => {
   });
 
   it("requires callback configuration and sanitizes response failures", async () => {
-    expect(() => createLifecycleReporter({ controlPlaneUrl: null, callbackToken: null })).toThrow(
-      "Agent control-plane reporting is not configured",
-    );
+    expect(createLifecycleReporter({ controlPlaneUrl: null, callbackToken: null })).toMatchObject({
+      status: "error",
+      error: {
+        code: "reporter_not_configured",
+        message: "Agent control-plane reporting is not configured",
+      },
+    });
     const reporter = new HttpAgentLifecycleReporter(
       "https://control.example.test/v1/integrations/livekit/agent-events",
       "sensitive-token",

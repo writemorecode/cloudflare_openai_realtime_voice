@@ -6,6 +6,7 @@
  */
 import { fileURLToPath } from "node:url";
 
+import { Result } from "better-result";
 import { type JobContext, ServerOptions, cli, defineAgent, voice } from "@livekit/agents";
 import dotenv from "dotenv";
 
@@ -23,21 +24,37 @@ dotenv.config({ path: fileURLToPath(new URL("../.env.local", import.meta.url)), 
 
 export default defineAgent({
   entry: async (ctx: JobContext): Promise<void> => {
-    const config = readAgentRuntimeConfig(process.env);
-    const metadata = dispatchMetadataForJob(ctx, config.allowSyntheticMetadata);
+    const configResult = readAgentRuntimeConfig(process.env);
+    if (!configResult.isOk()) {
+      console.error(configResult.error.message);
+      return;
+    }
+    const config = configResult.value;
+    const metadataResult = dispatchMetadataForJob(ctx, config.allowSyntheticMetadata);
+    if (!metadataResult.isOk()) {
+      console.error(metadataResult.error.message);
+      return;
+    }
+    const metadata = metadataResult.value;
 
-    const reporter =
+    const reporterResult =
       ctx.isFakeJob && config.allowSyntheticMetadata
-        ? new NoopAgentLifecycleReporter()
+        ? Result.ok(new NoopAgentLifecycleReporter())
         : createLifecycleReporter(config);
+    if (!reporterResult.isOk()) {
+      console.error(reporterResult.error.message);
+      return;
+    }
+    const reporter = reporterResult.value;
     const examinationClient =
       config.controlPlaneUrl === null || config.callbackToken === null
         ? null
         : new HttpExaminationQuestionClient(config.controlPlaneUrl, config.callbackToken);
     if (!ctx.isFakeJob && examinationClient === null) {
-      throw new Error("Agent examination control-plane configuration is required");
+      console.error("Agent examination control-plane configuration is required");
+      return;
     }
-    await runAgentJob({
+    const jobResult = await runAgentJob({
       metadata,
       room: ctx.room,
       connect: async () => ctx.connect(),
@@ -61,6 +78,7 @@ export default defineAgent({
         );
       },
     });
+    if (!jobResult.isOk()) console.error(jobResult.error.code);
   },
 });
 

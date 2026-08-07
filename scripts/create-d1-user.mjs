@@ -1,3 +1,4 @@
+import { Result } from "better-result";
 import {
   executeD1,
   hashPassword,
@@ -8,12 +9,21 @@ import {
 
 const usage = "Usage: pnpm auth:create-user -- [--local|--remote] [database-name] <username>";
 
-try {
-  const { database, location, username } = parseUserArguments(process.argv.slice(2));
-  const passwordHash = await hashPassword(await readPassword());
-  const sql = `INSERT INTO users (username, password_hash, created_at) VALUES (${quoteSql(username)}, ${quoteSql(passwordHash)}, ${Date.now()});`;
-  await executeD1({ database, location, sql });
-} catch (error) {
+const result = await Result.tryPromise({
+  try: async () => {
+    const argumentsResult = parseUserArguments(process.argv.slice(2));
+    if (!argumentsResult.isOk()) return Promise.reject(argumentsResult.error);
+    const { database, location, username } = argumentsResult.value;
+    const passwordResult = await hashPassword(await readPassword());
+    if (!passwordResult.isOk()) return Promise.reject(passwordResult.error);
+    const sql = `INSERT INTO users (username, password_hash, created_at) VALUES (${quoteSql(username)}, ${quoteSql(passwordResult.value)}, ${Date.now()});`;
+    const execution = await executeD1({ database, location, sql });
+    if (!execution.isOk()) return Promise.reject(execution.error);
+  },
+  catch: (error) => error,
+});
+if (result.isErr()) {
+  const error = result.error;
   if (error instanceof Error && error.message === "invalid user command arguments") {
     console.error(usage);
   } else {

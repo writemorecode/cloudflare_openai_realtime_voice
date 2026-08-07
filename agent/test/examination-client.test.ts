@@ -41,7 +41,7 @@ describe("HttpExaminationQuestionClient", () => {
     );
 
     const current = await client.getCurrent(CONVERSATION_ID);
-    if (current.status !== "question") throw new Error("Expected a question.");
+    if (current.status !== "question") expect.fail("Expected a question.");
     const completed = await client.completeCurrent(CONVERSATION_ID, {
       questionId: current.question.id,
       expectedRevision: current.revision,

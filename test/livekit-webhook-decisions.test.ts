@@ -47,7 +47,7 @@ function decodedEgress(payload: Record<string, unknown>): DecodedEgressWebhook {
     !decoded.isOk() ||
     (decoded.value.kind !== "egress_progress" && decoded.value.kind !== "egress_ended")
   ) {
-    throw new Error("expected decoded egress webhook");
+    expect.fail("expected decoded egress webhook");
   }
   return decoded.value;
 }
@@ -55,7 +55,7 @@ function decodedEgress(payload: Record<string, unknown>): DecodedEgressWebhook {
 function decodedMedia(payload: Record<string, unknown>): DecodedMediaWebhook {
   const decoded = decodeLiveKitWebhook(webhook(payload));
   if (!decoded.isOk() || decoded.value.kind !== "media") {
-    throw new Error("expected decoded media webhook");
+    expect.fail("expected decoded media webhook");
   }
   return decoded.value;
 }

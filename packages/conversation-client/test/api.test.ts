@@ -20,9 +20,7 @@ function resolved<T>(value: T) {
 }
 
 function rejected(error: unknown) {
-  return vi.fn(async () => {
-    throw error;
-  });
+  return vi.fn(async () => Promise.reject(error));
 }
 
 describe("HttpConversationApi public contract", () => {

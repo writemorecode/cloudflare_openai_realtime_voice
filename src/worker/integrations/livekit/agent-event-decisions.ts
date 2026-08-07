@@ -59,13 +59,12 @@ export interface AgentEventDecodeError {
 }
 
 export function decodeAgentEvent(body: string): Result<AgentEvent, AgentEventDecodeError> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body) as unknown;
-  } catch (cause) {
-    return Result.err({ code: "invalid_event", cause });
-  }
-  const result = agentEventSchema.safeParse(parsed);
+  const parsed = Result.try({
+    try: () => JSON.parse(body) as unknown,
+    catch: (cause) => ({ code: "invalid_event" as const, cause }),
+  });
+  if (!parsed.isOk()) return parsed;
+  const result = agentEventSchema.safeParse(parsed.value);
   if (!result.success) return Result.err({ code: "invalid_event" });
   const event = result.data;
   if (event.roomName !== `conversation-${event.conversationId}`) {
