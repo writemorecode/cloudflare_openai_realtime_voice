@@ -4,6 +4,7 @@ import { createFactory } from "hono/factory";
 import type { RequestIdVariables } from "hono/request-id";
 
 import type { FoundationDependencies } from "../ports/foundation";
+import { observableError } from "../../shared/observable-error";
 import { ApiError, problemResponse } from "./api-errors";
 import { authenticateBearer } from "./api-security";
 import { authenticateBrowserSession, type AuthenticatedUser } from "./browser-auth";
@@ -358,33 +359,6 @@ export function missingRequiredApiBindings(
 
 function requiredStringBinding(name: string, value: unknown): string | null {
   return typeof value !== "string" || value.length === 0 ? name : null;
-}
-
-interface ObservableError {
-  readonly name: string;
-  readonly message: string;
-  readonly stack: string | null;
-  readonly cause?: ObservableError;
-  readonly valueType?: string;
-}
-
-function observableError(value: unknown, depth = 0): ObservableError {
-  if (!(value instanceof Error)) {
-    return {
-      name: "NonErrorThrown",
-      message: "A non-Error value was thrown.",
-      stack: null,
-      valueType: value === null ? "null" : typeof value,
-    };
-  }
-
-  const observed: ObservableError = {
-    name: value.name,
-    message: value.message,
-    stack: value.stack ?? null,
-  };
-  if (depth >= 3 || value.cause === undefined) return observed;
-  return { ...observed, cause: observableError(value.cause, depth + 1) };
 }
 
 function parseOrigin(value: string): URL | null {
