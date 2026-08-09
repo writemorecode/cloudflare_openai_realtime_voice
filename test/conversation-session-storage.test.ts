@@ -9,7 +9,7 @@ import {
 import { createConversation, value } from "../src/domain/conversation-state-machine";
 
 describe("conversation snapshot decoding", () => {
-  it("returns missing and supported snapshots explicitly", () => {
+  it("returns missing and current snapshots explicitly", () => {
     expect(decodeSnapshot(undefined)).toEqual({ status: "ok", value: null });
 
     const state = createConversation(
@@ -27,7 +27,7 @@ describe("conversation snapshot decoding", () => {
   it("returns an error for an unsupported schema version", () => {
     expect(
       decodeSnapshot({
-        schemaVersion: 2,
+        schemaVersion: 1,
         state: createConversation(
           value.conversationSessionId("snapshot-version"),
           value.unixMillis(1),
@@ -35,7 +35,7 @@ describe("conversation snapshot decoding", () => {
       } satisfies SnapshotEnvelope),
     ).toEqual({
       status: "error",
-      error: { kind: "unsupported_snapshot_version", schemaVersion: 2 },
+      error: { kind: "unsupported_snapshot_version", schemaVersion: 1 },
     });
   });
 });

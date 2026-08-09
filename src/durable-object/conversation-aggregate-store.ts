@@ -1,6 +1,5 @@
 import { deadlineEventForState, deadlineForState } from "../domain/conversation-deadlines";
 import {
-  ConversationEventType,
   createConversation,
   transitionRuntime,
   type ConversationSessionId,
@@ -8,10 +7,6 @@ import {
   type UnixMillis,
 } from "../domain/conversation-state-machine";
 import { Result } from "better-result";
-import {
-  LIVEKIT_SHUTDOWN_MESSAGE_VERSION,
-  type LiveKitShutdownMessage,
-} from "../shared/livekit-shutdown";
 import type {
   AlarmExecution,
   ApplyEventCommand,
@@ -20,7 +15,6 @@ import type {
   TransitionReceipt,
 } from "./conversation-session-contract";
 import {
-  LIVEKIT_SHUTDOWN_OUTBOX_KEY,
   SNAPSHOT_KEY,
   SNAPSHOT_SCHEMA_VERSION,
   decodeSnapshot,
@@ -194,13 +188,6 @@ export class ConversationAggregateStore {
     };
     await this.writeState(transaction, next);
     await transaction.put(receiptKey(command.event.eventId), appliedReceipt);
-    if (command.event.type === ConversationEventType.TimeLimitReached) {
-      await transaction.put(LIVEKIT_SHUTDOWN_OUTBOX_KEY, {
-        version: LIVEKIT_SHUTDOWN_MESSAGE_VERSION,
-        conversationId: current.data.sessionId,
-        triggerEventId: command.event.eventId,
-      } satisfies LiveKitShutdownMessage);
-    }
     await reconcileAlarm(transaction, next);
     return Result.ok({ outcome: "applied", state: next, receipt: appliedReceipt });
   }

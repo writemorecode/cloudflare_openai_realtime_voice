@@ -6,7 +6,9 @@ export type ConversationClientErrorCode =
   | "control_connection_closed"
   | "http_request_failed"
   | "invalid_response"
-  | "livekit_operation_failed"
+  | "media_operation_failed"
+  | "realtime_operation_failed"
+  | "recording_upload_failed"
   | "request_failed"
   | "shutdown_timeout"
   | "wire_protocol_error";

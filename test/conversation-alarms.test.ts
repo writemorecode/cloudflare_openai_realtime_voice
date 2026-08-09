@@ -148,14 +148,12 @@ describe("single Durable Object alarm", () => {
 
   it("moves live to ending at the duration limit", async () => {
     const deadline = Date.now() + 1_000;
-    const queuedBefore = (await env.LIVEKIT_SHUTDOWN_QUEUE.metrics()).backlogCount;
     const stub = await toLive("12345678-1234-8234-9234-123456789abc", deadline);
     await runAt(stub, deadline + 1);
     expect(aggregateValue(await stub.getState())).toMatchObject({
       tag: ConversationStateTag.Ending,
       data: { target: { kind: "complete", reason: "time_limit_reached" } },
     });
-    expect((await env.LIVEKIT_SHUTDOWN_QUEUE.metrics()).backlogCount).toBe(queuedBefore + 1);
   });
 
   it("uses the 20-second reconnect deadline before live duration", async () => {

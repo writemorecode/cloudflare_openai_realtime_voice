@@ -12,19 +12,11 @@
   },
   "vars": {
     "ALLOWED_ORIGIN": "https://oai-cf-realtime.gustav-ae-karlsson.workers.dev/",
-    "LIVEKIT_URL": "wss://ai-oral-exam-app-4bfi82y0.livekit.cloud",
-    "R2_BUCKET_NAME": "oral-exam-recordings-dev",
-    "R2_ENDPOINT": "https://017227baf7a62fd2323cc61950f5d57e.r2.cloudflarestorage.com",
+    "OPENAI_REALTIME_MODEL": "gpt-realtime-2.1",
+    "OPENAI_REALTIME_VOICE": "marin",
   },
   "secrets": {
-    "required": [
-      "AGENT_CALLBACK_TOKEN",
-      "CONVERSATION_ID_SECRET",
-      "LIVEKIT_API_KEY",
-      "LIVEKIT_API_SECRET",
-      "R2_ACCESS_KEY_ID",
-      "R2_SECRET_ACCESS_KEY",
-    ],
+    "required": ["CONVERSATION_ID_SECRET", "OPENAI_API_KEY"],
   },
   "observability": {
     "logs": {
@@ -58,25 +50,6 @@
       "migrations_dir": "migrations-examinations",
     },
   ],
-  "queues": {
-    "producers": [
-      {
-        "binding": "LIVEKIT_SHUTDOWN_QUEUE",
-        "queue": "oral-exam-livekit-shutdown",
-      },
-    ],
-    "consumers": [
-      {
-        "queue": "oral-exam-livekit-shutdown",
-        "max_batch_size": 5,
-        "max_batch_timeout": 1,
-        "max_retries": 5,
-        "retry_delay": 5,
-        "max_concurrency": 3,
-        "dead_letter_queue": "oral-exam-livekit-shutdown-dlq",
-      },
-    ],
-  },
   "migrations": [
     {
       "tag": "v1",

@@ -32,18 +32,6 @@ async function browserApi(path: string, init: RequestInit = {}): Promise<Respons
   return exports.default.fetch(new Request(`${API_ORIGIN}${path}`, { ...init, headers }));
 }
 
-async function agentApi(path: string, init: RequestInit = {}): Promise<Response> {
-  return exports.default.fetch(
-    new Request(`${API_ORIGIN}${path}`, {
-      ...init,
-      headers: {
-        Authorization: "Bearer test-agent-callback-token",
-        ...Object.fromEntries(new Headers(init.headers)),
-      },
-    }),
-  );
-}
-
 async function createExamination(questions = ["First question?", "Second question?"]) {
   const response = await browserApi("/v1/examinations", {
     method: "POST",
@@ -129,21 +117,26 @@ describe("examination HTTP API", () => {
     expect(body.sessions).toContainEqual(created);
   });
 
-  it("serves and advances questions through authenticated, idempotent agent endpoints", async () => {
+  it("serves and advances questions through authenticated, idempotent Realtime tools", async () => {
     const { examination } = await createExamination(["Question one?", "Question two?"]);
     const started = await browserApi(`/v1/examinations/${examination.id}/sessions`, {
       method: "POST",
       headers: { "Idempotency-Key": `question-flow-${crypto.randomUUID()}` },
     });
     const session = await started.json<ExaminationSession>();
-    const path = `/v1/integrations/examinations/conversations/${session.conversationId}`;
+    const path = `/v1/conversations/${session.conversationId}/tools`;
 
     const denied = await exports.default.fetch(
-      new Request(`${API_ORIGIN}${path}/current-question`),
+      new Request(`${API_ORIGIN}${path}/get_current_examination_question`, {
+        method: "POST",
+        headers: { Origin: BROWSER_ORIGIN },
+      }),
     );
     expect(denied.status).toBe(401);
 
-    const currentResponse = await agentApi(`${path}/current-question`);
+    const currentResponse = await browserApi(`${path}/get_current_examination_question`, {
+      method: "POST",
+    });
     const current = await currentResponse.json<CurrentExaminationQuestion>();
     expect(current).toMatchObject({
       status: "question",
@@ -157,7 +150,7 @@ describe("examination HTTP API", () => {
       expectedRevision: current.revision,
       disposition: "answered_after_follow_up",
     };
-    const completed = await agentApi(`${path}/complete-question`, {
+    const completed = await browserApi(`${path}/complete_current_examination_question`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(completionBody),
@@ -169,7 +162,7 @@ describe("examination HTTP API", () => {
       revision: 1,
     });
 
-    const duplicate = await agentApi(`${path}/complete-question`, {
+    const duplicate = await browserApi(`${path}/complete_current_examination_question`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(completionBody),
@@ -177,7 +170,7 @@ describe("examination HTTP API", () => {
     expect(await duplicate.json()).toEqual(second);
 
     if (second.status !== "question") expect.fail("Expected the second question.");
-    const finished = await agentApi(`${path}/complete-question`, {
+    const finished = await browserApi(`${path}/complete_current_examination_question`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

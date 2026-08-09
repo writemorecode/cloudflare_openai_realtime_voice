@@ -1,4 +1,4 @@
-/** Application services for authenticated examination HTTP endpoints and agent question tools. */
+/** Application services for authenticated examination HTTP endpoints and Realtime question tools. */
 import {
   ArtifactStatus,
   ConversationStateTag,
@@ -43,6 +43,15 @@ export interface ExaminationApiResult {
 }
 
 type ApiResult<T> = Result<T, ApiError>;
+
+export async function authorizeExaminationConversation(
+  conversationId: string,
+  user: AuthenticatedUser,
+  env: Env,
+): Promise<ApiResult<void>> {
+  const owned = await ownedSession(conversationId, user, env);
+  return owned.isOk() ? Result.ok(undefined) : owned;
+}
 
 export async function createExamination(
   request: Request,
@@ -295,10 +304,13 @@ export async function getExaminationSessionRecording(
   });
 }
 
-export async function getAgentCurrentQuestion(
+export async function getRealtimeCurrentQuestion(
   conversationId: string,
+  user: AuthenticatedUser,
   env: Env,
 ): Promise<ApiResult<ExaminationApiResult>> {
+  const owned = await ownedSession(conversationId, user, env);
+  if (!owned.isOk()) return owned;
   const current = await Result.tryPromise({
     try: () => getCurrentExaminationQuestion(env.EXAM_DB, conversationId),
     catch: examinationOperationFailed("get_current_examination_question"),
@@ -316,12 +328,15 @@ export async function getAgentCurrentQuestion(
   );
 }
 
-export async function completeAgentCurrentQuestion(
+export async function completeRealtimeCurrentQuestion(
   request: Request,
   conversationId: string,
+  user: AuthenticatedUser,
   env: Env,
   dependencies: Pick<FoundationDependencies, "clock">,
 ): Promise<ApiResult<ExaminationApiResult>> {
+  const owned = await ownedSession(conversationId, user, env);
+  if (!owned.isOk()) return owned;
   const parsed = await readJson(request, completeExaminationQuestionRequestSchema);
   if (!parsed.isOk()) return parsed;
   const completed = await Result.tryPromise({

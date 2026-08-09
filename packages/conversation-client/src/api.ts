@@ -7,7 +7,8 @@ import {
   examinationSessionListSchema,
   examinationSessionSchema,
   conversationStateSchema,
-  liveKitAccessSchema,
+  recordingUploadSchema,
+  uploadedRecordingPartSchema,
   type CreateExaminationRequest,
   type Examination,
   type ExaminationList,
@@ -15,7 +16,8 @@ import {
   type ExaminationSessionList,
   type AuthSession,
   type ConversationStateDto,
-  type LiveKitAccess,
+  type RecordingUpload,
+  type UploadedRecordingPart,
 } from "@ai-oral-exam/conversation-contract";
 import { Result } from "better-result";
 import type { z } from "zod";
@@ -124,17 +126,108 @@ export class HttpConversationApi implements ConversationApi {
     return this.request(`/v1/conversations/${conversationId}/state`, conversationStateSchema);
   }
 
-  getLiveKitAccess(
+  async createRealtimeCall(
     conversationId: string,
-  ): Promise<Result<LiveKitAccess, ConversationClientError>> {
-    return this.request(`/v1/conversations/${conversationId}/livekit-access`, liveKitAccessSchema, {
+    sdp: string,
+  ): Promise<Result<string, ConversationClientError>> {
+    const response = await this.fetchResponse(`/v1/conversations/${conversationId}/realtime-call`, {
       method: "POST",
+      headers: { "Content-Type": "application/sdp" },
+      body: sdp,
+    });
+    if (!response.isOk()) return response;
+    return Result.tryPromise({
+      try: () => response.value.text(),
+      catch: (cause) =>
+        conversationClientError("invalid_response", "The Realtime answer was unreadable.", cause),
     });
   }
 
-  releaseLiveKitAccess(conversationId: string): Promise<Result<void, ConversationClientError>> {
-    return this.requestWithoutResponse(`/v1/conversations/${conversationId}/livekit-access`, {
+  async executeRealtimeTool(
+    conversationId: string,
+    name: string,
+    argumentsJson: string,
+  ): Promise<Result<unknown, ConversationClientError>> {
+    const path = `/v1/conversations/${conversationId}/tools/${encodeURIComponent(name)}`;
+    const isGetter = name === "get_current_examination_question";
+    const init: RequestInit = isGetter
+      ? { method: "POST" }
+      : {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: argumentsJson,
+        };
+    const response = await this.fetchResponse(path, init);
+    if (!response.isOk()) return response;
+    return Result.tryPromise({
+      try: () => response.value.json(),
+      catch: (cause) =>
+        conversationClientError("invalid_response", "The tool response was unreadable.", cause),
+    });
+  }
+
+  beginRecording(
+    conversationId: string,
+    contentType: string,
+  ): Promise<Result<RecordingUpload, ConversationClientError>> {
+    return this.request(`/v1/conversations/${conversationId}/recording`, recordingUploadSchema, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contentType }),
+    });
+  }
+
+  beginRecordingUpload(
+    conversationId: string,
+    upload: RecordingUpload,
+  ): Promise<Result<void, ConversationClientError>> {
+    return this.requestWithoutResponse(`/v1/conversations/${conversationId}/recording/upload`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ uploadId: upload.uploadId, objectKey: upload.objectKey }),
+    });
+  }
+
+  uploadRecordingPart(
+    conversationId: string,
+    upload: RecordingUpload,
+    partNumber: number,
+    body: Blob,
+  ): Promise<Result<UploadedRecordingPart, ConversationClientError>> {
+    const query = new URLSearchParams({ uploadId: upload.uploadId, objectKey: upload.objectKey });
+    return this.request(
+      `/v1/conversations/${conversationId}/recording/parts/${partNumber}?${query}`,
+      uploadedRecordingPartSchema,
+      { method: "PUT", body },
+    );
+  }
+
+  async completeRecordingUpload(
+    conversationId: string,
+    upload: RecordingUpload,
+    parts: readonly UploadedRecordingPart[],
+  ): Promise<Result<ConversationStateDto, ConversationClientError>> {
+    const response = await this.fetchResponse(
+      `/v1/conversations/${conversationId}/recording/complete`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uploadId: upload.uploadId, objectKey: upload.objectKey, parts }),
+      },
+    );
+    if (!response.isOk()) return response;
+    const refreshed = await this.getState(conversationId);
+    return refreshed;
+  }
+
+  abortRecordingUpload(
+    conversationId: string,
+    upload: RecordingUpload,
+  ): Promise<Result<void, ConversationClientError>> {
+    return this.requestWithoutResponse(`/v1/conversations/${conversationId}/recording`, {
       method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ uploadId: upload.uploadId, objectKey: upload.objectKey }),
     });
   }
 

@@ -7,7 +7,8 @@ import type {
   ExaminationList,
   ExaminationSession,
   ExaminationSessionList,
-  LiveKitAccess,
+  RecordingUpload,
+  UploadedRecordingPart,
 } from "@ai-oral-exam/conversation-contract";
 import type { Result } from "better-result";
 import type { ConversationClientError } from "./errors";
@@ -34,8 +35,38 @@ export interface ConversationApi {
     conversationId: string,
   ): Promise<Result<ConversationStateDto, ConversationClientError>>;
   getState(conversationId: string): Promise<Result<ConversationStateDto, ConversationClientError>>;
-  getLiveKitAccess(conversationId: string): Promise<Result<LiveKitAccess, ConversationClientError>>;
-  releaseLiveKitAccess(conversationId: string): Promise<Result<void, ConversationClientError>>;
+  createRealtimeCall(
+    conversationId: string,
+    sdp: string,
+  ): Promise<Result<string, ConversationClientError>>;
+  executeRealtimeTool(
+    conversationId: string,
+    name: string,
+    argumentsJson: string,
+  ): Promise<Result<unknown, ConversationClientError>>;
+  beginRecording(
+    conversationId: string,
+    contentType: string,
+  ): Promise<Result<RecordingUpload, ConversationClientError>>;
+  beginRecordingUpload(
+    conversationId: string,
+    upload: RecordingUpload,
+  ): Promise<Result<void, ConversationClientError>>;
+  uploadRecordingPart(
+    conversationId: string,
+    upload: RecordingUpload,
+    partNumber: number,
+    body: Blob,
+  ): Promise<Result<UploadedRecordingPart, ConversationClientError>>;
+  completeRecordingUpload(
+    conversationId: string,
+    upload: RecordingUpload,
+    parts: readonly UploadedRecordingPart[],
+  ): Promise<Result<ConversationStateDto, ConversationClientError>>;
+  abortRecordingUpload(
+    conversationId: string,
+    upload: RecordingUpload,
+  ): Promise<Result<void, ConversationClientError>>;
   websocketUrl(conversationId: string): string;
   websocketProtocols(): string[];
 }

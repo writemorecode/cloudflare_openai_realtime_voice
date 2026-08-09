@@ -1,7 +1,7 @@
 /**
  * Provider-neutral conversation domain model and pure transition reducer.
  *
- * This module has no Cloudflare, LiveKit, OpenAI, storage, or transport dependencies. Provider
+ * This module has no Cloudflare, OpenAI, storage, or transport dependencies. Provider
  * payloads must be translated into these events before they enter the conversation aggregate.
  */
 import { Result } from "better-result";

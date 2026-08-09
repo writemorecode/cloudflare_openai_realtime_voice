@@ -15,17 +15,22 @@ import type {
   ApplyEventResult,
   InitializeResult,
 } from "../../../durable-object/conversation-session";
+import { createRealtimeCall } from "../../realtime/realtime-session";
 import {
-  createLiveKitAccess,
-  stopLiveKitAccess,
-  type LiveKitAccessResponse,
-} from "../../integrations/livekit/access";
+  abortRecordingUpload,
+  beginRecording,
+  beginRecordingUpload,
+  completeRecordingUpload,
+  uploadRecordingPart,
+} from "../../recordings/multipart-recording";
 import type { FoundationDependencies } from "../../ports/foundation";
+import { authorizeExaminationConversation } from "../../examinations/examination-api";
 import { ApiError } from "../api-errors";
 import { deriveConversationId, validateIdempotencyKey } from "../api-security";
 import {
   apiFactory,
   conversationIdParam,
+  currentUser,
   getConversationId,
   internalError,
   methodNotAllowed,
@@ -45,6 +50,20 @@ const STARTING_WINDOW_MS = 60_000;
 const START_EVENT_PREFIX = "system:http:start:v1:";
 
 export type StartConversationResponse = ConversationStateDto;
+
+const requireConversationOwner = apiFactory.createMiddleware(async (context, next) => {
+  const conversationId = getConversationId(context);
+  if (!conversationId.isOk()) return respond(context, Result.err(conversationId.error));
+  const user = currentUser(context);
+  if (!user.isOk()) return respond(context, Result.err(user.error));
+  const authorized = await authorizeExaminationConversation(
+    conversationId.value,
+    user.value,
+    context.env,
+  );
+  if (!authorized.isOk()) return respond(context, Result.err(authorized.error));
+  await next();
+});
 
 export function createConversationRoutes() {
   const app = apiFactory.createApp();
@@ -141,92 +160,201 @@ export function createConversationRoutes() {
   );
 
   app.options(
-    "/:conversationId/livekit-access",
-    namedRoute("livekit_access"),
-    ...preflight(["POST", "DELETE"]),
+    "/:conversationId/realtime-call",
+    namedRoute("realtime_call"),
+    ...preflight(["POST"]),
   );
   app.post(
-    "/:conversationId/livekit-access",
-    namedRoute("livekit_access"),
+    "/:conversationId/realtime-call",
+    namedRoute("realtime_call"),
     conversationIdParam,
     requireBrowserOrigin,
     requireBrowserSession,
-    requireEmptyBody,
+    requireConversationOwner,
     async (context) => {
       const conversationId = getConversationId(context);
       if (!conversationId.isOk()) return respond(context, Result.err(conversationId.error));
+      const user = currentUser(context);
+      if (!user.isOk()) return respond(context, Result.err(user.error));
+      const created = await createRealtimeCall(context.req.raw, user.value, context.env);
       return respond(
         context,
-        await provideLiveKitAccess(context.env, conversationId.value, context.get("dependencies")),
-      );
-    },
-  );
-  app.delete(
-    "/:conversationId/livekit-access",
-    namedRoute("livekit_access"),
-    conversationIdParam,
-    requireBrowserOrigin,
-    requireBrowserSession,
-    requireEmptyBody,
-    async (context) => {
-      const conversationId = getConversationId(context);
-      if (!conversationId.isOk()) return respond(context, Result.err(conversationId.error));
-      return respond(
-        context,
-        await releaseLiveKitAccess(context.env, conversationId.value, context.get("dependencies")),
+        created.isOk()
+          ? Result.ok({
+              response: created.value,
+              conversationId: conversationId.value,
+              outcome: "realtime_call_created",
+            })
+          : created,
       );
     },
   );
   app.all(
-    "/:conversationId/livekit-access",
-    namedRoute("livekit_access"),
+    "/:conversationId/realtime-call",
+    namedRoute("realtime_call"),
+    conversationIdParam,
+    ...methodNotAllowed(["POST"]),
+  );
+
+  app.options(
+    "/:conversationId/recording",
+    namedRoute("recording_begin"),
+    ...preflight(["POST", "DELETE"]),
+  );
+  app.post(
+    "/:conversationId/recording",
+    namedRoute("recording_begin"),
+    conversationIdParam,
+    requireBrowserOrigin,
+    requireBrowserSession,
+    requireConversationOwner,
+    async (context) => {
+      const conversationId = getConversationId(context);
+      if (!conversationId.isOk()) return respond(context, Result.err(conversationId.error));
+      const result = await beginRecording(
+        context.req.raw,
+        conversationId.value,
+        context.env,
+        context.get("dependencies"),
+      );
+      return respond(context, recordingResult(result));
+    },
+  );
+  app.delete(
+    "/:conversationId/recording",
+    namedRoute("recording_abort"),
+    conversationIdParam,
+    requireBrowserOrigin,
+    requireBrowserSession,
+    requireConversationOwner,
+    async (context) => {
+      const conversationId = getConversationId(context);
+      if (!conversationId.isOk()) return respond(context, Result.err(conversationId.error));
+      const result = await abortRecordingUpload(context.req.raw, conversationId.value, context.env);
+      return respond(
+        context,
+        result.isOk()
+          ? Result.ok({
+              response: result.value,
+              conversationId: conversationId.value,
+              outcome: "recording_aborted",
+            })
+          : result,
+      );
+    },
+  );
+  app.all(
+    "/:conversationId/recording",
+    namedRoute("recording_begin"),
     conversationIdParam,
     ...methodNotAllowed(["POST", "DELETE"]),
+  );
+
+  app.options(
+    "/:conversationId/recording/upload",
+    namedRoute("recording_upload_begin"),
+    ...preflight(["POST"]),
+  );
+  app.post(
+    "/:conversationId/recording/upload",
+    namedRoute("recording_upload_begin"),
+    conversationIdParam,
+    requireBrowserOrigin,
+    requireBrowserSession,
+    requireConversationOwner,
+    async (context) => {
+      const conversationId = getConversationId(context);
+      if (!conversationId.isOk()) return respond(context, Result.err(conversationId.error));
+      return respond(
+        context,
+        recordingResult(
+          await beginRecordingUpload(
+            context.req.raw,
+            conversationId.value,
+            context.get("dependencies"),
+          ),
+        ),
+      );
+    },
+  );
+
+  app.options(
+    "/:conversationId/recording/parts/:partNumber",
+    namedRoute("recording_part"),
+    ...preflight(["PUT"]),
+  );
+  app.put(
+    "/:conversationId/recording/parts/:partNumber",
+    namedRoute("recording_part"),
+    conversationIdParam,
+    requireBrowserOrigin,
+    requireBrowserSession,
+    requireConversationOwner,
+    async (context) => {
+      const conversationId = getConversationId(context);
+      if (!conversationId.isOk()) return respond(context, Result.err(conversationId.error));
+      const result = await uploadRecordingPart(
+        context.req.raw,
+        conversationId.value,
+        Number(context.req.param("partNumber")),
+        context.env,
+      );
+      return respond(
+        context,
+        result.isOk()
+          ? Result.ok({
+              response: result.value,
+              conversationId: conversationId.value,
+              outcome: "recording_part_uploaded",
+            })
+          : result,
+      );
+    },
+  );
+
+  app.options(
+    "/:conversationId/recording/complete",
+    namedRoute("recording_complete"),
+    ...preflight(["POST"]),
+  );
+  app.post(
+    "/:conversationId/recording/complete",
+    namedRoute("recording_complete"),
+    conversationIdParam,
+    requireBrowserOrigin,
+    requireBrowserSession,
+    requireConversationOwner,
+    async (context) => {
+      const conversationId = getConversationId(context);
+      if (!conversationId.isOk()) return respond(context, Result.err(conversationId.error));
+      return respond(
+        context,
+        recordingResult(
+          await completeRecordingUpload(
+            context.req.raw,
+            conversationId.value,
+            context.env,
+            context.get("dependencies"),
+          ),
+        ),
+      );
+    },
   );
 
   return app;
 }
 
-async function releaseLiveKitAccess(
-  env: Env,
-  conversationId: string,
-  dependencies: FoundationDependencies,
-): Promise<ApiResult<HttpResult>> {
-  const outcome = await stopLiveKitAccess(env, conversationId, dependencies);
-  if (!outcome.isOk()) return outcome;
-  const state = await conversationState(conversationId, dependencies);
-  if (!state.isOk()) return state;
-  if (state.value === null) {
-    return Result.err(new ApiError(404, "conversation_not_found", "Conversation not found."));
-  }
-  return Result.ok({
-    response: new Response(null, { status: 204 }),
-    conversationId,
-    state: toConversationStateDto(state.value),
-    outcome: outcome.value,
-  });
-}
-
-async function provideLiveKitAccess(
-  env: Env,
-  conversationId: string,
-  dependencies: FoundationDependencies,
-): Promise<ApiResult<HttpResult>> {
-  const access = await createLiveKitAccess(env, conversationId, dependencies);
-  if (!access.isOk()) return access;
-  const state = await conversationState(conversationId, dependencies);
-  if (!state.isOk()) return state;
-  if (state.value === null) {
-    return Result.err(new ApiError(404, "conversation_not_found", "Conversation not found."));
-  }
-  return Result.ok({
-    response: Response.json(access.value satisfies LiveKitAccessResponse, {
-      headers: { "Cache-Control": "no-store" },
-    }),
-    conversationId,
-    state: toConversationStateDto(state.value),
-    outcome: "livekit_access_ready",
-  });
+function recordingResult(
+  result: Awaited<ReturnType<typeof beginRecording>>,
+): ApiResult<HttpResult> {
+  return result.isOk()
+    ? Result.ok({
+        response: result.value.response,
+        conversationId: result.value.conversationId,
+        state: toConversationStateDto(result.value.state),
+        outcome: result.value.outcome,
+      })
+    : result;
 }
 
 async function connectConversation(

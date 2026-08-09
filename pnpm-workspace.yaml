@@ -1,9 +1,7 @@
 packages:
-  - agent
   - packages/*
 
 allowBuilds:
-  "@livekit/local-inference": true
   esbuild: true
   protobufjs: true
   sharp: true
@@ -12,5 +10,3 @@ minimumReleaseAgeExclude:
   - "@cloudflare/workers-types@5.20260710.1"
   - miniflare@4.20260708.1
   - wrangler@4.110.0
-  - "@livekit/agents-plugin-openai@1.5.2"
-  - "@livekit/agents@1.5.2"

@@ -1,10 +1,8 @@
 import { Result } from "better-result";
 
 import {
-  completeAgentCurrentQuestion,
   createExamination,
   createExaminationSession,
-  getAgentCurrentQuestion,
   getExamination,
   getExaminations,
   getExaminationSession,
@@ -13,14 +11,11 @@ import {
 } from "../../examinations/examination-api";
 import {
   apiFactory,
-  conversationIdParam,
   currentUser,
-  getConversationId,
   getResourceId,
   methodNotAllowed,
   namedRoute,
   preflight,
-  requireAgentBearer,
   requireBrowserOrigin,
   requireBrowserSession,
   requireEmptyBody,
@@ -217,68 +212,6 @@ export function createExaminationSessionRoutes() {
     namedRoute("examination_session"),
     examinationSessionIdParam,
     ...methodNotAllowed(["GET"]),
-  );
-
-  return app;
-}
-
-export function createAgentQuestionRoutes() {
-  const app = apiFactory.createApp();
-  app.use("*", validateSmallHeaders);
-
-  app.options(
-    "/:conversationId/current-question",
-    namedRoute("agent_current_examination_question"),
-    ...preflight(["GET"]),
-  );
-  app.get(
-    "/:conversationId/current-question",
-    namedRoute("agent_current_examination_question"),
-    conversationIdParam,
-    requireAgentBearer,
-    requireEmptyBody,
-    async (context) => {
-      const conversationId = getConversationId(context);
-      if (!conversationId.isOk()) return respond(context, Result.err(conversationId.error));
-      return respond(context, await getAgentCurrentQuestion(conversationId.value, context.env));
-    },
-  );
-  app.all(
-    "/:conversationId/current-question",
-    namedRoute("agent_current_examination_question"),
-    conversationIdParam,
-    ...methodNotAllowed(["GET"]),
-  );
-
-  app.options(
-    "/:conversationId/complete-question",
-    namedRoute("agent_complete_examination_question"),
-    ...preflight(["POST"]),
-  );
-  app.post(
-    "/:conversationId/complete-question",
-    namedRoute("agent_complete_examination_question"),
-    conversationIdParam,
-    requireAgentBearer,
-    async (context) => {
-      const conversationId = getConversationId(context);
-      if (!conversationId.isOk()) return respond(context, Result.err(conversationId.error));
-      return respond(
-        context,
-        await completeAgentCurrentQuestion(
-          context.req.raw,
-          conversationId.value,
-          context.env,
-          context.get("dependencies"),
-        ),
-      );
-    },
-  );
-  app.all(
-    "/:conversationId/complete-question",
-    namedRoute("agent_complete_examination_question"),
-    conversationIdParam,
-    ...methodNotAllowed(["POST"]),
   );
 
   return app;

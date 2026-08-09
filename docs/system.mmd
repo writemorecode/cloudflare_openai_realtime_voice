@@ -1,50 +1,16 @@
- flowchart LR
-        subgraph Client[Browser client]
-            UI[Oral exam UI]
-            LKClient[LiveKit client SDK]
-            ControlClient[conversation.v1 client]
-        end
+flowchart LR
+    Browser[Browser React app]
+    Worker[Cloudflare Worker API]
+    Session[Conversation Durable Object]
+    OpenAI[OpenAI Realtime API]
+    R2[(R2 recordings)]
 
-        subgraph Cloudflare[Cloudflare control and storage]
-            Worker[Worker HTTP API]
-            Webhook[LiveKit webhook endpoint]
-            DO[ConversationSession Durable Object]
-            ExamDB[(Examination D1)]
-            ShutdownQueue[LiveKit shutdown Queue]
-            R2[(R2 recording bucket)]
-        end
-
-        subgraph LiveKit[LiveKit media platform]
-            Room[LiveKit room and SFU]
-            Dispatch[Agent dispatch]
-            Egress[Audio-only egress]
-        end
-
-        subgraph AgentRuntime[Container agent runtime]
-            Agent[LiveKit Agent]
-            Adapter[OpenAI Realtime plugin]
-        end
-
-        OpenAI[OpenAI Realtime API]
-
-        UI --> LKClient
-        UI --> ControlClient
-        LKClient <-->|WebRTC audio| Room
-        ControlClient <-->|MessagePack control and snapshots| DO
-        UI -->|create, start, request access| Worker
-        Worker -->|examinations, sessions, question progress| ExamDB
-        Worker -->|typed RPC| DO
-        DO -->|transactional time-limit outbox| ShutdownQueue
-        ShutdownQueue -->|retryable teardown job| Worker
-        Worker -->|create room, dispatch, egress, token| LiveKit
-        Worker -->|stop egress, delete dispatch and room| LiveKit
-        LiveKit -->|signed room and egress events| Webhook
-        Webhook -->|deduplicated FSM events| DO
-        Dispatch --> Agent
-        Agent <-->|WebRTC participant| Room
-        Agent --> Adapter
-        Agent -->|authenticated question tools| Worker
-        Adapter <-->|Realtime session| OpenAI
-        Room --> Egress
-        Egress -->|S3-compatible upload| R2
-        Webhook -->|verify completed object| R2
+    Browser <-->|Control WebSocket| Session
+    Browser -->|SDP offer| Worker
+    Worker -->|Authenticated SDP and session config| OpenAI
+    OpenAI -->|SDP answer| Worker
+    Worker -->|SDP answer| Browser
+    Browser <-->|WebRTC audio and data channel| OpenAI
+    Browser -->|Function tool requests| Worker
+    Browser -->|Mixed audio multipart parts| Worker
+    Worker -->|R2 binding| R2

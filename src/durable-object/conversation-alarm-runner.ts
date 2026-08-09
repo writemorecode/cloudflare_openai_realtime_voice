@@ -1,10 +1,8 @@
 import { value } from "../domain/conversation-state-machine";
-import type { LiveKitShutdownMessage } from "../shared/livekit-shutdown";
 import { Result } from "better-result";
 import { ConversationAggregateStore } from "./conversation-aggregate-store";
 import { emitAlarmTelemetry, emitTransitionTelemetry } from "./conversation-telemetry";
 import type { AlarmExecution } from "./conversation-session-contract";
-import { LIVEKIT_SHUTDOWN_OUTBOX_KEY } from "./conversation-session-storage";
 
 const ALARM_RETRY_DELAY_MS = 5_000;
 
@@ -18,7 +16,6 @@ export type AlarmRunnerError =
 export class ConversationAlarmRunner {
   constructor(
     private readonly storage: DurableObjectStorage,
-    private readonly shutdownQueue: Queue<LiveKitShutdownMessage>,
     private readonly aggregate: ConversationAggregateStore,
     private readonly sessionId: string | null,
   ) {}
@@ -32,8 +29,6 @@ export class ConversationAlarmRunner {
     };
     const operation = await Result.tryPromise({
       try: async (): Promise<Result<AlarmExecution, AlarmRunnerError>> => {
-        const initialFlush = await this.flushShutdownOutbox();
-        if (!initialFlush.isOk()) return initialFlush;
         const stored = await this.aggregate.applyDeadline(now, (observed) => {
           context = observed;
         });
@@ -79,42 +74,7 @@ export class ConversationAlarmRunner {
         this.sessionId,
       );
     }
-    const finalFlush = await this.flushShutdownOutbox();
-    if (!finalFlush.isOk()) {
-      emitAlarmTelemetry(
-        { outcome: "failed", ...context, transition: null },
-        alarmInfo,
-        now,
-        finalFlush.error,
-        this.sessionId,
-      );
-      await Result.tryPromise({
-        try: () => this.storage.setAlarm(Date.now() + ALARM_RETRY_DELAY_MS),
-        catch: (cause): AlarmRunnerError => ({ kind: "runtime_failure", cause }),
-      });
-      return finalFlush;
-    }
     emitAlarmTelemetry(execution.value, alarmInfo, now, null, this.sessionId);
     return Result.ok(undefined);
-  }
-
-  async flushShutdownOutbox(): Promise<Result<void, AlarmRunnerError>> {
-    return Result.tryPromise({
-      try: async () => {
-        const pending = await this.storage.get<LiveKitShutdownMessage>(LIVEKIT_SHUTDOWN_OUTBOX_KEY);
-        if (pending === undefined) return;
-
-        await this.shutdownQueue.send(pending, { contentType: "json" });
-        await this.storage.transaction(async (transaction) => {
-          const current = await transaction.get<LiveKitShutdownMessage>(
-            LIVEKIT_SHUTDOWN_OUTBOX_KEY,
-          );
-          if (current?.triggerEventId === pending.triggerEventId) {
-            await transaction.delete(LIVEKIT_SHUTDOWN_OUTBOX_KEY);
-          }
-        });
-      },
-      catch: (cause): AlarmRunnerError => ({ kind: "runtime_failure", cause }),
-    });
   }
 }

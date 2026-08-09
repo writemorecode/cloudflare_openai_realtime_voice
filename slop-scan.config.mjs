@@ -29,11 +29,7 @@ export default {
     {
       // The reported calls occur in unrelated package, Queue, and UI tests. Sharing their
       // vi.fn().mockResolvedValue setup would couple otherwise independent test layers.
-      files: [
-        "packages/conversation-client/test/api.test.ts",
-        "test/livekit-shutdown-queue.test.ts",
-        "web/src/App.test.tsx",
-      ],
+      files: ["packages/conversation-client/test/api.test.ts", "web/src/App.test.tsx"],
       rules: {
         "tests.duplicate-mock-setup": { enabled: false },
       },

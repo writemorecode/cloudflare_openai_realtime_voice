@@ -28,7 +28,7 @@ describe("browser authentication", () => {
         ALLOWED_ORIGIN: BROWSER_ORIGIN,
         CONVERSATION_ID_SECRET: "configured",
       }),
-    ).toEqual(["AGENT_CALLBACK_TOKEN"]);
+    ).toEqual(["OPENAI_API_KEY"]);
   });
 
   it("verifies script-generated hashes without including terminal line endings", async () => {

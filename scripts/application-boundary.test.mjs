@@ -58,36 +58,3 @@ test("the public contract has no application or runtime dependencies", async () 
     [],
   );
 });
-
-test("foundation decision modules remain synchronous and effect-free", async () => {
-  const decisionFiles = (await sourceFiles("src/worker/integrations/livekit")).filter((file) =>
-    file.endsWith("-decisions.ts"),
-  );
-  assert.ok(decisionFiles.length > 0, "expected foundation decision modules");
-
-  const forbiddenPatterns = [
-    /from\s+["']cloudflare:workers["']/,
-    /\/adapters\//,
-    /\basync\s+function\b/,
-    /\bPromise\s*</,
-    /\bDate\.now\s*\(/,
-    /\bcrypto\./,
-    /\benv\./,
-    /\.getState\s*\(/,
-    /\.applyIntegrationEvent\s*\(/,
-    /\.record(?:Agent|LiveKit)Observation\s*\(/,
-    /\.head\s*\(/,
-  ];
-  const violations = (
-    await Promise.all(
-      decisionFiles.map(async (file) => {
-        const source = await readFile(file, "utf8");
-        return forbiddenPatterns
-          .filter((pattern) => pattern.test(source))
-          .map((pattern) => `${relative(".", file)} -> ${pattern.source}`);
-      }),
-    )
-  ).flat();
-
-  assert.deepEqual(violations, []);
-});

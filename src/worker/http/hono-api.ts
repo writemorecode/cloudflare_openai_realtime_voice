@@ -6,7 +6,6 @@ import type { RequestIdVariables } from "hono/request-id";
 import type { FoundationDependencies } from "../ports/foundation";
 import { observableError } from "../../shared/observable-error";
 import { ApiError, problemResponse } from "./api-errors";
-import { authenticateBearer } from "./api-security";
 import { authenticateBrowserSession, type AuthenticatedUser } from "./browser-auth";
 import type { ConversationStateDto } from "./conversation-state-dto";
 
@@ -27,15 +26,17 @@ export type ApiRouteName =
   | "examination_sessions"
   | "examination_session"
   | "examination_recording"
-  | "agent_current_examination_question"
-  | "agent_complete_examination_question"
   | "create_conversation"
   | "start_conversation"
   | "get_state"
   | "connect"
-  | "livekit_access"
-  | "livekit_agent_event"
-  | "livekit_webhook";
+  | "realtime_call"
+  | "realtime_tool"
+  | "recording_begin"
+  | "recording_upload_begin"
+  | "recording_part"
+  | "recording_complete"
+  | "recording_abort";
 
 interface ApiVariables extends RequestIdVariables {
   dependencies: FoundationDependencies;
@@ -179,12 +180,6 @@ export const requireBrowserSession = apiFactory.createMiddleware(async (context,
   const authenticated = await authenticateBrowserSession(context.req.raw, context.env.AUTH_DB);
   if (!authenticated.isOk()) return apiError(context, authenticated.error);
   context.set("user", authenticated.value);
-  await next();
-});
-
-export const requireAgentBearer = apiFactory.createMiddleware(async (context, next) => {
-  const authenticated = authenticateBearer(context.req.raw, context.env.AGENT_CALLBACK_TOKEN);
-  if (!authenticated.isOk()) return apiError(context, authenticated.error);
   await next();
 });
 
@@ -345,13 +340,13 @@ function isUuid(value: string | undefined): value is string {
   return value !== undefined && UUID_PATTERN.test(value);
 }
 
-type RequiredApiBindingName = "AGENT_CALLBACK_TOKEN" | "CONVERSATION_ID_SECRET" | "ALLOWED_ORIGIN";
+type RequiredApiBindingName = "OPENAI_API_KEY" | "CONVERSATION_ID_SECRET" | "ALLOWED_ORIGIN";
 
 export function missingRequiredApiBindings(
   env: Partial<Record<RequiredApiBindingName, unknown>>,
 ): readonly string[] {
   return [
-    requiredStringBinding("AGENT_CALLBACK_TOKEN", env.AGENT_CALLBACK_TOKEN),
+    requiredStringBinding("OPENAI_API_KEY", env.OPENAI_API_KEY),
     requiredStringBinding("CONVERSATION_ID_SECRET", env.CONVERSATION_ID_SECRET),
     requiredStringBinding("ALLOWED_ORIGIN", env.ALLOWED_ORIGIN),
   ].filter((binding): binding is string => binding !== null);

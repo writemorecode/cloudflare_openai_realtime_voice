@@ -1,6 +1,6 @@
 # Conversation browser client
 
-This foundation package hides HTTP, control-WebSocket, and LiveKit browser orchestration behind the
+This foundation package hides HTTP, control-WebSocket, OpenAI WebRTC, and recording orchestration behind the
 `ConversationApi` and `ConversationRuntime` interfaces. It validates public HTTP and WebSocket data
 before delivering it to the application. Operations that can fail return
 `Result<T, ConversationClientError>` so callers handle operational failures explicitly.

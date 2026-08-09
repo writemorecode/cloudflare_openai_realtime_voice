@@ -19,5 +19,6 @@ export {
   TransportStatus,
   type AuthSession,
   type ConversationStateDto,
-  type LiveKitAccess,
+  type RecordingUpload,
+  type UploadedRecordingPart,
 } from "@ai-oral-exam/conversation-contract";

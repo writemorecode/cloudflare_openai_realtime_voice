@@ -1,25 +1,8 @@
-# Cloudflare Worker
+# Worker boundary
 
-This directory is the stateless HTTP side of the Cloudflare deployment.
+The Worker authenticates browser requests, exchanges WebRTC SDP with OpenAI, executes Realtime
+function tools, and exposes R2 multipart operations through the `RECORDINGS` binding. Provider
+credentials never cross the Worker boundary.
 
-- `index.ts` is the Wrangler entrypoint and exports the Durable Object class required by its binding.
-- `ports/` defines the external effects used by the conversation foundation: time, identifiers,
-  Durable Object lookup, recording lookup, webhook verification, and LiveKit control.
-- `adapters/` implements those ports with Cloudflare bindings, Web Crypto, and the LiveKit SDK.
-- `foundation-dependencies.ts` is the production dependency composition used by `index.ts`.
-- `http/` owns routing, request authentication, CORS, public DTO projection, and API errors.
-- `integrations/livekit/` owns LiveKit signature verification, provider payload validation,
-  provider-to-domain translation, bounded Queue-driven teardown, and R2 recording verification.
-  Files ending in `-decisions.ts` contain synchronous decoding and policy only; adjacent executor
-  modules perform Durable Object, provider, clock, and storage effects.
-
-The Worker coordinates trusted control-plane operations. It must never proxy, decode, resample, or
-persist live audio. Provider-neutral start behavior stays in the conversation API; future room,
-dispatch, egress, and token operations belong behind a separate authenticated LiveKit access route.
-
-Foundation code receives its effects explicitly through the smallest applicable port set. Tests can
-therefore supply fixed clocks and identifiers, in-memory provider fakes, and controlled storage
-responses without patching globals or constructing SDK resources. `index.ts` is the only production
-composition root; integration handlers must not create provider or platform clients themselves.
-Decision modules accept complete input values and return explicit plans or errors. They must not
-read bindings, call RPC, access storage, generate identifiers, or read the system clock.
+`ports/` describes external effects, `adapters/` implements Cloudflare bindings, and `http/`
+assembles the public API. Large audio bodies are streamed directly into R2 upload parts.

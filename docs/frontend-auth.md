@@ -1,8 +1,8 @@
 # Frontend and browser authentication
 
 The React frontend and `/v1/*` control API are served from the same Cloudflare Worker. Browser
-access uses a username and password stored in D1; the machine-to-machine LiveKit webhook and agent
-callback routes retain their separate signature and bearer-token authentication.
+access uses a username and password stored in D1. Realtime setup, model tool calls, and recording
+uploads require the same authenticated browser session and allowed origin.
 
 ## Database setup
 
@@ -63,6 +63,5 @@ The Worker requires the configured browser origin on login, logout, every state-
 request, and the control WebSocket upgrade. Login failures are rate-limited per source address and
 return the same response and password-hash workload whether or not the username exists.
 
-The LiveKit participant token returned by `POST /v1/conversations/:id/livekit-access` remains a
-separate short-lived, room-scoped capability. It stays in memory and responses use
-`Cache-Control: no-store`.
+The OpenAI API key and R2 binding remain server-side. The browser receives only an SDP answer and
+opaque multipart upload identifiers; relevant responses use `Cache-Control: no-store`.

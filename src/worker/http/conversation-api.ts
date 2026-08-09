@@ -13,12 +13,11 @@ import {
 } from "./hono-api";
 import { createAuthRoutes } from "./routes/auth-routes";
 import { createConversationRoutes } from "./routes/conversation-routes";
+import { createRealtimeToolRoutes } from "./routes/realtime-tool-routes";
 import {
-  createAgentQuestionRoutes,
   createExaminationRoutes,
   createExaminationSessionRoutes,
 } from "./routes/examination-routes";
-import { createIntegrationRoutes } from "./routes/integration-routes";
 
 export type { StartConversationResponse } from "./routes/conversation-routes";
 
@@ -40,8 +39,7 @@ export function createConversationApi(dependencies: FoundationDependencies) {
   app.route("/v1/examinations", createExaminationRoutes());
   app.route("/v1/examination-sessions", createExaminationSessionRoutes());
   app.route("/v1/conversations", createConversationRoutes());
-  app.route("/v1/integrations/examinations/conversations", createAgentQuestionRoutes());
-  app.route("/v1/integrations", createIntegrationRoutes());
+  app.route("/v1/conversations", createRealtimeToolRoutes());
 
   app.notFound((context) =>
     apiError(context, new ApiError(404, "route_not_found", "The requested route does not exist.")),
