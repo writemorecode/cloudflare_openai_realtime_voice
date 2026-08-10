@@ -22,7 +22,7 @@ test("parses pnpm separators and explicit D1 location", () => {
 test("defaults to the remote oral-exam database", () => {
   assert.deepEqual(parseUserArguments(["examiner"]).value, {
     location: "--remote",
-    database: "oral-exam-auth",
+    database: "oral-exam-data-dev",
     username: "examiner",
   });
 });

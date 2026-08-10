@@ -9,7 +9,7 @@ export function parseUserArguments(argv) {
   const args = [...argv];
   while (args[0] === "--") args.shift();
   const location = args[0] === "--local" || args[0] === "--remote" ? args.shift() : "--remote";
-  const database = args.length > 1 ? args.shift() : "oral-exam-auth";
+  const database = args.length > 1 ? args.shift() : "oral-exam-data-dev";
   const username = args.shift();
 
   if (username === undefined || username.length === 0 || username.length > 64 || args.length > 0) {

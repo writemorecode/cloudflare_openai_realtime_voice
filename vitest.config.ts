@@ -1,7 +1,6 @@
 import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
-const d1Migrations = await readD1Migrations("./migrations");
 const examinationD1Migrations = await readD1Migrations("./migrations-examinations");
 
 export default defineConfig({
@@ -14,7 +13,6 @@ export default defineConfig({
       wrangler: { configPath: "./wrangler.jsonc" },
       miniflare: {
         bindings: {
-          TEST_D1_MIGRATIONS: d1Migrations,
           TEST_EXAM_D1_MIGRATIONS: examinationD1Migrations,
           OPENAI_API_KEY: "test-openai-api-key",
           ALLOWED_ORIGIN: "http://localhost:5173/",

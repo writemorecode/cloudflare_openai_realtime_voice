@@ -30,14 +30,14 @@ async function createSessionCookie(): Promise<string> {
     .replaceAll("+", "-")
     .replaceAll("/", "_")
     .replaceAll("=", "");
-  const user = await env.AUTH_DB.prepare("SELECT id FROM users WHERE username = ?")
+  const user = await env.EXAM_DB.prepare("SELECT id FROM users WHERE username = ?")
     .bind("examiner")
     .first<{ id: number }>();
   if (user === null) {
     expect.fail("test user is missing");
   }
   const now = Date.now();
-  await env.AUTH_DB.prepare(
+  await env.EXAM_DB.prepare(
     "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
   )
     .bind(tokenHash, user.id, now, now + 86_400_000)

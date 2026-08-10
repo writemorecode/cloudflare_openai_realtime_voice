@@ -6,21 +6,12 @@ uploads require the same authenticated browser session and allowed origin.
 
 ## Database setup
 
-The `AUTH_DB` binding points at `oral-exam-auth`. Provision the database once, apply its migrations,
-and create the experiment's single user:
-
-```sh
-pnpm exec wrangler d1 create oral-exam-auth
-pnpm exec wrangler d1 migrations apply oral-exam-auth --remote
-pnpm auth:create-user -- --remote oral-exam-auth <username>
-```
-
-Examination definitions and examination sessions deliberately use the separate `EXAM_DB` binding
-and `oral-exam-data-dev` database. User IDs are copied as application-level references; D1 cannot
-enforce a foreign key across the two databases.
+Authentication and examination data share the `EXAM_DB` binding, which points at
+`oral-exam-data-dev`. Apply its migrations and create the experiment's user:
 
 ```sh
 pnpm exec wrangler d1 migrations apply EXAM_DB --remote
+pnpm auth:create-user -- --remote <username>
 ```
 
 The user script prompts for the password without echoing it, derives a uniquely salted
@@ -32,17 +23,16 @@ Change an existing user's password with the matching helper. This also revokes a
 active browser sessions:
 
 ```sh
-pnpm auth:change-password -- --remote oral-exam-auth <username>
+pnpm auth:change-password -- --remote <username>
 ```
 
 For local development, apply the migration and create a separate local user:
 
 ```sh
 cp .dev.vars.example .dev.vars # if you do not already have a local secrets file
-pnpm exec wrangler d1 migrations apply oral-exam-auth --local
 pnpm exec wrangler d1 migrations apply EXAM_DB --local
-pnpm auth:create-user -- --local oral-exam-auth <username>
-pnpm auth:change-password -- --local oral-exam-auth <username>
+pnpm auth:create-user -- --local <username>
+pnpm auth:change-password -- --local <username>
 pnpm exec wrangler dev
 pnpm dev
 ```

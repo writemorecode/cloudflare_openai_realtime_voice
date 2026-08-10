@@ -2,13 +2,11 @@ import { applyD1Migrations, env } from "cloudflare:test";
 import type { D1Migration } from "@cloudflare/vitest-pool-workers";
 
 const testEnv = env as Env & {
-  TEST_D1_MIGRATIONS: D1Migration[];
   TEST_EXAM_D1_MIGRATIONS: D1Migration[];
 };
 
-await applyD1Migrations(testEnv.AUTH_DB, testEnv.TEST_D1_MIGRATIONS);
 await applyD1Migrations(testEnv.EXAM_DB, testEnv.TEST_EXAM_D1_MIGRATIONS);
-await testEnv.AUTH_DB.prepare(
+await testEnv.EXAM_DB.prepare(
   `INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)
    ON CONFLICT(username) DO UPDATE SET password_hash = excluded.password_hash`,
 )

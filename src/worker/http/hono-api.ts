@@ -177,7 +177,7 @@ export const requireBrowserOrigin = apiFactory.createMiddleware(async (context, 
 });
 
 export const requireBrowserSession = apiFactory.createMiddleware(async (context, next) => {
-  const authenticated = await authenticateBrowserSession(context.req.raw, context.env.AUTH_DB);
+  const authenticated = await authenticateBrowserSession(context.req.raw, context.env.EXAM_DB);
   if (!authenticated.isOk()) return apiError(context, authenticated.error);
   context.set("user", authenticated.value);
   await next();

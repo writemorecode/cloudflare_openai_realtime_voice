@@ -20,7 +20,7 @@ export function createAuthRoutes() {
 
   app.options("/login", namedRoute("login"), ...preflight(["POST"]));
   app.post("/login", namedRoute("login"), requireBrowserOrigin, async (context) => {
-    const loggedIn = await login(context.req.raw, context.env.AUTH_DB);
+    const loggedIn = await login(context.req.raw, context.env.EXAM_DB);
     return respond(
       context,
       loggedIn.isOk()
@@ -38,7 +38,7 @@ export function createAuthRoutes() {
     requireBrowserSession,
     requireEmptyBody,
     async (context) => {
-      const loggedOut = await logout(context.req.raw, context.env.AUTH_DB);
+      const loggedOut = await logout(context.req.raw, context.env.EXAM_DB);
       return respond(
         context,
         loggedOut.isOk()

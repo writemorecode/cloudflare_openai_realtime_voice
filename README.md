@@ -40,7 +40,6 @@ Then run:
 
 ```sh
 pnpm install
-pnpm exec wrangler d1 migrations apply oral-exam-auth --local
 pnpm exec wrangler d1 migrations apply EXAM_DB --local
 pnpm exec wrangler dev
 pnpm dev
