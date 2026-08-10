@@ -27,7 +27,7 @@ describe("conversation snapshot decoding", () => {
   it("returns an error for an unsupported schema version", () => {
     expect(
       decodeSnapshot({
-        schemaVersion: 1,
+        schemaVersion: 2,
         state: createConversation(
           value.conversationSessionId("snapshot-version"),
           value.unixMillis(1),
@@ -35,7 +35,7 @@ describe("conversation snapshot decoding", () => {
       } satisfies SnapshotEnvelope),
     ).toEqual({
       status: "error",
-      error: { kind: "unsupported_snapshot_version", schemaVersion: 1 },
+      error: { kind: "unsupported_snapshot_version", schemaVersion: 2 },
     });
   });
 });

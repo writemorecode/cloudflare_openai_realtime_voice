@@ -3,7 +3,7 @@ import { Result } from "better-result";
 
 export const SNAPSHOT_KEY = "conversation:snapshot:v1";
 export const RECEIPT_KEY_PREFIX = "conversation:receipt:v1:";
-export const SNAPSHOT_SCHEMA_VERSION = 2 as const;
+export const SNAPSHOT_SCHEMA_VERSION = 1 as const;
 
 export interface PersistedSnapshot {
   readonly schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION;
