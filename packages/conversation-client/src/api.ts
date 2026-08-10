@@ -24,24 +24,33 @@ import type { z } from "zod";
 import { ConversationClientError, conversationClientError } from "./errors";
 import type { ConversationApi } from "./types";
 
+/** Relevant fields extracted from an RFC 7807-style HTTP problem response. */
 interface ProblemDetails {
+  /** Human-readable explanation of the specific request failure. */
   readonly detail?: string;
+  /** Short summary of the request failure. */
   readonly title?: string;
 }
 
+/** Configuration required to reach the conversation HTTP API from a browser. */
 export interface BrowserApiConfig {
+  /** Absolute origin used to resolve relative API paths. */
   readonly baseUrl: string;
 }
 
+/** Creates browser API configuration from the build-time API URL or current origin. */
 export function browserApiConfig(): BrowserApiConfig {
   return {
     baseUrl: (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? window.location.origin,
   };
 }
 
+/** Browser implementation of the authenticated conversation HTTP API. */
 export class HttpConversationApi implements ConversationApi {
+  /** Creates an API client using the supplied browser endpoint configuration. */
   constructor(private readonly config: BrowserApiConfig = browserApiConfig()) {}
 
+  /** Authenticates a user and returns the resulting browser session. */
   login(username: string, password: string): Promise<Result<AuthSession, ConversationClientError>> {
     return this.request("/v1/auth/login", authSessionSchema, {
       method: "POST",
@@ -50,14 +59,17 @@ export class HttpConversationApi implements ConversationApi {
     });
   }
 
+  /** Returns the active authenticated session, if one exists. */
   getSession(): Promise<Result<AuthSession, ConversationClientError>> {
     return this.request("/v1/auth/session", authSessionSchema);
   }
 
+  /** Ends the active authenticated session. */
   logout(): Promise<Result<void, ConversationClientError>> {
     return this.requestWithoutResponse("/v1/auth/logout", { method: "POST" });
   }
 
+  /** Creates an examination from the supplied name, subject, and questions. */
   createExamination(
     examination: CreateExaminationRequest,
   ): Promise<Result<Examination, ConversationClientError>> {
@@ -68,14 +80,17 @@ export class HttpConversationApi implements ConversationApi {
     });
   }
 
+  /** Lists the examinations visible to the current user. */
   listExaminations(): Promise<Result<ExaminationList, ConversationClientError>> {
     return this.request("/v1/examinations", examinationListSchema);
   }
 
+  /** Retrieves one examination by identifier. */
   getExamination(examinationId: string): Promise<Result<Examination, ConversationClientError>> {
     return this.request(`/v1/examinations/${examinationId}`, examinationSchema);
   }
 
+  /** Creates a new session for the specified examination. */
   createExaminationSession(
     examinationId: string,
   ): Promise<Result<ExaminationSession, ConversationClientError>> {
@@ -85,10 +100,12 @@ export class HttpConversationApi implements ConversationApi {
     });
   }
 
+  /** Lists examination sessions visible to the current user. */
   listExaminationSessions(): Promise<Result<ExaminationSessionList, ConversationClientError>> {
     return this.request("/v1/examination-sessions", examinationSessionListSchema);
   }
 
+  /** Retrieves one examination session by identifier. */
   getExaminationSession(
     examinationSessionId: string,
   ): Promise<Result<ExaminationSession, ConversationClientError>> {
@@ -98,6 +115,7 @@ export class HttpConversationApi implements ConversationApi {
     );
   }
 
+  /** Returns the absolute URL for an examination session's recording. */
   recordingUrl(examinationSessionId: string): string {
     const encodedSessionId = encodeURIComponent(examinationSessionId);
     const url = new URL(
@@ -107,6 +125,7 @@ export class HttpConversationApi implements ConversationApi {
     return url.href;
   }
 
+  /** Creates a conversation and returns its initial state. */
   createConversation(): Promise<Result<ConversationStateDto, ConversationClientError>> {
     return this.request("/v1/conversations", conversationStateSchema, {
       method: "POST",
@@ -114,6 +133,7 @@ export class HttpConversationApi implements ConversationApi {
     });
   }
 
+  /** Starts a conversation and returns its updated state. */
   startConversation(
     conversationId: string,
   ): Promise<Result<ConversationStateDto, ConversationClientError>> {
@@ -122,10 +142,12 @@ export class HttpConversationApi implements ConversationApi {
     });
   }
 
+  /** Retrieves the latest state snapshot for a conversation. */
   getState(conversationId: string): Promise<Result<ConversationStateDto, ConversationClientError>> {
     return this.request(`/v1/conversations/${conversationId}/state`, conversationStateSchema);
   }
 
+  /** Exchanges a WebRTC SDP offer for the Realtime service's SDP answer. */
   async createRealtimeCall(
     conversationId: string,
     sdp: string,
@@ -143,6 +165,7 @@ export class HttpConversationApi implements ConversationApi {
     });
   }
 
+  /** Invokes a server-side tool requested through the Realtime data channel. */
   async executeRealtimeTool(
     conversationId: string,
     name: string,
@@ -166,6 +189,7 @@ export class HttpConversationApi implements ConversationApi {
     });
   }
 
+  /** Allocates multipart-upload metadata for a conversation recording. */
   beginRecording(
     conversationId: string,
     contentType: string,
@@ -177,6 +201,7 @@ export class HttpConversationApi implements ConversationApi {
     });
   }
 
+  /** Marks a recording upload as started before parts are transferred. */
   beginRecordingUpload(
     conversationId: string,
     upload: RecordingUpload,
@@ -188,6 +213,7 @@ export class HttpConversationApi implements ConversationApi {
     });
   }
 
+  /** Uploads one numbered recording part. */
   uploadRecordingPart(
     conversationId: string,
     upload: RecordingUpload,
@@ -202,6 +228,7 @@ export class HttpConversationApi implements ConversationApi {
     );
   }
 
+  /** Completes a multipart recording upload and refreshes the conversation state. */
   async completeRecordingUpload(
     conversationId: string,
     upload: RecordingUpload,
@@ -220,6 +247,7 @@ export class HttpConversationApi implements ConversationApi {
     return refreshed;
   }
 
+  /** Aborts a recording upload that will not be completed. */
   abortRecordingUpload(
     conversationId: string,
     upload: RecordingUpload,
@@ -231,16 +259,19 @@ export class HttpConversationApi implements ConversationApi {
     });
   }
 
+  /** Returns the WebSocket endpoint for a conversation's control connection. */
   websocketUrl(conversationId: string): string {
     const url = new URL(`/v1/conversations/${conversationId}/connect`, this.config.baseUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     return url.toString();
   }
 
+  /** Returns the WebSocket subprotocols required by the control connection. */
   websocketProtocols(): string[] {
     return [WIRE_SUBPROTOCOL];
   }
 
+  /** Sends an HTTP request and validates its JSON response against the supplied schema. */
   private async request<T extends z.ZodType>(
     path: string,
     schema: T,
@@ -270,6 +301,7 @@ export class HttpConversationApi implements ConversationApi {
         );
   }
 
+  /** Sends an HTTP request whose successful response has no body. */
   private async requestWithoutResponse(
     path: string,
     init: RequestInit,
@@ -278,6 +310,7 @@ export class HttpConversationApi implements ConversationApi {
     return response.isOk() ? Result.ok(undefined) : Result.err(response.error);
   }
 
+  /** Performs an authenticated same-origin fetch and normalizes failures. */
   private async fetchResponse(
     path: string,
     init: RequestInit,
@@ -314,6 +347,7 @@ export class HttpConversationApi implements ConversationApi {
   }
 }
 
+/** Extracts displayable title and detail fields from an unknown problem response. */
 function problemDetails(value: unknown): ProblemDetails {
   if (typeof value !== "object" || value === null) return {};
   const detail = "detail" in value && typeof value.detail === "string" ? value.detail : undefined;

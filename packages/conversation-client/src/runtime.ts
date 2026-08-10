@@ -17,12 +17,16 @@ import { Result } from "better-result";
 import { ConversationClientError, conversationClientError } from "./errors";
 import type { ConversationApi, ConversationRuntime, RuntimeEvents, RuntimeFactory } from "./types";
 
+/** Maximum time to wait for the server to enter a shutdown state. */
 const END_WAIT_MS = 8_000;
+/** Target byte size for each multipart recording-upload part. */
 const MULTIPART_SIZE = 10 * 1024 * 1024;
 
+/** Creates the browser runtime that manages one Realtime conversation. */
 export const createConversationRuntime: RuntimeFactory = (api, conversationId, events) =>
   new RealtimeConversationRuntime(api, conversationId, events);
 
+/** Internal WebRTC, WebSocket, and recording implementation of a conversation runtime. */
 class RealtimeConversationRuntime implements ConversationRuntime {
   private control: WebSocket | null = null;
   private peer: RTCPeerConnection | null = null;
@@ -41,12 +45,14 @@ class RealtimeConversationRuntime implements ConversationRuntime {
   private endingWaiter: ((state: ConversationStateDto) => void) | null = null;
   private readonly completedToolCalls = new Set<string>();
 
+  /** Creates a runtime bound to one API client, conversation, and event sink. */
   constructor(
     private readonly api: ConversationApi,
     private readonly conversationId: string,
     private readonly events: RuntimeEvents,
   ) {}
 
+  /** Connects control and Realtime transports, starts recording, and prompts the examiner. */
   async connect(
     initialState: ConversationStateDto,
     audioHost: HTMLElement,
@@ -116,6 +122,7 @@ class RealtimeConversationRuntime implements ConversationRuntime {
     return connected.isOk() ? Result.ok(undefined) : Result.err(connected.error);
   }
 
+  /** Attempts audio playback after a user gesture and reports browser-media failures. */
   async enableAudio(): Promise<Result<void, ConversationClientError>> {
     const audio = this.remoteAudio;
     if (audio === null) {
@@ -136,6 +143,7 @@ class RealtimeConversationRuntime implements ConversationRuntime {
     return Result.ok(undefined);
   }
 
+  /** Enables or disables the local microphone track when it is available. */
   async setMicrophoneEnabled(enabled: boolean): Promise<Result<void, ConversationClientError>> {
     const track = this.microphone?.getAudioTracks()[0];
     if (track === undefined) {
@@ -147,12 +155,14 @@ class RealtimeConversationRuntime implements ConversationRuntime {
     return Result.ok(undefined);
   }
 
+  /** Requests orderly shutdown, then stops and uploads the mixed recording. */
   async requestEnd(): Promise<Result<ConversationStateDto, ConversationClientError>> {
     const ending = await this.requestEndingState();
     if (!ending.isOk()) return ending;
     return this.finalizeRecording();
   }
 
+  /** Stops, uploads, and completes the recording exactly once. */
   private finalizeRecording(): Promise<Result<ConversationStateDto, ConversationClientError>> {
     if (this.finalization !== null) return this.finalization;
     const upload = this.recordingUpload;
@@ -210,6 +220,7 @@ class RealtimeConversationRuntime implements ConversationRuntime {
     return this.finalization;
   }
 
+  /** Releases control, media, and recording resources, aborting unfinished uploads. */
   async close(): Promise<Result<void, ConversationClientError>> {
     const upload = this.recordingUpload;
     this.endingWaiter = null;
@@ -224,6 +235,7 @@ class RealtimeConversationRuntime implements ConversationRuntime {
     return Result.ok(undefined);
   }
 
+  /** Sends an end request and waits for the server's ending or terminal state. */
   private async requestEndingState(): Promise<
     Result<ConversationStateDto, ConversationClientError>
   > {
@@ -268,6 +280,7 @@ class RealtimeConversationRuntime implements ConversationRuntime {
     return ending;
   }
 
+  /** Stops the recorder and returns all accumulated mixed-audio data. */
   private stopRecorder(): Promise<Blob> {
     const recorder = this.recorder;
     if (recorder === null || recorder.state === "inactive") {
@@ -283,6 +296,7 @@ class RealtimeConversationRuntime implements ConversationRuntime {
     });
   }
 
+  /** Closes peer resources and stops locally captured media tracks. */
   private closeMedia(): void {
     this.dataChannel?.close();
     this.dataChannel = null;
@@ -295,6 +309,7 @@ class RealtimeConversationRuntime implements ConversationRuntime {
     this.remoteAudio?.pause();
   }
 
+  /** Attaches the remote examiner stream to an autoplaying audio element. */
   private attachRemoteAudio(stream: MediaStream, host: HTMLElement): void {
     const audio = document.createElement("audio");
     audio.autoplay = true;
@@ -307,6 +322,7 @@ class RealtimeConversationRuntime implements ConversationRuntime {
     );
   }
 
+  /** Handles completed Realtime tool calls and returns their outputs over the data channel. */
   private async handleRealtimeEvent(message: MessageEvent<string>): Promise<void> {
     if (typeof message.data !== "string") return;
     let event: unknown;
@@ -338,6 +354,7 @@ class RealtimeConversationRuntime implements ConversationRuntime {
     }
   }
 
+  /** Opens the control WebSocket and sends the initial client greeting. */
   private async connectControl(): Promise<Result<void, ConversationClientError>> {
     const connected = await Result.tryPromise({
       try: async () => {
@@ -380,6 +397,7 @@ class RealtimeConversationRuntime implements ConversationRuntime {
     ]);
   }
 
+  /** Applies accepted control-server snapshots and triggers shutdown finalization. */
   private handleControlMessage(event: MessageEvent<ArrayBuffer>): void {
     if (!(event.data instanceof ArrayBuffer)) return;
     const decoded = decodeServerMessage(event.data);
@@ -403,6 +421,7 @@ class RealtimeConversationRuntime implements ConversationRuntime {
     }
   }
 
+  /** Encodes and sends one browser control message over the open WebSocket. */
   private sendControl(message: BrowserWireMessage): Result<void, ConversationClientError> {
     if (this.control?.readyState !== WebSocket.OPEN) {
       return Result.err(
@@ -435,6 +454,7 @@ class RealtimeConversationRuntime implements ConversationRuntime {
   }
 }
 
+/** Resolves when a Realtime data channel opens or rejects if it fails. */
 function waitForDataChannel(channel: RTCDataChannel): Promise<void> {
   if (channel.readyState === "open") return Promise.resolve();
   return new Promise((resolve, reject) => {
@@ -445,6 +465,7 @@ function waitForDataChannel(channel: RTCDataChannel): Promise<void> {
   });
 }
 
+/** Selects the first recording MIME type supported by the current browser. */
 function supportedRecordingType(): string {
   for (const type of [
     "audio/webm;codecs=opus",
@@ -457,6 +478,7 @@ function supportedRecordingType(): string {
   return "";
 }
 
+/** Subset of a Realtime output item needed to execute a client-side tool call. */
 interface FunctionCallItem {
   readonly type: "function_call";
   readonly name: string;
@@ -464,6 +486,7 @@ interface FunctionCallItem {
   readonly arguments: string;
 }
 
+/** Narrows an unknown Realtime event to a completed response containing output items. */
 function isResponseDone(value: unknown): value is { response: { output: FunctionCallItem[] } } {
   return (
     typeof value === "object" &&
@@ -478,6 +501,7 @@ function isResponseDone(value: unknown): value is { response: { output: Function
   );
 }
 
+/** Determines whether a conversation lifecycle state is terminal. */
 function isTerminal(state: ConversationStateDto["state"]): boolean {
   return (
     state === ConversationStateTag.Completed ||
