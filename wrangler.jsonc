@@ -44,12 +44,12 @@
       "migrations_dir": "migrations-examinations",
     },
   ],
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": ["ConversationSession"],
+  "exports": {
+    "ConversationSession": {
+      "type": "durable-object",
+      "storage": "sqlite",
     },
-  ],
+  },
   "r2_buckets": [
     {
       "bucket_name": "oral-exam-recordings-dev",
