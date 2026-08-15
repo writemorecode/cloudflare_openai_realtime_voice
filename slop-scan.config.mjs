@@ -19,6 +19,14 @@ export default {
       },
     },
     {
+      // The root test directory intentionally contains a broad integration-test matrix; splitting
+      // each test family into nested directories would make shared fixtures and imports noisier.
+      files: ["test/**"],
+      rules: {
+        "structure.directory-fanout-hotspot": { enabled: false },
+      },
+    },
+    {
       // These directories separate cohesive stateful and HTTP responsibilities; grouping the
       // files further would add nesting without reducing dependencies.
       files: ["src/durable-object/**", "src/worker/http/**"],

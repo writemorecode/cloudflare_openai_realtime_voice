@@ -329,7 +329,8 @@ class RealtimeConversationRuntime implements ConversationRuntime {
     try {
       event = JSON.parse(message.data);
     } catch {
-      return;
+      // Ignore malformed control messages; the event guard below rejects the sentinel.
+      event = null;
     }
     if (!isResponseDone(event)) return;
     for (const item of event.response.output) {
