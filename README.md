@@ -40,6 +40,8 @@ artifacts beside the recording:
 
 The bucket must remain private. Presigning uses separate object-read-only R2 S3 credentials in
 `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`; the credentials and signed URL must never be logged.
+Workflow dispatch is backed by the `transcription_jobs` D1 outbox. A five-minute Cron Trigger
+retries queued jobs through the idempotent Workflows batch-creation API.
 
 ## Local development
 

@@ -46,12 +46,11 @@ export class TranscriptionWorkflow extends WorkflowEntrypoint<Env, Transcription
         return { size: recording.size };
       });
 
-      const transcription = await step.do(
-        "transcribe recording",
+      const stored = await step.do(
+        "transcribe and store transcript artifacts",
         {
           retries: { limit: 2, delay: "30 seconds", backoff: "exponential" },
           timeout: "20 minutes",
-          sensitive: "output",
         },
         async () => {
           const audioUrl = await presignRecordingGet(
@@ -78,41 +77,32 @@ export class TranscriptionWorkflow extends WorkflowEntrypoint<Env, Transcription
               },
             },
           );
-          return {
-            generatedAt: Date.now(),
-            response: assemblyAiResponseSchema.parse(raw),
-          };
+          const response = assemblyAiResponseSchema.parse(raw);
+          const generatedAt = Date.now();
+          const keys = transcriptArtifactKeys(params.objectKey);
+          const source = { objectKey: params.objectKey, etag: params.etag };
+          const metadata = { sourceEtag: params.etag, model: TRANSCRIPTION_MODEL };
+          await Promise.all([
+            this.env.RECORDINGS.put(
+              keys.json,
+              `${JSON.stringify(canonicalTranscript(source, response, generatedAt), null, 2)}\n`,
+              {
+                httpMetadata: { contentType: "application/json; charset=utf-8" },
+                customMetadata: metadata,
+              },
+            ),
+            this.env.RECORDINGS.put(keys.vtt, webVtt(response), {
+              httpMetadata: { contentType: "text/vtt; charset=utf-8" },
+              customMetadata: metadata,
+            }),
+            this.env.RECORDINGS.put(keys.text, plainTextTranscript(response), {
+              httpMetadata: { contentType: "text/plain; charset=utf-8" },
+              customMetadata: metadata,
+            }),
+          ]);
+          return { jsonKey: keys.json, vttKey: keys.vtt, textKey: keys.text };
         },
       );
-
-      const stored = await step.do("store transcript artifacts", async () => {
-        const keys = transcriptArtifactKeys(params.objectKey);
-        const source = { objectKey: params.objectKey, etag: params.etag };
-        const metadata = { sourceEtag: params.etag, model: TRANSCRIPTION_MODEL };
-        await Promise.all([
-          this.env.RECORDINGS.put(
-            keys.json,
-            `${JSON.stringify(
-              canonicalTranscript(source, transcription.response, transcription.generatedAt),
-              null,
-              2,
-            )}\n`,
-            {
-              httpMetadata: { contentType: "application/json; charset=utf-8" },
-              customMetadata: metadata,
-            },
-          ),
-          this.env.RECORDINGS.put(keys.vtt, webVtt(transcription.response), {
-            httpMetadata: { contentType: "text/vtt; charset=utf-8" },
-            customMetadata: metadata,
-          }),
-          this.env.RECORDINGS.put(keys.text, plainTextTranscript(transcription.response), {
-            httpMetadata: { contentType: "text/plain; charset=utf-8" },
-            customMetadata: metadata,
-          }),
-        ]);
-        return { jsonKey: keys.json, vttKey: keys.vtt, textKey: keys.text };
-      });
 
       await step.do("complete transcription job", async () => {
         await this.env.EXAM_DB.prepare(
