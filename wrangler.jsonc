@@ -14,10 +14,29 @@
     "ALLOWED_ORIGIN": "https://oai-cf-realtime.gustav-ae-karlsson.workers.dev/",
     "OPENAI_REALTIME_MODEL": "gpt-realtime-2.1",
     "OPENAI_REALTIME_VOICE": "marin",
+    "AI_GATEWAY_ID": "default",
+    "R2_ACCOUNT_ID": "017227baf7a62fd2323cc61950f5d57e",
+    "R2_BUCKET_NAME": "oral-exam-recordings-dev",
   },
   "secrets": {
-    "required": ["CONVERSATION_ID_SECRET", "OPENAI_API_KEY"],
+    "required": [
+      "CONVERSATION_ID_SECRET",
+      "OPENAI_API_KEY",
+      "R2_ACCESS_KEY_ID",
+      "R2_SECRET_ACCESS_KEY",
+    ],
   },
+  "ai": {
+    "binding": "AI",
+    "remote": true,
+  },
+  "workflows": [
+    {
+      "name": "oral-exam-transcription-dev",
+      "binding": "TRANSCRIPTION_WORKFLOW",
+      "class_name": "TranscriptionWorkflow",
+    },
+  ],
   "observability": {
     "logs": {
       "enabled": true,

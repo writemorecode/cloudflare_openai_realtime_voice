@@ -26,6 +26,21 @@ records that stream with `MediaRecorder`, and uploads the final artifact using R
 
 R2 credentials are never sent to the browser; the Worker uses the `RECORDINGS` binding.
 
+## Transcription flow
+
+A verified recording for a completed examination creates an idempotent Cloudflare Workflow job.
+The Workflow signs a private R2 S3 `GET` URL for 15 minutes and calls
+`assemblyai/universal-3-pro` through the configured AI Gateway with two-speaker diarization. AI
+Gateway request logging and caching are disabled for this call. Successful jobs write these
+artifacts beside the recording:
+
+- `transcript.v1.json` — canonical speaker-labelled utterances and word timestamps.
+- `transcript.v1.vtt` — timestamped WebVTT captions with speaker labels.
+- `transcript.v1.txt` — readable speaker-labelled plain text.
+
+The bucket must remain private. Presigning uses separate object-read-only R2 S3 credentials in
+`R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`; the credentials and signed URL must never be logged.
+
 ## Local development
 
 Store local secrets in `.dev.vars`:
@@ -33,6 +48,8 @@ Store local secrets in `.dev.vars`:
 ```dotenv
 OPENAI_API_KEY=...
 CONVERSATION_ID_SECRET=...
+R2_ACCESS_KEY_ID=...
+R2_SECRET_ACCESS_KEY=...
 ALLOWED_ORIGIN=http://localhost:5173/
 ```
 

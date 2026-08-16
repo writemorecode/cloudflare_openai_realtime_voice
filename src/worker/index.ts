@@ -7,8 +7,9 @@
 import { ConversationSession } from "../durable-object/conversation-session";
 import { createConversationApi } from "./http/conversation-api";
 import { foundationDependencies } from "./foundation-dependencies";
+import { TranscriptionWorkflow } from "./transcription/transcription-workflow";
 
-export { ConversationSession };
+export { ConversationSession, TranscriptionWorkflow };
 export default {
   fetch: async (request, env, executionContext) =>
     await createConversationApi(foundationDependencies(env)).fetch(request, env, executionContext),

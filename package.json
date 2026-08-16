@@ -25,6 +25,7 @@
     "@ai-oral-exam/conversation-client": "workspace:*",
     "@ai-oral-exam/conversation-contract": "workspace:*",
     "@msgpack/msgpack": "^3.1.3",
+    "aws4fetch": "^1.0.20",
     "better-result": "3.0.0",
     "hono": "^4.12.32",
     "react": "^19.2.7",
