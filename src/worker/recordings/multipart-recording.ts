@@ -14,6 +14,7 @@ import type {
   AggregateStoreResult,
 } from "../../durable-object/conversation-aggregate-store";
 import { applyConversationEvent } from "../conversations/apply-event-retry";
+import { enqueueCompletedRecordingTranscription } from "../transcription/enqueue-transcription";
 import { ApiError } from "../http/api-errors";
 import type { FoundationDependencies } from "../ports/foundation";
 
@@ -225,6 +226,27 @@ export async function completeRecordingUpload(
     },
   );
   if (!ready.isOk()) return Result.err(recordingFailure("verify_recording")(ready.error));
+
+  try {
+    const transcription = await enqueueCompletedRecordingTranscription(env, {
+      conversationId,
+      objectKey,
+      etag: completed.value.etag,
+      createdAt: now,
+    });
+    console.log({
+      kind: "transcription_enqueue",
+      conversationId,
+      outcome: transcription,
+    });
+  } catch {
+    // Recording completion must remain successful. Failed jobs are retained in D1 for reconciliation.
+    console.error({
+      kind: "transcription_enqueue_error",
+      conversationId,
+      code: "workflow_enqueue_failed",
+    });
+  }
 
   return Result.ok({
     response: Response.json({ objectKey, etag: completed.value.etag }),
