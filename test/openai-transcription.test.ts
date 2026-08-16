@@ -1,10 +1,22 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { requestOpenAiTranscription } from "../src/worker/transcription/openai-transcription";
+import {
+  isSupportedTranscriptionFileSize,
+  MAXIMUM_TRANSCRIPTION_FILE_BYTES,
+  requestOpenAiTranscription,
+} from "../src/worker/transcription/openai-transcription";
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("OpenAI transcription request", () => {
+  it("accepts only valid files within the provider's 25 MB limit", () => {
+    expect(isSupportedTranscriptionFileSize(0)).toBe(true);
+    expect(isSupportedTranscriptionFileSize(MAXIMUM_TRANSCRIPTION_FILE_BYTES)).toBe(true);
+    expect(isSupportedTranscriptionFileSize(MAXIMUM_TRANSCRIPTION_FILE_BYTES + 1)).toBe(false);
+    expect(isSupportedTranscriptionFileSize(-1)).toBe(false);
+    expect(isSupportedTranscriptionFileSize(Number.NaN)).toBe(false);
+  });
+
   it("uploads recording bytes through the authenticated Gateway using BYOK", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ task: "transcribe", duration: 0, text: "", segments: [] }), {

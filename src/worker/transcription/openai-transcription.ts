@@ -2,6 +2,14 @@ import { Result } from "better-result";
 
 import { TRANSCRIPTION_MODEL } from "./transcript-artifacts";
 
+// OpenAI's transcription API rejects files larger than 25 MB. Use decimal MB so
+// the Worker rejects conservatively before buffering or uploading the object.
+export const MAXIMUM_TRANSCRIPTION_FILE_BYTES = 25_000_000;
+
+export function isSupportedTranscriptionFileSize(size: number): boolean {
+  return Number.isSafeInteger(size) && size >= 0 && size <= MAXIMUM_TRANSCRIPTION_FILE_BYTES;
+}
+
 interface OpenAiGatewayConfiguration {
   readonly accountId: string;
   readonly gatewayId: string;
