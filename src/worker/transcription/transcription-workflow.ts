@@ -2,7 +2,11 @@
 import { Result } from "better-result";
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 
-import { requestOpenAiTranscription } from "./openai-transcription";
+import {
+  isSupportedTranscriptionFileSize,
+  MAXIMUM_TRANSCRIPTION_FILE_BYTES,
+  requestOpenAiTranscription,
+} from "./openai-transcription";
 import {
   transcriptionFailure,
   TranscriptionStageError,
@@ -47,7 +51,7 @@ export class TranscriptionWorkflow extends WorkflowEntrypoint<Env, Transcription
     const workflow = await Result.tryPromise({
       try: async () => {
         await step.do("verify recording and start job", async () => {
-          const recording = await observeStage(
+          const recording = await runStage(
             params,
             "verify_recording",
             "recording_verification_failed",
@@ -55,8 +59,8 @@ export class TranscriptionWorkflow extends WorkflowEntrypoint<Env, Transcription
             () => this.env.RECORDINGS.head(params.objectKey),
           );
           if (recording === null || recording.etag !== params.etag) {
-            return await rejectStep(
-              logStageFailure(
+            return failStep(
+              createLoggedStageFailure(
                 params,
                 "verify_recording",
                 "source_recording_invalid",
@@ -65,7 +69,19 @@ export class TranscriptionWorkflow extends WorkflowEntrypoint<Env, Transcription
               ),
             );
           }
-          await observeStage(params, "start_job", "job_start_failed", "d1_error", () =>
+          if (!isSupportedTranscriptionFileSize(recording.size)) {
+            return failStep(
+              createLoggedStageFailure(
+                params,
+                "verify_recording",
+                "source_recording_too_large",
+                "validation_error",
+                0,
+                recordingSizeDetails(recording.size),
+              ),
+            );
+          }
+          await runStage(params, "start_job", "job_start_failed", "d1_error", () =>
             this.env.EXAM_DB.prepare(
               `UPDATE transcription_jobs
                SET status = 'running', started_at = COALESCE(started_at, ?), error_code = NULL
@@ -84,7 +100,7 @@ export class TranscriptionWorkflow extends WorkflowEntrypoint<Env, Transcription
             timeout: "20 minutes",
           },
           async () => {
-            const recording = await observeStage(
+            const recording = await runStage(
               params,
               "read_recording",
               "recording_read_failed",
@@ -92,8 +108,8 @@ export class TranscriptionWorkflow extends WorkflowEntrypoint<Env, Transcription
               () => this.env.RECORDINGS.get(params.objectKey),
             );
             if (recording === null) {
-              return await rejectStep(
-                logStageFailure(
+              return failStep(
+                createLoggedStageFailure(
                   params,
                   "read_recording",
                   "source_recording_invalid",
@@ -102,7 +118,19 @@ export class TranscriptionWorkflow extends WorkflowEntrypoint<Env, Transcription
                 ),
               );
             }
-            const raw = await observeStage(
+            if (!isSupportedTranscriptionFileSize(recording.size)) {
+              return failStep(
+                createLoggedStageFailure(
+                  params,
+                  "read_recording",
+                  "source_recording_too_large",
+                  "validation_error",
+                  0,
+                  recordingSizeDetails(recording.size),
+                ),
+              );
+            }
+            const raw = await runStage(
               params,
               "inference",
               "inference_failed",
@@ -118,15 +146,23 @@ export class TranscriptionWorkflow extends WorkflowEntrypoint<Env, Transcription
                   recording,
                 ),
             );
-            if (!raw.isOk()) {
-              return await rejectStep(
-                logStageFailure(params, "inference", "inference_failed", "provider_error", 0),
-              );
-            }
-            const parsed = openAiTranscriptionResponseSchema.safeParse(raw.value);
+            // The gateway uses Result for expected HTTP/provider failures. Translate
+            // that error into the workflow's stable, safe-to-persist failure type.
+            const responseResult = raw.mapError(() =>
+              createLoggedStageFailure(
+                params,
+                "inference",
+                "inference_failed",
+                "provider_error",
+                0,
+              ),
+            );
+            if (!responseResult.isOk()) return failStep(responseResult.error);
+
+            const parsed = openAiTranscriptionResponseSchema.safeParse(responseResult.value);
             if (!parsed.success) {
-              return await rejectStep(
-                logStageFailure(
+              return failStep(
+                createLoggedStageFailure(
                   params,
                   "inference",
                   "inference_response_invalid",
@@ -138,24 +174,19 @@ export class TranscriptionWorkflow extends WorkflowEntrypoint<Env, Transcription
             const response = parsed.data;
             const generatedAt = Date.now();
             const keys = transcriptArtifactKeys(params.objectKey);
-            if (!keys.isOk()) return await rejectStep(keys.error);
+            if (!keys.isOk()) return failStep(keys.error);
             const jsonKey = keys.value.json;
             const source = { objectKey: params.objectKey, etag: params.etag };
             const metadata = { sourceEtag: params.etag, model: TRANSCRIPTION_MODEL };
-            await observeStage(
-              params,
-              "canonical_write",
-              "canonical_write_failed",
-              "r2_error",
-              () =>
-                this.env.RECORDINGS.put(
-                  jsonKey,
-                  `${JSON.stringify(canonicalTranscript(source, response, generatedAt), null, 2)}\n`,
-                  {
-                    httpMetadata: { contentType: "application/json; charset=utf-8" },
-                    customMetadata: metadata,
-                  },
-                ),
+            await runStage(params, "canonical_write", "canonical_write_failed", "r2_error", () =>
+              this.env.RECORDINGS.put(
+                jsonKey,
+                `${JSON.stringify(canonicalTranscript(source, response, generatedAt), null, 2)}\n`,
+                {
+                  httpMetadata: { contentType: "application/json; charset=utf-8" },
+                  customMetadata: metadata,
+                },
+              ),
             );
             return { jsonKey };
           },
@@ -165,7 +196,7 @@ export class TranscriptionWorkflow extends WorkflowEntrypoint<Env, Transcription
           "create WebVTT transcript",
           DERIVED_ARTIFACT_STEP_CONFIG,
           async () => {
-            const transcript = await observeStage(
+            const transcript = await runStage(
               params,
               "vtt_read",
               "vtt_read_failed",
@@ -173,9 +204,9 @@ export class TranscriptionWorkflow extends WorkflowEntrypoint<Env, Transcription
               () => readCanonicalTranscript(this.env.RECORDINGS, canonical.jsonKey),
             );
             const keys = transcriptArtifactKeys(params.objectKey);
-            if (!keys.isOk()) return await rejectStep(keys.error);
+            if (!keys.isOk()) return failStep(keys.error);
             const vttKey = keys.value.vtt;
-            await observeStage(params, "vtt_write", "vtt_write_failed", "r2_error", () =>
+            await runStage(params, "vtt_write", "vtt_write_failed", "r2_error", () =>
               this.env.RECORDINGS.put(vttKey, webVtt(transcript), {
                 httpMetadata: { contentType: "text/vtt; charset=utf-8" },
                 customMetadata: { sourceEtag: params.etag, model: TRANSCRIPTION_MODEL },
@@ -189,7 +220,7 @@ export class TranscriptionWorkflow extends WorkflowEntrypoint<Env, Transcription
           "create plaintext transcript",
           DERIVED_ARTIFACT_STEP_CONFIG,
           async () => {
-            const transcript = await observeStage(
+            const transcript = await runStage(
               params,
               "plaintext_read",
               "plaintext_read_failed",
@@ -197,18 +228,13 @@ export class TranscriptionWorkflow extends WorkflowEntrypoint<Env, Transcription
               () => readCanonicalTranscript(this.env.RECORDINGS, canonical.jsonKey),
             );
             const keys = transcriptArtifactKeys(params.objectKey);
-            if (!keys.isOk()) return await rejectStep(keys.error);
+            if (!keys.isOk()) return failStep(keys.error);
             const textKey = keys.value.text;
-            await observeStage(
-              params,
-              "plaintext_write",
-              "plaintext_write_failed",
-              "r2_error",
-              () =>
-                this.env.RECORDINGS.put(textKey, plainTextTranscript(transcript), {
-                  httpMetadata: { contentType: "text/plain; charset=utf-8" },
-                  customMetadata: { sourceEtag: params.etag, model: TRANSCRIPTION_MODEL },
-                }),
+            await runStage(params, "plaintext_write", "plaintext_write_failed", "r2_error", () =>
+              this.env.RECORDINGS.put(textKey, plainTextTranscript(transcript), {
+                httpMetadata: { contentType: "text/plain; charset=utf-8" },
+                customMetadata: { sourceEtag: params.etag, model: TRANSCRIPTION_MODEL },
+              }),
             );
             return { textKey };
           },
@@ -217,7 +243,7 @@ export class TranscriptionWorkflow extends WorkflowEntrypoint<Env, Transcription
         const stored = { jsonKey: canonical.jsonKey, vttKey: vtt.vttKey, textKey: text.textKey };
 
         await step.do("complete transcription job", async () => {
-          await observeStage(params, "complete_job", "job_completion_failed", "d1_error", () =>
+          await runStage(params, "complete_job", "job_completion_failed", "d1_error", () =>
             this.env.EXAM_DB.prepare(
               `UPDATE transcription_jobs
                SET status = 'complete', transcript_json_key = ?, transcript_vtt_key = ?,
@@ -257,17 +283,22 @@ export class TranscriptionWorkflow extends WorkflowEntrypoint<Env, Transcription
       return { failed: true };
     });
     // Do not preserve provider errors because they can contain sensitive response details.
-    return await rejectStep(new Error(`Transcription workflow failed (${failure.errorCode}).`));
+    return failStep(new Error(`Transcription workflow failed (${failure.errorCode}).`));
   }
 }
 
 async function readCanonicalTranscript(bucket: R2Bucket, key: string) {
   const object = await bucket.get(key);
-  if (object === null) return await rejectStep(new Error("The canonical transcript is missing."));
+  if (object === null) return failStep(new Error("The canonical transcript is missing."));
   return canonicalTranscriptSchema.parse(await object.json());
 }
 
-async function observeStage<T>(
+/**
+ * Runs one external operation and maps a rejected promise to the stable error
+ * contract for its workflow stage. The returned value is deliberately unwrapped
+ * here because Cloudflare Workflow steps use rejected promises to trigger retries.
+ */
+async function runStage<T>(
   params: TranscriptionWorkflowParams,
   stage: TranscriptionStage,
   errorCode: TranscriptionErrorCode,
@@ -275,25 +306,36 @@ async function observeStage<T>(
   operation: () => Promise<T>,
 ): Promise<T> {
   const startedAt = Date.now();
-  const result = await Result.tryPromise({ try: operation, catch: () => undefined });
-  if (!result.isOk()) {
-    return await rejectStep(
-      logStageFailure(params, stage, errorCode, category, Date.now() - startedAt),
-    );
-  }
-  return result.value;
+  const stageResult = (
+    await Result.tryPromise({
+      try: operation,
+      // Provider and R2 failures may contain response data, so do not log causes.
+      catch: () => undefined,
+    })
+  ).mapError(() =>
+    createLoggedStageFailure(params, stage, errorCode, category, Date.now() - startedAt),
+  );
+
+  if (stageResult.isOk()) return stageResult.value;
+  return Promise.reject(stageResult.error);
 }
 
-function rejectStep(cause: unknown): Promise<never> {
+/**
+ * Bridges typed Result failures to Cloudflare Workflow's exception-based step API.
+ * Rejecting lets the workflow runtime apply its configured retry policy.
+ */
+function failStep(cause: unknown): Promise<never> {
   return Promise.reject(cause);
 }
 
-function logStageFailure(
+/** Records only safe, structured metadata; the original operation error is omitted. */
+function createLoggedStageFailure(
   params: TranscriptionWorkflowParams,
   stage: TranscriptionStage,
   errorCode: TranscriptionErrorCode,
   category: TranscriptionErrorCategory,
   durationMs: number,
+  details: Readonly<Record<string, number>> = {},
 ): TranscriptionStageError {
   console.error({
     kind: "transcription_step_error",
@@ -304,6 +346,14 @@ function logStageFailure(
     category,
     errorCode,
     durationMs,
+    ...details,
   });
   return new TranscriptionStageError(stage, errorCode, category);
+}
+
+function recordingSizeDetails(recordingSizeBytes: number): Readonly<Record<string, number>> {
+  return {
+    recordingSizeBytes,
+    maximumRecordingSizeBytes: MAXIMUM_TRANSCRIPTION_FILE_BYTES,
+  };
 }

@@ -21,6 +21,8 @@ import type { ConversationApi, ConversationRuntime, RuntimeEvents, RuntimeFactor
 const END_WAIT_MS = 8_000;
 /** Target byte size for each multipart recording-upload part. */
 const MULTIPART_SIZE = 10 * 1024 * 1024;
+/** 20 minutes at 128 kbps is about 19.2 MB, leaving headroom below the 25 MB API limit. */
+const RECORDING_AUDIO_BITS_PER_SECOND = 128_000;
 
 /** Creates the browser runtime that manages one Realtime conversation. */
 export const createConversationRuntime: RuntimeFactory = (api, conversationId, events) =>
@@ -97,7 +99,10 @@ class RealtimeConversationRuntime implements ConversationRuntime {
         await channelOpen;
 
         const mimeType = supportedRecordingType();
-        const recorder = new MediaRecorder(recordingDestination.stream, { mimeType });
+        const recorder = new MediaRecorder(recordingDestination.stream, {
+          mimeType,
+          audioBitsPerSecond: RECORDING_AUDIO_BITS_PER_SECOND,
+        });
         this.recorder = recorder;
         recorder.addEventListener("dataavailable", (event) => {
           if (event.data.size > 0) this.recordingChunks.push(event.data);

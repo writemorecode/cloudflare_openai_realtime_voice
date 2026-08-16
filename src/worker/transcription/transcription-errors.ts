@@ -13,6 +13,7 @@ const TRANSCRIPTION_STAGES = [
 
 const TRANSCRIPTION_ERROR_CODES = [
   "source_recording_invalid",
+  "source_recording_too_large",
   "recording_verification_failed",
   "job_start_failed",
   "recording_read_failed",
