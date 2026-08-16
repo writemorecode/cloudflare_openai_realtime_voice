@@ -7,7 +7,8 @@ async function insertQueuedJob(id: string): Promise<void> {
   const user = await env.EXAM_DB.prepare(`SELECT id FROM users WHERE username = 'examiner'`).first<{
     id: number;
   }>();
-  if (user === null) throw new Error("The test examiner is missing.");
+  expect(user, "The test examiner is missing.").not.toBeNull();
+  if (user === null) return;
   const examinationId = `examination-${id}`;
   const sessionId = `session-${id}`;
   const conversationId = crypto.randomUUID();
@@ -24,7 +25,7 @@ async function insertQueuedJob(id: string): Promise<void> {
     env.EXAM_DB.prepare(
       `INSERT INTO transcription_jobs (
          id, examination_session_id, source_object_key, source_etag, model, status, created_at
-       ) VALUES (?, ?, ?, ?, 'assemblyai/universal-3-pro', 'queued', ?)`,
+       ) VALUES (?, ?, ?, ?, 'gpt-4o-transcribe-diarize', 'queued', ?)`,
     ).bind(
       id,
       sessionId,
@@ -48,7 +49,12 @@ describe("transcription Workflow dispatch", () => {
     await insertQueuedJob(id);
     const createBatch = vi.fn(async () => []);
 
-    expect(await reconcileQueuedTranscriptionJobs(dispatchEnv(createBatch), 10_000_000)).toBe(1);
+    expect(
+      await reconcileQueuedTranscriptionJobs(dispatchEnv(createBatch), 10_000_000),
+    ).toMatchObject({
+      status: "ok",
+      value: 1,
+    });
     expect(createBatch).toHaveBeenCalledWith([
       expect.objectContaining({
         id,
@@ -74,13 +80,14 @@ describe("transcription Workflow dispatch", () => {
   it("retains failed dispatches for a later reconciliation attempt", async () => {
     const id = `dispatch-failure-${crypto.randomUUID()}`;
     await insertQueuedJob(id);
-    const createBatch = vi.fn(async () => {
-      throw new Error("temporary Workflows failure");
-    });
+    const createBatch = vi.fn(() => Promise.reject(new Error("temporary Workflows failure")));
 
-    await expect(
-      reconcileQueuedTranscriptionJobs(dispatchEnv(createBatch), 20_000_000),
-    ).rejects.toThrow("could not be enqueued");
+    expect(
+      await reconcileQueuedTranscriptionJobs(dispatchEnv(createBatch), 20_000_000),
+    ).toMatchObject({
+      status: "error",
+      error: expect.objectContaining({ message: expect.stringContaining("could not be enqueued") }),
+    });
     expect(
       await env.EXAM_DB.prepare(
         `SELECT status, enqueue_attempts, last_enqueue_attempt_at, error_code, completed_at

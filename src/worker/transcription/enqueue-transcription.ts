@@ -72,17 +72,11 @@ export async function enqueueCompletedRecordingTranscription(
     objectKey: input.objectKey,
     etag: input.etag,
   };
-  const dispatched = await Result.tryPromise({
-    try: () => dispatchTranscriptionJobs(env, [{ id: jobId, params }], Date.now()),
-    catch: (cause) => cause,
-  });
+  const dispatched = await dispatchTranscriptionJobs(env, [{ id: jobId, params }], Date.now());
   return dispatched.isOk() ? outcome : "dispatch_pending";
 }
 
-export async function reconcileQueuedTranscriptionJobs(
-  env: Env,
-  now = Date.now(),
-): Promise<number> {
+export async function reconcileQueuedTranscriptionJobs(env: Env, now = Date.now()) {
   const retryBefore = now - DISPATCH_RETRY_AFTER_MS;
   const rows = await env.EXAM_DB.prepare(
     `SELECT jobs.id, sessions.conversation_id, jobs.source_object_key, jobs.source_etag
@@ -104,16 +98,16 @@ export async function reconcileQueuedTranscriptionJobs(
       etag: row.source_etag,
     },
   }));
-  await dispatchTranscriptionJobs(env, jobs, now);
-  return jobs.length;
+  const dispatched = await dispatchTranscriptionJobs(env, jobs, now);
+  return dispatched.isOk() ? Result.ok(jobs.length) : dispatched;
 }
 
 async function dispatchTranscriptionJobs(
   env: Env,
   jobs: readonly { readonly id: string; readonly params: TranscriptionWorkflowParams }[],
   attemptedAt: number,
-): Promise<void> {
-  if (jobs.length === 0) return;
+) {
+  if (jobs.length === 0) return Result.ok(undefined);
   await env.EXAM_DB.batch(
     jobs.map((job) =>
       env.EXAM_DB.prepare(
@@ -123,15 +117,23 @@ async function dispatchTranscriptionJobs(
       ).bind(attemptedAt, job.id),
     ),
   );
-  try {
-    await env.TRANSCRIPTION_WORKFLOW.createBatch(
-      jobs.map((job) => ({ id: job.id, params: job.params, retention: WORKFLOW_RETENTION })),
-    );
+  const dispatched = await Result.tryPromise({
+    try: () =>
+      env.TRANSCRIPTION_WORKFLOW.createBatch(
+        jobs.map((job) => ({ id: job.id, params: job.params, retention: WORKFLOW_RETENTION })),
+      ),
+    catch: (cause) => cause,
+  });
+  if (dispatched.isOk()) {
     await setDispatchError(env.EXAM_DB, jobs, null);
-  } catch (cause) {
-    await setDispatchError(env.EXAM_DB, jobs, "workflow_enqueue_failed");
-    throw new Error("The transcription Workflow could not be enqueued.", { cause });
+    return Result.ok(undefined);
   }
+  await setDispatchError(env.EXAM_DB, jobs, "workflow_enqueue_failed");
+  return Result.err(
+    new Error("The transcription Workflow could not be enqueued.", {
+      cause: dispatched.error,
+    }),
+  );
 }
 
 async function setDispatchError(

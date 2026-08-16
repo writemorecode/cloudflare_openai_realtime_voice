@@ -1,8 +1,8 @@
-/** Durable post-recording transcription through AI Gateway and AssemblyAI. */
+/** Durable post-recording transcription through AI Gateway and OpenAI. */
 import { Result } from "better-result";
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
 
-import { presignRecordingGet } from "./presigned-recording-url";
+import { requestOpenAiTranscription } from "./openai-transcription";
 import {
   transcriptionFailure,
   TranscriptionStageError,
@@ -11,9 +11,9 @@ import {
   type TranscriptionStage,
 } from "./transcription-errors";
 import {
-  assemblyAiResponseSchema,
   canonicalTranscript,
   canonicalTranscriptSchema,
+  openAiTranscriptionResponseSchema,
   plainTextTranscript,
   TRANSCRIPTION_MODEL,
   transcriptArtifactKeys,
@@ -44,204 +44,226 @@ export class TranscriptionWorkflow extends WorkflowEntrypoint<Env, Transcription
     step: WorkflowStep,
   ): Promise<StoredTranscriptResult> {
     const params = event.payload;
-    try {
-      await step.do("verify recording and start job", async () => {
-        const recording = await observeStage(
-          params,
-          "verify_recording",
-          "recording_verification_failed",
-          "r2_error",
-          () => this.env.RECORDINGS.head(params.objectKey),
-        );
-        if (recording === null || recording.etag !== params.etag) {
-          throw logStageFailure(
+    const workflow = await Result.tryPromise({
+      try: async () => {
+        await step.do("verify recording and start job", async () => {
+          const recording = await observeStage(
             params,
             "verify_recording",
-            "source_recording_invalid",
-            "validation_error",
-            0,
+            "recording_verification_failed",
+            "r2_error",
+            () => this.env.RECORDINGS.head(params.objectKey),
           );
-        }
-        await observeStage(params, "start_job", "job_start_failed", "d1_error", () =>
-          this.env.EXAM_DB.prepare(
-            `UPDATE transcription_jobs
-               SET status = 'running', started_at = COALESCE(started_at, ?), error_code = NULL
-               WHERE id = ? AND source_object_key = ? AND source_etag = ?`,
-          )
-            .bind(Date.now(), params.jobId, params.objectKey, params.etag)
-            .run(),
-        );
-        return { size: recording.size };
-      });
-
-      const canonical = await step.do(
-        "transcribe and store canonical transcript",
-        {
-          retries: { limit: 2, delay: "30 seconds", backoff: "exponential" },
-          timeout: "20 minutes",
-        },
-        async () => {
-          const audioUrl = await observeStage(
-            params,
-            "presign_recording",
-            "recording_presign_failed",
-            "validation_error",
-            () =>
-              presignRecordingGet(
-                {
-                  accountId: this.env.R2_ACCOUNT_ID,
-                  bucketName: this.env.R2_BUCKET_NAME,
-                  accessKeyId: this.env.R2_ACCESS_KEY_ID,
-                  secretAccessKey: this.env.R2_SECRET_ACCESS_KEY,
-                },
-                params.objectKey,
+          if (recording === null || recording.etag !== params.etag) {
+            return await rejectStep(
+              logStageFailure(
+                params,
+                "verify_recording",
+                "source_recording_invalid",
+                "validation_error",
+                0,
               ),
-          );
-          const raw = await observeStage(
-            params,
-            "inference",
-            "inference_failed",
-            "provider_error",
-            () =>
-              this.env.AI.run(
-                TRANSCRIPTION_MODEL,
-                {
-                  audio_url: audioUrl,
-                  speaker_labels: true,
-                  speakers_expected: 2,
-                },
-                {
-                  gateway: {
-                    id: this.env.AI_GATEWAY_ID,
-                    skipCache: true,
-                    // Temporarily enabled for transcription debugging. Gateway logs may include
-                    // the presigned audio URL, so disable this again after the investigation.
-                    collectLog: true,
-                  },
-                },
-              ),
-          );
-          const parsed = assemblyAiResponseSchema.safeParse(raw);
-          if (!parsed.success) {
-            throw logStageFailure(
-              params,
-              "inference",
-              "inference_response_invalid",
-              "invalid_response",
-              0,
             );
           }
-          const response = parsed.data;
-          const generatedAt = Date.now();
-          const jsonKey = transcriptArtifactKeys(params.objectKey).json;
-          const source = { objectKey: params.objectKey, etag: params.etag };
-          const metadata = { sourceEtag: params.etag, model: TRANSCRIPTION_MODEL };
-          await observeStage(params, "canonical_write", "canonical_write_failed", "r2_error", () =>
-            this.env.RECORDINGS.put(
-              jsonKey,
-              `${JSON.stringify(canonicalTranscript(source, response, generatedAt), null, 2)}\n`,
-              {
-                httpMetadata: { contentType: "application/json; charset=utf-8" },
-                customMetadata: metadata,
-              },
-            ),
+          await observeStage(params, "start_job", "job_start_failed", "d1_error", () =>
+            this.env.EXAM_DB.prepare(
+              `UPDATE transcription_jobs
+               SET status = 'running', started_at = COALESCE(started_at, ?), error_code = NULL
+               WHERE id = ? AND source_object_key = ? AND source_etag = ?`,
+            )
+              .bind(Date.now(), params.jobId, params.objectKey, params.etag)
+              .run(),
           );
-          return { jsonKey };
-        },
-      );
+          return { size: recording.size };
+        });
 
-      const vtt = await step.do(
-        "create WebVTT transcript",
-        DERIVED_ARTIFACT_STEP_CONFIG,
-        async () => {
-          const transcript = await observeStage(
-            params,
-            "vtt_read",
-            "vtt_read_failed",
-            "r2_error",
-            () => readCanonicalTranscript(this.env.RECORDINGS, canonical.jsonKey),
-          );
-          const vttKey = transcriptArtifactKeys(params.objectKey).vtt;
-          await observeStage(params, "vtt_write", "vtt_write_failed", "r2_error", () =>
-            this.env.RECORDINGS.put(vttKey, webVtt(transcript), {
-              httpMetadata: { contentType: "text/vtt; charset=utf-8" },
-              customMetadata: { sourceEtag: params.etag, model: TRANSCRIPTION_MODEL },
-            }),
-          );
-          return { vttKey };
-        },
-      );
+        const canonical = await step.do(
+          "transcribe and store canonical transcript",
+          {
+            retries: { limit: 2, delay: "30 seconds", backoff: "exponential" },
+            timeout: "20 minutes",
+          },
+          async () => {
+            const recording = await observeStage(
+              params,
+              "read_recording",
+              "recording_read_failed",
+              "r2_error",
+              () => this.env.RECORDINGS.get(params.objectKey),
+            );
+            if (recording === null) {
+              return await rejectStep(
+                logStageFailure(
+                  params,
+                  "read_recording",
+                  "source_recording_invalid",
+                  "validation_error",
+                  0,
+                ),
+              );
+            }
+            const raw = await observeStage(
+              params,
+              "inference",
+              "inference_failed",
+              "provider_error",
+              () =>
+                requestOpenAiTranscription(
+                  {
+                    accountId: this.env.AI_GATEWAY_ACCOUNT_ID,
+                    gatewayId: this.env.AI_GATEWAY_ID,
+                    gatewayToken: this.env.AI_GATEWAY_TOKEN,
+                  },
+                  params.objectKey,
+                  recording,
+                ),
+            );
+            if (!raw.isOk()) {
+              return await rejectStep(
+                logStageFailure(params, "inference", "inference_failed", "provider_error", 0),
+              );
+            }
+            const parsed = openAiTranscriptionResponseSchema.safeParse(raw.value);
+            if (!parsed.success) {
+              return await rejectStep(
+                logStageFailure(
+                  params,
+                  "inference",
+                  "inference_response_invalid",
+                  "invalid_response",
+                  0,
+                ),
+              );
+            }
+            const response = parsed.data;
+            const generatedAt = Date.now();
+            const keys = transcriptArtifactKeys(params.objectKey);
+            if (!keys.isOk()) return await rejectStep(keys.error);
+            const jsonKey = keys.value.json;
+            const source = { objectKey: params.objectKey, etag: params.etag };
+            const metadata = { sourceEtag: params.etag, model: TRANSCRIPTION_MODEL };
+            await observeStage(
+              params,
+              "canonical_write",
+              "canonical_write_failed",
+              "r2_error",
+              () =>
+                this.env.RECORDINGS.put(
+                  jsonKey,
+                  `${JSON.stringify(canonicalTranscript(source, response, generatedAt), null, 2)}\n`,
+                  {
+                    httpMetadata: { contentType: "application/json; charset=utf-8" },
+                    customMetadata: metadata,
+                  },
+                ),
+            );
+            return { jsonKey };
+          },
+        );
 
-      const text = await step.do(
-        "create plaintext transcript",
-        DERIVED_ARTIFACT_STEP_CONFIG,
-        async () => {
-          const transcript = await observeStage(
-            params,
-            "plaintext_read",
-            "plaintext_read_failed",
-            "r2_error",
-            () => readCanonicalTranscript(this.env.RECORDINGS, canonical.jsonKey),
-          );
-          const textKey = transcriptArtifactKeys(params.objectKey).text;
-          await observeStage(params, "plaintext_write", "plaintext_write_failed", "r2_error", () =>
-            this.env.RECORDINGS.put(textKey, plainTextTranscript(transcript), {
-              httpMetadata: { contentType: "text/plain; charset=utf-8" },
-              customMetadata: { sourceEtag: params.etag, model: TRANSCRIPTION_MODEL },
-            }),
-          );
-          return { textKey };
-        },
-      );
+        const vtt = await step.do(
+          "create WebVTT transcript",
+          DERIVED_ARTIFACT_STEP_CONFIG,
+          async () => {
+            const transcript = await observeStage(
+              params,
+              "vtt_read",
+              "vtt_read_failed",
+              "r2_error",
+              () => readCanonicalTranscript(this.env.RECORDINGS, canonical.jsonKey),
+            );
+            const keys = transcriptArtifactKeys(params.objectKey);
+            if (!keys.isOk()) return await rejectStep(keys.error);
+            const vttKey = keys.value.vtt;
+            await observeStage(params, "vtt_write", "vtt_write_failed", "r2_error", () =>
+              this.env.RECORDINGS.put(vttKey, webVtt(transcript), {
+                httpMetadata: { contentType: "text/vtt; charset=utf-8" },
+                customMetadata: { sourceEtag: params.etag, model: TRANSCRIPTION_MODEL },
+              }),
+            );
+            return { vttKey };
+          },
+        );
 
-      const stored = { jsonKey: canonical.jsonKey, vttKey: vtt.vttKey, textKey: text.textKey };
+        const text = await step.do(
+          "create plaintext transcript",
+          DERIVED_ARTIFACT_STEP_CONFIG,
+          async () => {
+            const transcript = await observeStage(
+              params,
+              "plaintext_read",
+              "plaintext_read_failed",
+              "r2_error",
+              () => readCanonicalTranscript(this.env.RECORDINGS, canonical.jsonKey),
+            );
+            const keys = transcriptArtifactKeys(params.objectKey);
+            if (!keys.isOk()) return await rejectStep(keys.error);
+            const textKey = keys.value.text;
+            await observeStage(
+              params,
+              "plaintext_write",
+              "plaintext_write_failed",
+              "r2_error",
+              () =>
+                this.env.RECORDINGS.put(textKey, plainTextTranscript(transcript), {
+                  httpMetadata: { contentType: "text/plain; charset=utf-8" },
+                  customMetadata: { sourceEtag: params.etag, model: TRANSCRIPTION_MODEL },
+                }),
+            );
+            return { textKey };
+          },
+        );
 
-      await step.do("complete transcription job", async () => {
-        await observeStage(params, "complete_job", "job_completion_failed", "d1_error", () =>
-          this.env.EXAM_DB.prepare(
-            `UPDATE transcription_jobs
+        const stored = { jsonKey: canonical.jsonKey, vttKey: vtt.vttKey, textKey: text.textKey };
+
+        await step.do("complete transcription job", async () => {
+          await observeStage(params, "complete_job", "job_completion_failed", "d1_error", () =>
+            this.env.EXAM_DB.prepare(
+              `UPDATE transcription_jobs
                SET status = 'complete', transcript_json_key = ?, transcript_vtt_key = ?,
                    transcript_text_key = ?, completed_at = ?, error_code = NULL
                WHERE id = ?`,
-          )
-            .bind(stored.jsonKey, stored.vttKey, stored.textKey, Date.now(), params.jobId)
-            .run(),
-        );
-        return { completed: true };
-      });
+            )
+              .bind(stored.jsonKey, stored.vttKey, stored.textKey, Date.now(), params.jobId)
+              .run(),
+          );
+          return { completed: true };
+        });
 
-      return stored;
-    } catch (cause) {
-      const failure = transcriptionFailure(cause);
-      console.error({
-        kind: "transcription_workflow_failed",
-        jobId: params.jobId,
-        conversationId: params.conversationId,
-        model: TRANSCRIPTION_MODEL,
-        stage: failure.stage,
-        category: failure.category,
-        errorCode: failure.errorCode,
-      });
-      await step.do("record transcription failure", async () => {
-        await this.env.EXAM_DB.prepare(
-          `UPDATE transcription_jobs
+        return stored;
+      },
+      catch: (cause) => cause,
+    });
+    if (workflow.isOk()) return workflow.value;
+
+    const failure = transcriptionFailure(workflow.error);
+    console.error({
+      kind: "transcription_workflow_failed",
+      jobId: params.jobId,
+      conversationId: params.conversationId,
+      model: TRANSCRIPTION_MODEL,
+      stage: failure.stage,
+      category: failure.category,
+      errorCode: failure.errorCode,
+    });
+    await step.do("record transcription failure", async () => {
+      await this.env.EXAM_DB.prepare(
+        `UPDATE transcription_jobs
            SET status = 'failed', error_code = ?, completed_at = ?
            WHERE id = ?`,
-        )
-          .bind(failure.errorCode, Date.now(), params.jobId)
-          .run();
-        return { failed: true };
-      });
-      // Do not preserve provider errors because they can contain the presigned URL.
-      // eslint-disable-next-line preserve-caught-error
-      throw new Error(`Transcription workflow failed (${failure.errorCode}).`);
-    }
+      )
+        .bind(failure.errorCode, Date.now(), params.jobId)
+        .run();
+      return { failed: true };
+    });
+    // Do not preserve provider errors because they can contain sensitive response details.
+    return await rejectStep(new Error(`Transcription workflow failed (${failure.errorCode}).`));
   }
 }
 
 async function readCanonicalTranscript(bucket: R2Bucket, key: string) {
   const object = await bucket.get(key);
-  if (object === null) throw new Error("The canonical transcript is missing.");
+  if (object === null) return await rejectStep(new Error("The canonical transcript is missing."));
   return canonicalTranscriptSchema.parse(await object.json());
 }
 
@@ -255,9 +277,15 @@ async function observeStage<T>(
   const startedAt = Date.now();
   const result = await Result.tryPromise({ try: operation, catch: () => undefined });
   if (!result.isOk()) {
-    throw logStageFailure(params, stage, errorCode, category, Date.now() - startedAt);
+    return await rejectStep(
+      logStageFailure(params, stage, errorCode, category, Date.now() - startedAt),
+    );
   }
   return result.value;
+}
+
+function rejectStep(cause: unknown): Promise<never> {
+  return Promise.reject(cause);
 }
 
 function logStageFailure(

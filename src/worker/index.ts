@@ -16,6 +16,13 @@ export default {
     await createConversationApi(foundationDependencies(env)).fetch(request, env, executionContext),
   scheduled: async (_controller, env) => {
     const dispatched = await reconcileQueuedTranscriptionJobs(env);
-    console.log({ kind: "transcription_reconciliation", dispatched });
+    if (dispatched.isOk()) {
+      console.log({ kind: "transcription_reconciliation", dispatched: dispatched.value });
+    } else {
+      console.error({
+        kind: "transcription_reconciliation_failed",
+        error: dispatched.error.message,
+      });
+    }
   },
 } satisfies ExportedHandler<Env>;
