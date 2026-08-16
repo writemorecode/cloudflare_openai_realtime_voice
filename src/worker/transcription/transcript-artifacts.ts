@@ -26,6 +26,33 @@ export const assemblyAiResponseSchema = z.object({
 export type AssemblyAiResponse = z.infer<typeof assemblyAiResponseSchema>;
 type TimedText = z.infer<typeof timedTextSchema>;
 
+const canonicalTimedTextSchema = z.object({
+  confidence: z.number().min(0).max(1).nullable(),
+  endMs: z.number().int().nonnegative(),
+  speaker: z.string().min(1).nullable(),
+  startMs: z.number().int().nonnegative(),
+  text: z.string(),
+});
+
+export const canonicalTranscriptSchema = z.object({
+  schemaVersion: z.literal(1),
+  source: z.object({ objectKey: z.string().min(1), etag: z.string().min(1) }),
+  transcription: z.object({
+    provider: z.literal("assemblyai"),
+    model: z.literal(TRANSCRIPTION_MODEL),
+    generatedAt: z.number().int().nonnegative(),
+    languageCode: z.string().nullable(),
+    languageConfidence: z.number().min(0).max(1).nullable(),
+    confidence: z.number().min(0).max(1).nullable(),
+  }),
+  text: z.string(),
+  utterances: z.array(canonicalTimedTextSchema),
+  words: z.array(canonicalTimedTextSchema),
+});
+
+export type CanonicalTranscript = z.infer<typeof canonicalTranscriptSchema>;
+type CanonicalTimedText = z.infer<typeof canonicalTimedTextSchema>;
+
 export interface TranscriptSource {
   readonly objectKey: string;
   readonly etag: string;
@@ -52,7 +79,7 @@ export function canonicalTranscript(
   source: TranscriptSource,
   response: AssemblyAiResponse,
   generatedAt: number,
-): object {
+): CanonicalTranscript {
   return {
     schemaVersion: 1,
     source,
@@ -70,36 +97,33 @@ export function canonicalTranscript(
   };
 }
 
-export function webVtt(response: AssemblyAiResponse): string {
-  const cues = transcriptCues(response);
+export function webVtt(transcript: CanonicalTranscript): string {
+  const cues = transcriptCues(transcript);
   const body = cues
     .map(
       (cue) =>
-        `${formatVttTimestamp(cue.start)} --> ${formatVttTimestamp(cue.end)}\n<v ${voiceName(cue.speaker)}>${escapeVtt(cue.text)}`,
+        `${formatVttTimestamp(cue.startMs)} --> ${formatVttTimestamp(cue.endMs)}\n<v ${voiceName(cue.speaker)}>${escapeVtt(cue.text)}`,
     )
     .join("\n\n");
   return body.length === 0 ? "WEBVTT\n" : `WEBVTT\n\n${body}\n`;
 }
 
-export function plainTextTranscript(response: AssemblyAiResponse): string {
-  const cues = transcriptCues(response);
-  if (cues.length === 0) return `${response.result.text.trim()}\n`;
+export function plainTextTranscript(transcript: CanonicalTranscript): string {
+  const cues = transcriptCues(transcript);
+  if (cues.length === 0) return `${transcript.text.trim()}\n`;
   return `${cues
     .map(
       (cue) =>
-        `[${formatPlainTimestamp(cue.start)}] ${speakerName(cue.speaker)}: ${cue.text.trim()}`,
+        `[${formatPlainTimestamp(cue.startMs)}] ${speakerName(cue.speaker)}: ${cue.text.trim()}`,
     )
     .join("\n\n")}\n`;
 }
 
-function transcriptCues(response: AssemblyAiResponse): readonly TimedText[] {
-  const utterances = response.result.utterances;
-  if (utterances !== null && utterances.length > 0) return utterances;
-  const words = response.result.words;
-  return words === null ? [] : words;
+function transcriptCues(transcript: CanonicalTranscript): readonly CanonicalTimedText[] {
+  return transcript.utterances.length > 0 ? transcript.utterances : transcript.words;
 }
 
-function canonicalTimedText(value: TimedText): object {
+function canonicalTimedText(value: TimedText): CanonicalTimedText {
   return {
     speaker: value.speaker,
     startMs: value.start,
