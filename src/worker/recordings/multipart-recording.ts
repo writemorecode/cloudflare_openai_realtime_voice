@@ -192,6 +192,29 @@ export async function completeRecordingUpload(
   if (!body.isOk()) return body;
   const initial = await readState(conversationId, dependencies);
   if (!initial.isOk()) return initial;
+  if (initial.value.data.artifact.status === "ready") {
+    const artifact = initial.value.data.artifact;
+    if (body.value.uploadId !== artifact.recordingId || body.value.objectKey !== artifact.r2Key) {
+      return Result.err(
+        new ApiError(409, "recording_not_uploading", "The recording is not uploading."),
+      );
+    }
+    const transcription = await persistTranscriptionJob(
+      env,
+      conversationId,
+      artifact.r2Key,
+      artifact.r2Etag,
+      artifact.readyAt,
+    );
+    if (!transcription.isOk()) return transcription;
+    return completedRecordingResult(
+      conversationId,
+      artifact.r2Key,
+      artifact.r2Etag,
+      initial.value,
+      "recording_upload_completion_replayed",
+    );
+  }
   if (
     initial.value.tag !== ConversationStateTag.Ending ||
     initial.value.data.artifact.status !== "uploading"
@@ -227,28 +250,62 @@ export async function completeRecordingUpload(
   );
   if (!ready.isOk()) return Result.err(recordingFailure("verify_recording")(ready.error));
 
+  const transcription = await persistTranscriptionJob(
+    env,
+    conversationId,
+    objectKey,
+    completed.value.etag,
+    now,
+  );
+  if (!transcription.isOk()) return transcription;
+  return completedRecordingResult(
+    conversationId,
+    objectKey,
+    completed.value.etag,
+    ready.value,
+    "recording_upload_completed",
+  );
+}
+
+async function persistTranscriptionJob(
+  env: Env,
+  conversationId: string,
+  objectKey: string,
+  etag: string,
+  createdAt: number,
+) {
   const transcription = await Result.tryPromise({
     try: () =>
       enqueueCompletedRecordingTranscription(env, {
         conversationId,
         objectKey,
-        etag: completed.value.etag,
-        createdAt: now,
+        etag,
+        createdAt,
       }),
     catch: recordingFailure("persist_transcription_job"),
   });
-  if (!transcription.isOk()) return transcription;
-  console.log({
-    kind: "transcription_enqueue",
-    conversationId,
-    outcome: transcription.value,
-  });
+  if (transcription.isOk()) {
+    console.log({
+      kind: "transcription_enqueue",
+      conversationId,
+      outcome: transcription.value,
+    });
+  }
+  return transcription;
+}
 
+function completedRecordingResult(
+  conversationId: string,
+  objectKey: string,
+  etag: string,
+  state: ConversationState,
+  outcome: "recording_upload_completed" | "recording_upload_completion_replayed",
+): Result<RecordingOperationResult, ApiError> {
   return Result.ok({
-    response: Response.json({ objectKey, etag: completed.value.etag }),
+    response: Response.json({ objectKey, etag }),
     conversationId,
-    state: ready.value,
-    outcome: "recording_upload_completed",
+    state,
+    outcome,
   });
 }
 
