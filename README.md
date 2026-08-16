@@ -69,6 +69,18 @@ pnpm dev
 
 Vite proxies `/v1` and WebSocket upgrades to Wrangler on port 8787.
 
+To manually retrigger the latest transcription job for a conversation, keep `wrangler dev`
+running when targeting the local Workflow and run one of:
+
+```sh
+pnpm transcription:trigger -- --local <conversation-id>
+pnpm transcription:trigger -- --remote <conversation-id>
+```
+
+The command locates the recording in the remote development R2 bucket, creates or reuses the
+corresponding job in local or remote D1 respectively, and starts a new Workflow instance. A
+completed examination session for the conversation must already exist in the selected D1 database.
+
 ## Main routes
 
 - `POST /v1/conversations/:id/realtime-call` — exchange an SDP offer for the OpenAI SDP answer.
