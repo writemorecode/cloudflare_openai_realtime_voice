@@ -10,6 +10,8 @@ export default defineConfig({
   },
   plugins: [
     cloudflareTest({
+      // Tests must never follow `remote: true` bindings into shared development resources.
+      remoteBindings: false,
       wrangler: { configPath: "./wrangler.jsonc" },
       miniflare: {
         bindings: {
