@@ -37,6 +37,9 @@
       "class_name": "TranscriptionWorkflow",
     },
   ],
+  "triggers": {
+    "crons": ["*/5 * * * *"],
+  },
   "observability": {
     "logs": {
       "enabled": true,

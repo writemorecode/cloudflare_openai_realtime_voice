@@ -227,26 +227,22 @@ export async function completeRecordingUpload(
   );
   if (!ready.isOk()) return Result.err(recordingFailure("verify_recording")(ready.error));
 
-  try {
-    const transcription = await enqueueCompletedRecordingTranscription(env, {
-      conversationId,
-      objectKey,
-      etag: completed.value.etag,
-      createdAt: now,
-    });
-    console.log({
-      kind: "transcription_enqueue",
-      conversationId,
-      outcome: transcription,
-    });
-  } catch {
-    // Recording completion must remain successful. Failed jobs are retained in D1 for reconciliation.
-    console.error({
-      kind: "transcription_enqueue_error",
-      conversationId,
-      code: "workflow_enqueue_failed",
-    });
-  }
+  const transcription = await Result.tryPromise({
+    try: () =>
+      enqueueCompletedRecordingTranscription(env, {
+        conversationId,
+        objectKey,
+        etag: completed.value.etag,
+        createdAt: now,
+      }),
+    catch: recordingFailure("persist_transcription_job"),
+  });
+  if (!transcription.isOk()) return transcription;
+  console.log({
+    kind: "transcription_enqueue",
+    conversationId,
+    outcome: transcription.value,
+  });
 
   return Result.ok({
     response: Response.json({ objectKey, etag: completed.value.etag }),
