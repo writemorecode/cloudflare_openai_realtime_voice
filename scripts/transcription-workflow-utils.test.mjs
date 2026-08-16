@@ -95,6 +95,8 @@ test("builds an idempotent job insert for a completed examination session", () =
     now: 1234,
   });
   assert.match(sql, /question_state = 'complete'/);
+  assert.match(sql, /'gpt-4o-transcribe-diarize'/);
   assert.match(sql, /ON CONFLICT\(source_object_key, source_etag\)/);
+  assert.match(sql, /model = excluded\.model/);
   assert.match(sql, /RETURNING id/);
 });

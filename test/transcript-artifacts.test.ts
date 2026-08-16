@@ -1,30 +1,36 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  assemblyAiResponseSchema,
   canonicalTranscript,
   canonicalTranscriptSchema,
+  openAiTranscriptionResponseSchema,
   plainTextTranscript,
   transcriptArtifactKeys,
   webVtt,
 } from "../src/worker/transcription/transcript-artifacts";
 
-const response = assemblyAiResponseSchema.parse({
-  state: "Completed",
-  result: {
-    confidence: 0.95,
-    language_code: "en",
-    language_confidence: 0.99,
-    text: "Welcome. Thank you.",
-    utterances: [
-      { confidence: 0.98, start: 1250, end: 2500, speaker: "A", text: "Welcome." },
-      { confidence: 0.92, start: 3000, end: 4250, speaker: "B", text: "Thank you." },
-    ],
-    words: [
-      { confidence: 0.98, start: 1250, end: 2500, speaker: "A", text: "Welcome." },
-      { confidence: 0.92, start: 3000, end: 4250, speaker: "B", text: "Thank you." },
-    ],
-  },
+const response = openAiTranscriptionResponseSchema.parse({
+  task: "transcribe",
+  duration: 4.25,
+  text: "Welcome. Thank you.",
+  segments: [
+    {
+      type: "transcript.text.segment",
+      id: "seg_0",
+      start: 1.25,
+      end: 2.5,
+      speaker: "A",
+      text: "Welcome.",
+    },
+    {
+      type: "transcript.text.segment",
+      id: "seg_1",
+      start: 3,
+      end: 4.25,
+      speaker: "B",
+      text: "Thank you.",
+    },
+  ],
 });
 
 const transcript = canonicalTranscriptSchema.parse(
@@ -37,10 +43,13 @@ const transcript = canonicalTranscriptSchema.parse(
 
 describe("transcript artifacts", () => {
   it("places all artifacts beside the source recording", () => {
-    expect(transcriptArtifactKeys("conversations/id/recording.webm")).toEqual({
-      json: "conversations/id/transcript.v1.json",
-      vtt: "conversations/id/transcript.v1.vtt",
-      text: "conversations/id/transcript.v1.txt",
+    expect(transcriptArtifactKeys("conversations/id/recording.webm")).toMatchObject({
+      status: "ok",
+      value: {
+        json: "conversations/id/transcript.v1.json",
+        vtt: "conversations/id/transcript.v1.vtt",
+        text: "conversations/id/transcript.v1.txt",
+      },
     });
   });
 
@@ -55,8 +64,8 @@ describe("transcript artifacts", () => {
       schemaVersion: 1,
       source: { objectKey: "conversations/id/recording.webm", etag: "etag" },
       utterances: [
-        { speaker: "A", startMs: 1250, endMs: 2500, text: "Welcome.", confidence: 0.98 },
-        { speaker: "B", startMs: 3000, endMs: 4250, text: "Thank you.", confidence: 0.92 },
+        { speaker: "A", startMs: 1250, endMs: 2500, text: "Welcome.", confidence: null },
+        { speaker: "B", startMs: 3000, endMs: 4250, text: "Thank you.", confidence: null },
       ],
     });
   });

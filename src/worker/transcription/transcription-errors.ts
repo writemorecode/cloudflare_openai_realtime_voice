@@ -1,7 +1,7 @@
 const TRANSCRIPTION_STAGES = [
   "verify_recording",
   "start_job",
-  "presign_recording",
+  "read_recording",
   "inference",
   "canonical_write",
   "vtt_read",
@@ -15,7 +15,7 @@ const TRANSCRIPTION_ERROR_CODES = [
   "source_recording_invalid",
   "recording_verification_failed",
   "job_start_failed",
-  "recording_presign_failed",
+  "recording_read_failed",
   "inference_failed",
   "inference_response_invalid",
   "canonical_write_failed",

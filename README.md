@@ -29,20 +29,20 @@ R2 credentials are never sent to the browser; the Worker uses the `RECORDINGS` b
 ## Transcription flow
 
 A verified recording for a completed examination creates an idempotent Cloudflare Workflow job.
-The Workflow signs a private R2 S3 `GET` URL for 15 minutes and calls
-`assemblyai/universal-3-pro` through the configured AI Gateway with two-speaker diarization. AI
-Gateway request logging is temporarily enabled for debugging, while caching remains disabled.
-Successful jobs write these
-artifacts beside the recording:
+The Workflow reads the private R2 object and uploads its bytes to OpenAI's
+`gpt-4o-transcribe-diarize` through the configured AI Gateway. The Gateway uses its stored OpenAI
+BYOK key. AI Gateway request logging is temporarily enabled for debugging, while caching remains
+disabled. Successful jobs write these artifacts beside the recording:
 
-- `transcript.v1.json` — canonical speaker-labelled utterances and word timestamps.
+- `transcript.v1.json` — canonical speaker-labelled transcript segments.
 - `transcript.v1.vtt` — timestamped WebVTT captions with speaker labels.
 - `transcript.v1.txt` — readable speaker-labelled plain text.
 
-The bucket must remain private. Presigning uses separate object-read-only R2 S3 credentials in
-`R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY`; application logs must never include the credentials
-or signed URL. While temporary AI Gateway request logging is enabled, Gateway payload logs may
-contain the signed URL and must be treated as sensitive; disable it again after debugging.
+The bucket remains private. The Workflow authenticates to AI Gateway with `AI_GATEWAY_TOKEN`; the
+Gateway injects the stored OpenAI provider key. While temporary AI Gateway request logging is
+enabled, Gateway payload logs may contain transcript data and must be treated as sensitive; disable
+it again after debugging. The manual transcription trigger still uses object-read-only R2 S3
+credentials in `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` to discover recordings.
 Workflow dispatch is backed by the `transcription_jobs` D1 outbox. A five-minute Cron Trigger
 retries queued jobs through the idempotent Workflows batch-creation API.
 
@@ -52,6 +52,7 @@ Store local secrets in `.dev.vars`:
 
 ```dotenv
 OPENAI_API_KEY=...
+AI_GATEWAY_TOKEN=...
 CONVERSATION_ID_SECRET=...
 R2_ACCESS_KEY_ID=...
 R2_SECRET_ACCESS_KEY=...

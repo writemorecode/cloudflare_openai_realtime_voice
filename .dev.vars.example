@@ -4,6 +4,7 @@ ALLOWED_ORIGIN="http://localhost:5173/"
 
 CONVERSATION_ID_SECRET="replace-with-a-separate-development-secret"
 OPENAI_API_KEY="replace-with-openai-api-key"
+AI_GATEWAY_TOKEN="replace-with-ai-gateway-token"
 
 # Object-read-only S3 credentials scoped to the private recordings bucket.
 R2_ACCESS_KEY_ID="replace-with-r2-access-key-id"

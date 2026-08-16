@@ -1,30 +1,26 @@
-/** Validates AssemblyAI output and creates provider-neutral transcript artifacts. */
+/** Validates OpenAI output and creates provider-neutral transcript artifacts. */
+import { Result } from "better-result";
 import { z } from "zod";
 
-export const TRANSCRIPTION_MODEL = "assemblyai/universal-3-pro";
+export const TRANSCRIPTION_MODEL = "gpt-4o-transcribe-diarize";
 
-const timedTextSchema = z.object({
-  confidence: z.number().min(0).max(1).nullable(),
-  end: z.number().int().nonnegative(),
-  speaker: z.string().min(1).nullable(),
-  start: z.number().int().nonnegative(),
+const openAiSegmentSchema = z.object({
+  type: z.literal("transcript.text.segment"),
+  id: z.string().min(1),
+  end: z.number().nonnegative(),
+  speaker: z.string().min(1),
+  start: z.number().nonnegative(),
   text: z.string(),
 });
 
-export const assemblyAiResponseSchema = z.object({
-  result: z.object({
-    confidence: z.number().min(0).max(1).nullable(),
-    language_code: z.string().nullable(),
-    language_confidence: z.number().min(0).max(1).nullable(),
-    text: z.string(),
-    utterances: z.array(timedTextSchema).nullable(),
-    words: z.array(timedTextSchema).nullable(),
-  }),
-  state: z.literal("Completed"),
+export const openAiTranscriptionResponseSchema = z.object({
+  task: z.literal("transcribe"),
+  duration: z.number().nonnegative(),
+  text: z.string(),
+  segments: z.array(openAiSegmentSchema),
 });
 
-export type AssemblyAiResponse = z.infer<typeof assemblyAiResponseSchema>;
-type TimedText = z.infer<typeof timedTextSchema>;
+export type OpenAiTranscriptionResponse = z.infer<typeof openAiTranscriptionResponseSchema>;
 
 const canonicalTimedTextSchema = z.object({
   confidence: z.number().min(0).max(1).nullable(),
@@ -38,7 +34,7 @@ export const canonicalTranscriptSchema = z.object({
   schemaVersion: z.literal(1),
   source: z.object({ objectKey: z.string().min(1), etag: z.string().min(1) }),
   transcription: z.object({
-    provider: z.literal("assemblyai"),
+    provider: z.literal("openai"),
     model: z.literal(TRANSCRIPTION_MODEL),
     generatedAt: z.number().int().nonnegative(),
     languageCode: z.string().nullable(),
@@ -64,36 +60,36 @@ export interface TranscriptArtifactKeys {
   readonly text: string;
 }
 
-export function transcriptArtifactKeys(sourceObjectKey: string): TranscriptArtifactKeys {
+export function transcriptArtifactKeys(sourceObjectKey: string) {
   const separator = sourceObjectKey.lastIndexOf("/");
-  if (separator < 1) throw new Error("The recording object key has no parent prefix.");
+  if (separator < 1) return Result.err(new Error("The recording object key has no parent prefix."));
   const prefix = sourceObjectKey.slice(0, separator);
-  return {
+  return Result.ok<TranscriptArtifactKeys>({
     json: `${prefix}/transcript.v1.json`,
     vtt: `${prefix}/transcript.v1.vtt`,
     text: `${prefix}/transcript.v1.txt`,
-  };
+  });
 }
 
 export function canonicalTranscript(
   source: TranscriptSource,
-  response: AssemblyAiResponse,
+  response: OpenAiTranscriptionResponse,
   generatedAt: number,
 ): CanonicalTranscript {
   return {
     schemaVersion: 1,
     source,
     transcription: {
-      provider: "assemblyai",
+      provider: "openai",
       model: TRANSCRIPTION_MODEL,
       generatedAt,
-      languageCode: response.result.language_code,
-      languageConfidence: response.result.language_confidence,
-      confidence: response.result.confidence,
+      languageCode: null,
+      languageConfidence: null,
+      confidence: null,
     },
-    text: response.result.text,
-    utterances: response.result.utterances?.map(canonicalTimedText) ?? [],
-    words: response.result.words?.map(canonicalTimedText) ?? [],
+    text: response.text,
+    utterances: response.segments.map(canonicalTimedText),
+    words: [],
   };
 }
 
@@ -123,13 +119,13 @@ function transcriptCues(transcript: CanonicalTranscript): readonly CanonicalTime
   return transcript.utterances.length > 0 ? transcript.utterances : transcript.words;
 }
 
-function canonicalTimedText(value: TimedText): CanonicalTimedText {
+function canonicalTimedText(value: z.infer<typeof openAiSegmentSchema>): CanonicalTimedText {
   return {
     speaker: value.speaker,
-    startMs: value.start,
-    endMs: value.end,
+    startMs: Math.round(value.start * 1000),
+    endMs: Math.round(value.end * 1000),
     text: value.text,
-    confidence: value.confidence,
+    confidence: null,
   };
 }
 

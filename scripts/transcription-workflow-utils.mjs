@@ -101,11 +101,11 @@ export function transcriptionJobSql({ jobId, conversationId, recording, now }) {
   id, examination_session_id, source_object_key, source_etag, model, status, created_at
 )
 SELECT ${quoteSql(jobId)}, sessions.id, ${quoteSql(recording.objectKey)},
-       ${quoteSql(recording.etag)}, 'assemblyai/universal-3-pro', 'queued', ${now}
+       ${quoteSql(recording.etag)}, 'gpt-4o-transcribe-diarize', 'queued', ${now}
 FROM examination_sessions AS sessions
 WHERE sessions.conversation_id = ${quoteSql(conversationId)}
   AND sessions.question_state = 'complete'
-ON CONFLICT(source_object_key, source_etag) DO UPDATE SET model = transcription_jobs.model
+ON CONFLICT(source_object_key, source_etag) DO UPDATE SET model = excluded.model
 RETURNING id;`;
 }
 
