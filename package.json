@@ -18,9 +18,7 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p web/tsconfig.json",
     "types": "wrangler types",
     "fmt": "pnpm exec oxfmt",
-    "lint": "pnpm exec oxlint",
-    "r2:apply-retention": "wrangler r2 bucket lifecycle set oral-exam-recordings-dev --file config/r2-lifecycle.json --force",
-    "r2:verify-retention": "wrangler r2 bucket lifecycle list oral-exam-recordings-dev"
+    "lint": "pnpm exec oxlint"
   },
   "dependencies": {
     "@ai-oral-exam/conversation-client": "workspace:*",
