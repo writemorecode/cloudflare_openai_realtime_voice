@@ -1,14 +1,13 @@
+import { transcriptSchema } from "@ai-oral-exam/conversation-contract";
 import { describe, expect, it } from "vitest";
 
 import {
-  canonicalTranscript,
-  canonicalTranscriptSchema,
+  createTranscript,
   openAiTranscriptionResponseSchema,
-  plainTextTranscript,
-  transcriptArtifactKeys,
-  webVtt,
+  transcriptArtifactKey,
 } from "../src/worker/transcription/transcript-artifacts";
 
+const conversationId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const response = openAiTranscriptionResponseSchema.parse({
   task: "transcribe",
   duration: 4.25,
@@ -20,7 +19,7 @@ const response = openAiTranscriptionResponseSchema.parse({
       start: 1.25,
       end: 2.5,
       speaker: "A",
-      text: "Welcome.",
+      text: " Welcome. ",
     },
     {
       type: "transcript.text.segment",
@@ -33,50 +32,88 @@ const response = openAiTranscriptionResponseSchema.parse({
   ],
 });
 
-const transcript = canonicalTranscriptSchema.parse(
-  canonicalTranscript(
-    { objectKey: "conversations/id/recording.webm", etag: "etag" },
-    response,
-    1234,
-  ),
-);
-
-describe("transcript artifacts", () => {
-  it("places all artifacts beside the source recording", () => {
-    expect(transcriptArtifactKeys("conversations/id/recording.webm")).toMatchObject({
+describe("transcript artifact", () => {
+  it("uses one versioned JSON object beside the source recording", () => {
+    expect(transcriptArtifactKey("conversations/id/recording.webm")).toMatchObject({
       status: "ok",
-      value: {
-        json: "conversations/id/transcript.v1.json",
-        vtt: "conversations/id/transcript.v1.vtt",
-        text: "conversations/id/transcript.v1.txt",
-      },
+      value: "conversations/id/transcript.v1.json",
     });
   });
 
-  it("preserves diarized timestamps in canonical JSON", () => {
-    expect(
-      canonicalTranscript(
+  it("creates timed turns with semantic participant roles", () => {
+    const transcript = transcriptSchema.parse(
+      createTranscript(
+        conversationId,
         { objectKey: "conversations/id/recording.webm", etag: "etag" },
         response,
         1234,
       ),
-    ).toMatchObject({
+    );
+
+    expect(transcript).toEqual({
       schemaVersion: 1,
-      source: { objectKey: "conversations/id/recording.webm", etag: "etag" },
-      utterances: [
-        { speaker: "A", startMs: 1250, endMs: 2500, text: "Welcome.", confidence: null },
-        { speaker: "B", startMs: 3000, endMs: 4250, text: "Thank you.", confidence: null },
+      conversationId,
+      source: {
+        objectKey: "conversations/id/recording.webm",
+        etag: "etag",
+        durationMs: 4250,
+      },
+      transcription: {
+        provider: "openai",
+        model: "gpt-4o-transcribe-diarize",
+        generatedAt: 1234,
+        languageCode: null,
+      },
+      participants: [
+        {
+          id: "examiner",
+          role: "examiner",
+          roleAssignment: "first-speaker-heuristic",
+          displayName: "Examiner",
+          sourceSpeakerLabel: "A",
+        },
+        {
+          id: "student",
+          role: "student",
+          roleAssignment: "first-speaker-heuristic",
+          displayName: "Student",
+          sourceSpeakerLabel: "B",
+        },
+      ],
+      turns: [
+        {
+          id: "turn-0001",
+          participantId: "examiner",
+          startMs: 1250,
+          endMs: 2500,
+          text: "Welcome.",
+          confidence: null,
+        },
+        {
+          id: "turn-0002",
+          participantId: "student",
+          startMs: 3000,
+          endMs: 4250,
+          text: "Thank you.",
+          confidence: null,
+        },
       ],
     });
   });
 
-  it("renders speaker-labelled VTT and text", () => {
-    expect(webVtt(transcript)).toBe(
-      "WEBVTT\n\n00:00:01.250 --> 00:00:02.500\n<v Speaker A>Welcome.\n\n" +
-        "00:00:03.000 --> 00:00:04.250\n<v Speaker B>Thank you.\n",
+  it("rejects invalid timing and dangling participant references", () => {
+    const transcript = createTranscript(
+      conversationId,
+      { objectKey: "conversations/id/recording.webm", etag: "etag" },
+      response,
+      1234,
     );
-    expect(plainTextTranscript(transcript)).toBe(
-      "[00:00:01] Speaker A: Welcome.\n\n[00:00:03] Speaker B: Thank you.\n",
-    );
+
+    expect(
+      transcriptSchema.safeParse({
+        ...transcript,
+        turns: [{ ...transcript.turns[0], participantId: "missing", endMs: 5000 }],
+      }).success,
+    ).toBe(false);
   });
 });

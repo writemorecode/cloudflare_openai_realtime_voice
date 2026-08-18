@@ -32,11 +32,18 @@ A verified recording for a completed examination creates an idempotent Cloudflar
 The Workflow reads the private R2 object and uploads its bytes to OpenAI's
 `gpt-4o-transcribe-diarize` through the configured AI Gateway. The Gateway uses its stored OpenAI
 BYOK key. AI Gateway request logging is temporarily enabled for debugging, while caching remains
-disabled. Successful jobs write these artifacts beside the recording:
+disabled. Successful jobs write one application-owned artifact beside the recording:
 
-- `transcript.v1.json` — canonical speaker-labelled transcript segments.
-- `transcript.v1.vtt` — timestamped WebVTT captions with speaker labels.
-- `transcript.v1.txt` — readable speaker-labelled plain text.
+- `transcript.v1.json` — timed turns with explicit examiner, student, and unknown participants.
+
+The JSON transcript is the source of truth for application features. The workflow does not create
+WebVTT or plaintext derivatives.
+
+Until recording channels carry explicit roles, the first non-empty diarized speaker is assigned
+the examiner role, the second is assigned the student role, and additional speakers remain unknown.
+Each participant records this assignment provenance so consumers do not mistake it for provider
+certainty. Consumers validate this version-1 contract strictly; other transcript shapes and schema
+versions are invalid. The D1 migration preserves existing job states and never queues regeneration.
 
 The bucket remains private. The Workflow authenticates to AI Gateway with `AI_GATEWAY_TOKEN`; the
 Gateway injects the stored OpenAI provider key. While temporary AI Gateway request logging is
