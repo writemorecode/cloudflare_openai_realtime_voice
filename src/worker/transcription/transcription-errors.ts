@@ -3,11 +3,7 @@ const TRANSCRIPTION_STAGES = [
   "start_job",
   "read_recording",
   "inference",
-  "canonical_write",
-  "vtt_read",
-  "vtt_write",
-  "plaintext_read",
-  "plaintext_write",
+  "transcript_write",
   "complete_job",
 ] as const;
 
@@ -19,11 +15,7 @@ const TRANSCRIPTION_ERROR_CODES = [
   "recording_read_failed",
   "inference_failed",
   "inference_response_invalid",
-  "canonical_write_failed",
-  "vtt_read_failed",
-  "vtt_write_failed",
-  "plaintext_read_failed",
-  "plaintext_write_failed",
+  "transcript_write_failed",
   "job_completion_failed",
   "transcription_failed",
 ] as const;

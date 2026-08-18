@@ -15,13 +15,10 @@ import {
   type TranscriptionStage,
 } from "./transcription-errors";
 import {
-  canonicalTranscript,
-  canonicalTranscriptSchema,
+  createTranscript,
   openAiTranscriptionResponseSchema,
-  plainTextTranscript,
   TRANSCRIPTION_MODEL,
-  transcriptArtifactKeys,
-  webVtt,
+  transcriptArtifactKey,
 } from "./transcript-artifacts";
 
 export interface TranscriptionWorkflowParams {
@@ -32,15 +29,8 @@ export interface TranscriptionWorkflowParams {
 }
 
 interface StoredTranscriptResult {
-  readonly jsonKey: string;
-  readonly vttKey: string;
-  readonly textKey: string;
+  readonly transcriptKey: string;
 }
-
-const DERIVED_ARTIFACT_STEP_CONFIG = {
-  retries: { limit: 3, delay: "10 seconds", backoff: "exponential" },
-  timeout: "2 minutes",
-} as const;
 
 export class TranscriptionWorkflow extends WorkflowEntrypoint<Env, TranscriptionWorkflowParams> {
   override async run(
@@ -93,8 +83,8 @@ export class TranscriptionWorkflow extends WorkflowEntrypoint<Env, Transcription
           return { size: recording.size };
         });
 
-        const canonical = await step.do(
-          "transcribe and store canonical transcript",
+        const transcript = await step.do(
+          "transcribe and store transcript",
           {
             retries: { limit: 2, delay: "30 seconds", backoff: "exponential" },
             timeout: "20 minutes",
@@ -173,90 +163,39 @@ export class TranscriptionWorkflow extends WorkflowEntrypoint<Env, Transcription
             }
             const response = parsed.data;
             const generatedAt = Date.now();
-            const keys = transcriptArtifactKeys(params.objectKey);
-            if (!keys.isOk()) return failStep(keys.error);
-            const jsonKey = keys.value.json;
+            const key = transcriptArtifactKey(params.objectKey);
+            if (!key.isOk()) return failStep(key.error);
+            const transcriptKey = key.value;
             const source = { objectKey: params.objectKey, etag: params.etag };
-            const metadata = { sourceEtag: params.etag, model: TRANSCRIPTION_MODEL };
-            await runStage(params, "canonical_write", "canonical_write_failed", "r2_error", () =>
-              this.env.RECORDINGS.put(
-                jsonKey,
-                `${JSON.stringify(canonicalTranscript(source, response, generatedAt), null, 2)}\n`,
-                {
-                  httpMetadata: { contentType: "application/json; charset=utf-8" },
-                  customMetadata: metadata,
+            const artifact = createTranscript(params.conversationId, source, response, generatedAt);
+            await runStage(params, "transcript_write", "transcript_write_failed", "r2_error", () =>
+              this.env.RECORDINGS.put(transcriptKey, `${JSON.stringify(artifact, null, 2)}\n`, {
+                httpMetadata: { contentType: "application/json; charset=utf-8" },
+                customMetadata: {
+                  sourceEtag: params.etag,
+                  model: TRANSCRIPTION_MODEL,
+                  schemaVersion: String(artifact.schemaVersion),
                 },
-              ),
-            );
-            return { jsonKey };
-          },
-        );
-
-        const vtt = await step.do(
-          "create WebVTT transcript",
-          DERIVED_ARTIFACT_STEP_CONFIG,
-          async () => {
-            const transcript = await runStage(
-              params,
-              "vtt_read",
-              "vtt_read_failed",
-              "r2_error",
-              () => readCanonicalTranscript(this.env.RECORDINGS, canonical.jsonKey),
-            );
-            const keys = transcriptArtifactKeys(params.objectKey);
-            if (!keys.isOk()) return failStep(keys.error);
-            const vttKey = keys.value.vtt;
-            await runStage(params, "vtt_write", "vtt_write_failed", "r2_error", () =>
-              this.env.RECORDINGS.put(vttKey, webVtt(transcript), {
-                httpMetadata: { contentType: "text/vtt; charset=utf-8" },
-                customMetadata: { sourceEtag: params.etag, model: TRANSCRIPTION_MODEL },
               }),
             );
-            return { vttKey };
+            return { transcriptKey };
           },
         );
-
-        const text = await step.do(
-          "create plaintext transcript",
-          DERIVED_ARTIFACT_STEP_CONFIG,
-          async () => {
-            const transcript = await runStage(
-              params,
-              "plaintext_read",
-              "plaintext_read_failed",
-              "r2_error",
-              () => readCanonicalTranscript(this.env.RECORDINGS, canonical.jsonKey),
-            );
-            const keys = transcriptArtifactKeys(params.objectKey);
-            if (!keys.isOk()) return failStep(keys.error);
-            const textKey = keys.value.text;
-            await runStage(params, "plaintext_write", "plaintext_write_failed", "r2_error", () =>
-              this.env.RECORDINGS.put(textKey, plainTextTranscript(transcript), {
-                httpMetadata: { contentType: "text/plain; charset=utf-8" },
-                customMetadata: { sourceEtag: params.etag, model: TRANSCRIPTION_MODEL },
-              }),
-            );
-            return { textKey };
-          },
-        );
-
-        const stored = { jsonKey: canonical.jsonKey, vttKey: vtt.vttKey, textKey: text.textKey };
 
         await step.do("complete transcription job", async () => {
           await runStage(params, "complete_job", "job_completion_failed", "d1_error", () =>
             this.env.EXAM_DB.prepare(
               `UPDATE transcription_jobs
-               SET status = 'complete', transcript_json_key = ?, transcript_vtt_key = ?,
-                   transcript_text_key = ?, completed_at = ?, error_code = NULL
+               SET status = 'complete', transcript_key = ?, completed_at = ?, error_code = NULL
                WHERE id = ?`,
             )
-              .bind(stored.jsonKey, stored.vttKey, stored.textKey, Date.now(), params.jobId)
+              .bind(transcript.transcriptKey, Date.now(), params.jobId)
               .run(),
           );
           return { completed: true };
         });
 
-        return stored;
+        return transcript;
       },
       catch: (cause) => cause,
     });
@@ -285,12 +224,6 @@ export class TranscriptionWorkflow extends WorkflowEntrypoint<Env, Transcription
     // Do not preserve provider errors because they can contain sensitive response details.
     return failStep(new Error(`Transcription workflow failed (${failure.errorCode}).`));
   }
-}
-
-async function readCanonicalTranscript(bucket: R2Bucket, key: string) {
-  const object = await bucket.get(key);
-  if (object === null) return failStep(new Error("The canonical transcript is missing."));
-  return canonicalTranscriptSchema.parse(await object.json());
 }
 
 /**
