@@ -24,6 +24,37 @@ function rejected(error: unknown) {
 }
 
 describe("HttpConversationApi public contract", () => {
+  it("retrieves and validates the custom examination transcript", async () => {
+    const transcript = {
+      schemaVersion: 1,
+      conversationId: validState.conversationId,
+      source: { objectKey: "recording.ogg", etag: "etag", durationMs: 1_000 },
+      transcription: {
+        provider: "openai",
+        model: "transcribe",
+        generatedAt: 1,
+        languageCode: "en",
+      },
+      participants: [],
+      turns: [],
+    };
+    const fetch = resolved(Response.json(transcript));
+    vi.stubGlobal("fetch", fetch);
+    const api = new HttpConversationApi({ baseUrl: "https://example.test" });
+
+    await expect(api.getExaminationSessionTranscript(validState.conversationId)).resolves.toEqual({
+      status: "ok",
+      value: transcript,
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      new URL(
+        `/v1/examination-sessions/${validState.conversationId}/transcript`,
+        "https://example.test",
+      ),
+      expect.objectContaining({ credentials: "same-origin" }),
+    );
+  });
+
   it("returns responses that satisfy the foundation contract", async () => {
     const fetch = resolved(Response.json(validState));
     vi.stubGlobal("fetch", fetch);

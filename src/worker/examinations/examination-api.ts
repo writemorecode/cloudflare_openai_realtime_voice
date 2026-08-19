@@ -5,6 +5,7 @@ import {
   completeExaminationQuestionRequestSchema,
   createExaminationRequestSchema,
   deserializeResult,
+  transcriptSchema,
   type CurrentExaminationQuestion,
   type ExaminationSession,
 } from "@ai-oral-exam/conversation-contract";
@@ -24,6 +25,7 @@ import {
   completeExaminationQuestion,
   findExamination,
   findExaminationSessionById,
+  findLatestTranscriptionStatus,
   getCurrentExaminationQuestion,
   insertExamination,
   insertExaminationSession,
@@ -34,6 +36,7 @@ import {
 } from "./examination-repository";
 
 const MAX_EXAMINATION_BODY_BYTES = 512 * 1024;
+const MAX_TRANSCRIPT_BODY_BYTES = 5 * 1024 * 1024;
 const SESSION_IDEMPOTENCY_PREFIX = "examination-session:v1:";
 
 export interface ExaminationApiResult {
@@ -175,6 +178,7 @@ export async function createExaminationSession(
     session.value,
     initialized.value.state.tag,
     isRecordingAvailable(initialized.value.state),
+    null,
   );
   return Result.ok({
     response: Response.json(publicSession, {
@@ -200,7 +204,7 @@ export async function getExaminationSessions(
   });
   if (!stored.isOk()) return stored;
   const hydrated = await Promise.all(
-    stored.value.map((session) => hydrateSession(session, dependencies)),
+    stored.value.map((session) => hydrateSession(session, env, dependencies)),
   );
   const sessions: ExaminationSession[] = [];
   for (const result of hydrated) {
@@ -224,7 +228,7 @@ export async function getExaminationSession(
 ): Promise<ApiResult<ExaminationApiResult>> {
   const stored = await ownedSession(examinationSessionId, user, env);
   if (!stored.isOk()) return stored;
-  const hydrated = await hydrateSession(stored.value, dependencies);
+  const hydrated = await hydrateSession(stored.value, env, dependencies);
   if (!hydrated.isOk()) return hydrated;
   return Result.ok({
     response: Response.json(hydrated.value, { headers: { "Cache-Control": "no-store" } }),
@@ -301,6 +305,67 @@ export async function getExaminationSessionRecording(
     }),
     conversationId: stored.value.conversationId,
     outcome: range.value === null ? "recording_streamed" : "recording_range_streamed",
+  });
+}
+
+export async function getExaminationSessionTranscript(
+  examinationSessionId: string,
+  user: AuthenticatedUser,
+  env: Env,
+): Promise<ApiResult<ExaminationApiResult>> {
+  const stored = await ownedSession(examinationSessionId, user, env);
+  if (!stored.isOk()) return stored;
+  const artifact = await Result.tryPromise({
+    try: () =>
+      env.EXAM_DB.prepare(
+        `SELECT transcript_key AS transcriptKey FROM transcription_jobs
+         WHERE examination_session_id = ? AND status = 'complete'
+           AND transcript_key IS NOT NULL
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+        .bind(examinationSessionId)
+        .first<{ transcriptKey: string }>(),
+    catch: examinationOperationFailed("find_examination_transcript"),
+  });
+  if (!artifact.isOk()) return artifact;
+  if (artifact.value === null) {
+    return Result.err(
+      new ApiError(409, "transcript_not_ready", "The examination transcript is not ready."),
+    );
+  }
+  const transcriptKey = artifact.value.transcriptKey;
+  const object = await Result.tryPromise({
+    try: () => env.RECORDINGS.get(transcriptKey),
+    catch: examinationOperationFailed("get_examination_transcript"),
+  });
+  if (!object.isOk()) return object;
+  if (object.value === null) {
+    return Result.err(
+      new ApiError(409, "transcript_not_ready", "The examination transcript is not ready."),
+    );
+  }
+  const transcriptObject = object.value;
+  if (transcriptObject.size > MAX_TRANSCRIPT_BODY_BYTES) {
+    return Result.err(
+      new ApiError(500, "invalid_transcript", "The examination transcript is invalid."),
+    );
+  }
+  const parsed = await Result.tryPromise({
+    try: async () => transcriptSchema.safeParse(await transcriptObject.json()),
+    catch: examinationOperationFailed("parse_examination_transcript"),
+  });
+  if (!parsed.isOk()) return parsed;
+  if (!parsed.value.success || parsed.value.data.conversationId !== stored.value.conversationId) {
+    return Result.err(
+      new ApiError(500, "invalid_transcript", "The examination transcript is invalid."),
+    );
+  }
+  return Result.ok({
+    response: Response.json(parsed.value.data, {
+      headers: { "Cache-Control": "private, no-store", ETag: transcriptObject.httpEtag },
+    }),
+    conversationId: stored.value.conversationId,
+    outcome: "examination_transcript_returned",
   });
 }
 
@@ -433,15 +498,22 @@ async function initializeConversation(
 
 async function hydrateSession(
   stored: StoredExaminationSession,
+  env: Env,
   dependencies: Pick<FoundationDependencies, "conversations">,
 ): Promise<ApiResult<ExaminationSession>> {
   const state = await readConversationState(stored.conversationId, dependencies);
   if (!state.isOk()) return state;
+  const transcriptionStatus = await Result.tryPromise({
+    try: () => findLatestTranscriptionStatus(env.EXAM_DB, stored.id),
+    catch: examinationOperationFailed("find_transcription_status"),
+  });
+  if (!transcriptionStatus.isOk()) return transcriptionStatus;
   return Result.ok(
     publicExaminationSession(
       stored,
       state.value?.tag ?? null,
       state.value === null ? false : isRecordingAvailable(state.value),
+      transcriptionStatus.value,
     ),
   );
 }

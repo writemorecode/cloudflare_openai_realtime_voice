@@ -345,10 +345,27 @@ export async function completeExaminationQuestion(
   return current.isOk() ? Result.ok({ status: "advanced", current: current.value }) : current;
 }
 
+export type TranscriptionStatus = "queued" | "running" | "complete" | "failed";
+
+export async function findLatestTranscriptionStatus(
+  database: D1Database,
+  examinationSessionId: string,
+): Promise<TranscriptionStatus | null> {
+  const row = await database
+    .prepare(
+      `SELECT status FROM transcription_jobs
+       WHERE examination_session_id = ? ORDER BY created_at DESC LIMIT 1`,
+    )
+    .bind(examinationSessionId)
+    .first<{ status: TranscriptionStatus }>();
+  return row?.status ?? null;
+}
+
 export function publicExaminationSession(
   session: StoredExaminationSession,
   state: ExaminationSession["conversationState"],
   recordingAvailable: boolean,
+  transcriptionStatus: TranscriptionStatus | null,
 ): ExaminationSession {
   return {
     id: session.id,
@@ -363,6 +380,7 @@ export function publicExaminationSession(
     questionsCompletedAt: session.questionsCompletedAt,
     conversationState: state,
     recordingAvailable,
+    transcriptionStatus,
   };
 }
 

@@ -188,6 +188,71 @@ describe("examination HTTP API", () => {
     });
   });
 
+  it("returns only the validated v1 transcript artifact for an owned session", async () => {
+    const { examination } = await createExamination(["What is a group?"]);
+    const started = await browserApi(`/v1/examinations/${examination.id}/sessions`, {
+      method: "POST",
+      headers: { "Idempotency-Key": `transcript-${crypto.randomUUID()}` },
+    });
+    const session = await started.json<ExaminationSession>();
+    const sourceKey = `conversations/${session.conversationId}/recording.ogg`;
+    const transcriptKey = `conversations/${session.conversationId}/transcript.v1.json`;
+    const transcript = {
+      schemaVersion: 1,
+      conversationId: session.conversationId,
+      source: { objectKey: sourceKey, etag: "source-etag", durationMs: 3_000 },
+      transcription: {
+        provider: "openai",
+        model: "gpt-4o-transcribe-diarize",
+        generatedAt: Date.now(),
+        languageCode: "en",
+      },
+      participants: [
+        {
+          id: "speaker-a",
+          role: "examiner",
+          roleAssignment: "first-speaker-heuristic",
+          displayName: "Examiner",
+          sourceSpeakerLabel: "A",
+        },
+      ],
+      turns: [
+        {
+          id: "turn-1",
+          participantId: "speaker-a",
+          startMs: 0,
+          endMs: 2_000,
+          text: "What is a group?",
+          confidence: null,
+        },
+      ],
+    };
+    await env.RECORDINGS.put(transcriptKey, JSON.stringify(transcript));
+    await env.EXAM_DB.prepare(
+      `INSERT INTO transcription_jobs (
+         id, examination_session_id, source_object_key, source_etag, model, status,
+         transcript_key, created_at, completed_at
+       ) VALUES (?, ?, ?, ?, ?, 'complete', ?, ?, ?)`,
+    )
+      .bind(
+        crypto.randomUUID(),
+        session.id,
+        sourceKey,
+        "source-etag",
+        "gpt-4o-transcribe-diarize",
+        transcriptKey,
+        Date.now(),
+        Date.now(),
+      )
+      .run();
+
+    const response = await browserApi(`/v1/examination-sessions/${session.id}/transcript`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
+    expect(await response.json()).toEqual(transcript);
+  });
+
   it("streams only an owned, verified recording and supports HTTP byte ranges", async () => {
     const { examination } = await createExamination(["Recorded question?"]);
     const started = await browserApi(`/v1/examinations/${examination.id}/sessions`, {

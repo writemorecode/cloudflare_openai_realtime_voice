@@ -26,6 +26,7 @@ export type ApiRouteName =
   | "examination_sessions"
   | "examination_session"
   | "examination_recording"
+  | "examination_transcript"
   | "create_conversation"
   | "start_conversation"
   | "get_state"
