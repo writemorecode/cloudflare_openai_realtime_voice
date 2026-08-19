@@ -624,10 +624,23 @@ footer {
 .session-progress {
   margin-top: 12px !important;
 }
-.recording-player {
+.review-link {
   width: 100%;
-  height: 38px;
-  margin-top: 13px;
+  margin-top: 14px;
+  padding: 10px 12px;
+  display: flex;
+  justify-content: space-between;
+  border: 1px solid #ced8d2;
+  border-radius: 10px;
+  background: #fff;
+  color: #315f54;
+  cursor: pointer;
+  font-weight: 750;
+  text-align: left;
+}
+.review-link:hover {
+  border-color: #809d94;
+  background: #f9fbf8;
 }
 .recording-pending {
   margin-top: 13px !important;
@@ -639,6 +652,234 @@ footer {
   border-radius: 14px;
   color: #71807b;
   text-align: center;
+}
+
+.review-header,
+.review-page {
+  width: min(100%, 980px);
+  margin-inline: auto;
+}
+.review-header {
+  margin-bottom: 26px;
+}
+.back-button {
+  display: inline-flex;
+  gap: 8px;
+}
+.review-page {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 220px;
+  gap: 22px;
+  align-items: start;
+}
+.review-title {
+  grid-column: 1 / -1;
+  margin-bottom: 8px;
+}
+.review-title h1,
+.review-unavailable h1 {
+  margin-block: 7px 10px;
+  font-size: clamp(2rem, 5vw, 3.3rem);
+}
+.review-title > p:last-child {
+  margin: 0;
+  color: #71807b;
+}
+.review-player-card,
+.review-details,
+.review-unavailable {
+  border: 1px solid rgba(39, 61, 56, 0.12);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 15px 45px rgba(48, 55, 49, 0.055);
+}
+.review-player-card {
+  padding: clamp(22px, 4vw, 34px);
+}
+.review-player-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 20px;
+}
+.review-player-heading h2 {
+  margin: 5px 0 0;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.8rem;
+  font-weight: 500;
+}
+.complete-badge {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #dfeae2;
+  color: #356253;
+  font-size: 0.7rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.review-audio {
+  width: 100%;
+  margin-top: 30px;
+}
+.transcript-status {
+  margin-top: 26px;
+  padding-top: 22px;
+  display: flex;
+  gap: 13px;
+  border-top: 1px solid #dfe3de;
+}
+.transcript-status > span {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: #c28a61;
+  box-shadow: 0 0 0 4px rgba(194, 138, 97, 0.13);
+}
+.transcript-status > span.ready {
+  background: #4d806d;
+  box-shadow: 0 0 0 4px rgba(77, 128, 109, 0.13);
+}
+.transcript-status strong {
+  color: #334842;
+  font-size: 0.88rem;
+}
+.transcript-status p {
+  margin: 5px 0 0;
+  color: #71807b;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+.review-details {
+  padding: 8px 20px;
+}
+.review-details > div {
+  padding: 17px 0;
+  display: grid;
+  gap: 5px;
+  border-bottom: 1px solid #dfe3de;
+}
+.review-details > div:last-child {
+  border-bottom: 0;
+}
+.review-details span {
+  color: #7b8783;
+  font-size: 0.72rem;
+}
+.review-details strong {
+  color: #334842;
+  font-size: 0.9rem;
+  text-transform: capitalize;
+}
+.review-unavailable {
+  grid-column: 1 / -1;
+  padding: clamp(32px, 6vw, 58px);
+  text-align: center;
+}
+.review-transcript {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  border: 1px solid rgba(39, 61, 56, 0.12);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 15px 45px rgba(48, 55, 49, 0.055);
+}
+.transcript-heading {
+  padding: 26px 30px 22px;
+  border-bottom: 1px solid #dfe3de;
+}
+.transcript-heading h2 {
+  margin: 5px 0 0;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.8rem;
+  font-weight: 500;
+}
+.transcript-message,
+.review-transcript > [role="alert"] {
+  margin: 0;
+  padding: 32px 30px;
+}
+.transcript-column-headings,
+.transcript-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+.transcript-column-headings {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f5f3ed;
+  border-bottom: 1px solid #dfe3de;
+}
+.transcript-column-headings strong {
+  padding: 14px 30px;
+  color: #5f6e69;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.transcript-column-headings strong:last-child {
+  border-left: 1px solid #dfe3de;
+}
+.transcript-row {
+  border-bottom: 1px solid rgba(223, 227, 222, 0.7);
+}
+.transcript-row:last-child {
+  border-bottom: 0;
+}
+.transcript-row.student .transcript-turn {
+  grid-column: 2;
+  border-left: 1px solid #dfe3de;
+}
+.transcript-row.unknown .transcript-turn {
+  grid-column: 1 / -1;
+}
+.transcript-turn {
+  padding: 20px 30px;
+  border: 0;
+  background: transparent;
+  color: #334842;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    color 160ms ease,
+    background-color 160ms ease;
+}
+.transcript-turn:hover,
+.transcript-turn:focus-visible {
+  background: rgba(77, 128, 109, 0.08);
+  outline: none;
+}
+.transcript-turn:focus-visible {
+  box-shadow: inset 0 0 0 2px #4d806d;
+}
+.transcript-turn.past {
+  color: #929b97;
+}
+.transcript-turn.active {
+  background: #e3eee8;
+  color: #173e31;
+}
+.transcript-speaker {
+  display: none;
+}
+.transcript-turn time {
+  display: block;
+  margin-bottom: 7px;
+  color: #7b8783;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+.transcript-turn.active time {
+  color: #356253;
+  font-weight: 800;
+}
+.transcript-text {
+  display: block;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1rem;
+  line-height: 1.65;
 }
 
 @media (max-width: 520px) {
@@ -665,14 +906,44 @@ footer {
   .primary-button.compact-button {
     width: 100%;
   }
+  .transcript-column-headings {
+    display: none;
+  }
+  .transcript-row,
+  .transcript-row.student .transcript-turn,
+  .transcript-row.unknown .transcript-turn {
+    display: block;
+    grid-column: auto;
+    border-left: 0;
+  }
+  .transcript-speaker {
+    display: block;
+    margin-bottom: 4px;
+    color: #5f6e69;
+    font-size: 0.72rem;
+    font-weight: 800;
+    text-transform: uppercase;
+  }
+  .transcript-turn {
+    width: 100%;
+    padding: 18px 22px;
+  }
 }
 
 @media (max-width: 900px) {
-  .dashboard-grid {
+  .dashboard-grid,
+  .review-page {
     grid-template-columns: 1fr;
   }
   .history-panel {
     position: static;
+  }
+  .review-details {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+  .review-details > div:first-child {
+    border-bottom: 0;
   }
 }
 
