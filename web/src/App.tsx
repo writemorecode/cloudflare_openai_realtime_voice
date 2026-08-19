@@ -13,6 +13,7 @@ import {
   type ExaminationSession,
   type ExaminationSummary,
   type RuntimeFactory,
+  type Transcript,
 } from "@ai-oral-exam/conversation-client";
 
 interface Services {
@@ -69,6 +70,12 @@ export function App({ services }: { readonly services?: Services }) {
     return <LoginPage api={api} onAuthenticated={() => setAuthState("authenticated")} />;
   }
 
+  const reviewMatch = /^\/examination-sessions\/([^/]+)\/review$/.exec(path);
+  if (reviewMatch?.[1]) {
+    return (
+      <ReviewSessionPage examinationSessionId={reviewMatch[1]} api={api} navigate={navigate} />
+    );
+  }
   const postMatch = /^\/conversation\/([^/]+)\/complete$/.exec(path);
   if (postMatch?.[1]) {
     return <PostConversationPage conversationId={postMatch[1]} api={api} navigate={navigate} />;
@@ -316,14 +323,13 @@ export function DashboardPage({
                     Questions: {session.currentQuestionOrdinal}/{session.questionCount}
                   </p>
                   {session.recordingAvailable ? (
-                    <audio
-                      className="recording-player"
-                      controls
-                      preload="metadata"
-                      src={api.recordingUrl(session.id)}
+                    <button
+                      className="review-link"
+                      type="button"
+                      onClick={() => navigate(`/examination-sessions/${session.id}/review`)}
                     >
-                      Your browser does not support audio playback.
-                    </audio>
+                      Review recording <span aria-hidden="true">→</span>
+                    </button>
                   ) : (
                     <p className="recording-pending">Recording not yet available</p>
                   )}
@@ -598,6 +604,219 @@ export function ConversationPage({
       </main>
     </PageFrame>
   );
+}
+
+export function ReviewSessionPage({
+  examinationSessionId,
+  api,
+  navigate,
+}: PageProps & { readonly examinationSessionId: string; readonly api: ConversationApi }) {
+  const [session, setSession] = useState<ExaminationSession | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [transcript, setTranscript] = useState<Transcript | null>(null);
+  const [transcriptError, setTranscriptError] = useState<string | null>(null);
+  const [transcriptLoading, setTranscriptLoading] = useState(false);
+  const [playbackMs, setPlaybackMs] = useState(0);
+  const audioRef = useRef<HTMLAudioElement>(null);
+
+  useEffect(() => {
+    let disposed = false;
+    let timer: number | null = null;
+    const refresh = async () => {
+      const result = await api.getExaminationSession(examinationSessionId);
+      if (disposed) return;
+      if (!result.isOk()) {
+        setError(messageFor(result.error));
+        setLoading(false);
+        return;
+      }
+      setSession(result.value);
+      setLoading(false);
+      if (
+        result.value.recordingAvailable &&
+        (result.value.transcriptionStatus === "queued" ||
+          result.value.transcriptionStatus === "running")
+      ) {
+        timer = window.setTimeout(() => void refresh(), 5_000);
+      }
+    };
+    void refresh();
+    return () => {
+      disposed = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [api, examinationSessionId]);
+
+  useEffect(() => {
+    if (session?.transcriptionStatus !== "complete") return;
+    let disposed = false;
+    setTranscriptLoading(true);
+    void api.getExaminationSessionTranscript(examinationSessionId).then((result) => {
+      if (disposed) return;
+      setTranscriptLoading(false);
+      if (result.isOk()) {
+        setTranscript(result.value);
+        setTranscriptError(null);
+      } else {
+        setTranscriptError(messageFor(result.error));
+      }
+    });
+    return () => {
+      disposed = true;
+    };
+  }, [api, examinationSessionId, session?.transcriptionStatus]);
+
+  const participants = useMemo(
+    () => new Map(transcript?.participants.map((participant) => [participant.id, participant])),
+    [transcript],
+  );
+  const seekTo = (startMs: number) => {
+    if (audioRef.current === null) return;
+    audioRef.current.currentTime = startMs / 1_000;
+    setPlaybackMs(startMs);
+  };
+
+  return (
+    <PageFrame wide>
+      <header className="review-header">
+        <button className="text-button back-button" type="button" onClick={() => navigate("/")}>
+          ← Back to examinations
+        </button>
+      </header>
+      <main className="review-page">
+        {loading ? (
+          <p className="empty-state">Loading examination recording…</p>
+        ) : error ? (
+          <ErrorMessage>{error}</ErrorMessage>
+        ) : session === null || !session.recordingAvailable ? (
+          <section className="review-unavailable">
+            <p className="eyebrow">Review unavailable</p>
+            <h1>The recording is still being prepared</h1>
+            <p className="lead">Come back once the completed recording has been secured.</p>
+          </section>
+        ) : (
+          <>
+            <section className="review-title">
+              <p className="eyebrow">Completed examination</p>
+              <h1>{session.examinationName}</h1>
+              <p>
+                {session.subject} <span aria-hidden="true">·</span>{" "}
+                {new Date(session.createdAt).toLocaleString()}
+              </p>
+            </section>
+            <section className="review-player-card" aria-labelledby="recording-heading">
+              <div className="review-player-heading">
+                <div>
+                  <p className="eyebrow">Session recording</p>
+                  <h2 id="recording-heading">Listen back</h2>
+                </div>
+                <span className="complete-badge">Complete</span>
+              </div>
+              <div className="transcript-status" aria-live="polite">
+                <span className={transcript !== null ? "ready" : ""} />
+                <div>
+                  <strong>
+                    {transcript !== null
+                      ? "Transcript available"
+                      : session.transcriptionStatus === "failed" || transcriptError !== null
+                        ? "Transcript unavailable"
+                        : "Transcription in progress"}
+                  </strong>
+                  <p>
+                    {transcript !== null
+                      ? "Select any passage below to seek to it in the recording."
+                      : session.transcriptionStatus === "failed" || transcriptError !== null
+                        ? "The recording can still be reviewed without a transcript."
+                        : "The transcript will appear automatically when processing is complete."}
+                  </p>
+                </div>
+              </div>
+              <audio
+                ref={audioRef}
+                className="review-audio"
+                controls
+                preload="metadata"
+                src={api.recordingUrl(session.id)}
+                onTimeUpdate={(event) => setPlaybackMs(event.currentTarget.currentTime * 1_000)}
+                onSeeked={(event) => setPlaybackMs(event.currentTarget.currentTime * 1_000)}
+              >
+                Your browser does not support audio playback.
+              </audio>
+            </section>
+            <aside className="review-details" aria-label="Session details">
+              <div>
+                <span>Questions</span>
+                <strong>{session.questionCount}</strong>
+              </div>
+              <div>
+                <span>Session status</span>
+                <strong>{session.conversationState ?? "Completed"}</strong>
+              </div>
+            </aside>
+            <section className="review-transcript" aria-labelledby="transcript-heading">
+              <div className="transcript-heading">
+                <div>
+                  <p className="eyebrow">Full transcript</p>
+                  <h2 id="transcript-heading">Conversation</h2>
+                </div>
+              </div>
+              {transcriptLoading ? (
+                <p className="transcript-message">Loading transcript…</p>
+              ) : transcriptError !== null ? (
+                <ErrorMessage>{transcriptError}</ErrorMessage>
+              ) : transcript === null ? (
+                <p className="transcript-message">The transcript is not available yet.</p>
+              ) : transcript.turns.length === 0 ? (
+                <p className="transcript-message">No spoken turns were detected.</p>
+              ) : (
+                <div className="transcript-columns">
+                  <div className="transcript-column-headings" aria-hidden="true">
+                    <strong>Examiner</strong>
+                    <strong>Student</strong>
+                  </div>
+                  <div className="transcript-turns">
+                    {transcript.turns.map((turn) => {
+                      const participant = participants.get(turn.participantId);
+                      const role = participant?.role ?? "unknown";
+                      const timing =
+                        playbackMs >= turn.startMs && playbackMs < turn.endMs
+                          ? "active"
+                          : playbackMs >= turn.endMs
+                            ? "past"
+                            : "upcoming";
+                      return (
+                        <div className={`transcript-row ${role}`} key={turn.id}>
+                          <button
+                            className={`transcript-turn ${timing}`}
+                            type="button"
+                            aria-current={timing === "active" ? "true" : undefined}
+                            onClick={() => seekTo(turn.startMs)}
+                          >
+                            <span className="transcript-speaker">
+                              {participant?.displayName ?? "Unknown speaker"}
+                            </span>
+                            <time>{formatTranscriptTime(turn.startMs)}</time>
+                            <span className="transcript-text">{turn.text}</span>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </section>
+          </>
+        )}
+      </main>
+    </PageFrame>
+  );
+}
+
+function formatTranscriptTime(milliseconds: number): string {
+  const seconds = Math.floor(milliseconds / 1_000);
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
 export function PostConversationPage({

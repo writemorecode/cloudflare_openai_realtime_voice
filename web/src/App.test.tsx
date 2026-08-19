@@ -1,5 +1,5 @@
 /** Verifies browser-page authentication, navigation, and live-conversation controls. */
-import { act, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -13,7 +13,13 @@ import {
   type RuntimeEvents,
   type RuntimeFactory,
 } from "@ai-oral-exam/conversation-client";
-import { ConversationPage, DashboardPage, LoginPage, PostConversationPage } from "./App";
+import {
+  ConversationPage,
+  DashboardPage,
+  LoginPage,
+  PostConversationPage,
+  ReviewSessionPage,
+} from "./App";
 
 const ID = "12345678-1234-8234-9234-123456789abc";
 
@@ -52,7 +58,7 @@ function api(overrides: Partial<ConversationApi> = {}): ConversationApi {
     createExaminationSession: vi.fn(),
     listExaminationSessions: okResolved({ sessions: [] }),
     getExaminationSession: vi.fn(),
-    recordingUrl: vi.fn(),
+    recordingUrl: vi.fn((id) => `/recordings/${id}`),
     getExaminationSessionTranscript: vi.fn(),
     createConversation: okResolved(state(ConversationStateTag.Created)),
     startConversation: vi.fn(),
@@ -165,6 +171,91 @@ describe("conversation pages", () => {
       questions: ["Explain virtual memory.", "What causes deadlock?"],
     });
     expect(await view.findByText("Operating systems oral")).toBeVisible();
+  });
+
+  it("shows a seekable, playback-aware transcript once transcription is complete", async () => {
+    const transcript = {
+      schemaVersion: 1 as const,
+      conversationId: ID,
+      source: { objectKey: `conversations/${ID}/recording.ogg`, etag: "etag", durationMs: 10_000 },
+      transcription: {
+        provider: "openai",
+        model: "gpt-4o-transcribe-diarize",
+        generatedAt: 2,
+        languageCode: "en",
+      },
+      participants: [
+        {
+          id: "speaker-a",
+          role: "examiner" as const,
+          roleAssignment: "first-speaker-heuristic" as const,
+          displayName: "Examiner",
+          sourceSpeakerLabel: "A",
+        },
+        {
+          id: "speaker-b",
+          role: "student" as const,
+          roleAssignment: "first-speaker-heuristic" as const,
+          displayName: "Student",
+          sourceSpeakerLabel: "B",
+        },
+      ],
+      turns: [
+        {
+          id: "turn-1",
+          participantId: "speaker-a",
+          startMs: 0,
+          endMs: 2_000,
+          text: "Define a group.",
+          confidence: null,
+        },
+        {
+          id: "turn-2",
+          participantId: "speaker-b",
+          startMs: 2_000,
+          endMs: 5_000,
+          text: "A group is a set with an operation.",
+          confidence: null,
+        },
+      ],
+    };
+    const conversationApi = api({
+      getExaminationSession: okResolved({
+        id: ID,
+        examinationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        examinationName: "Distributed systems oral",
+        subject: "Computer science",
+        conversationId: ID,
+        questionState: "complete",
+        currentQuestionOrdinal: 2,
+        questionCount: 2,
+        createdAt: 1,
+        questionsCompletedAt: 2,
+        conversationState: "completed",
+        recordingAvailable: true,
+        transcriptionStatus: "complete",
+      }),
+      getExaminationSessionTranscript: okResolved(transcript),
+    });
+
+    const rendered = render(
+      <ReviewSessionPage examinationSessionId={ID} api={conversationApi} navigate={vi.fn()} />,
+    );
+    expect(await screen.findByRole("heading", { name: "Distributed systems oral" })).toBeVisible();
+    expect(await screen.findByText("Transcript available")).toBeVisible();
+    expect(screen.getAllByText("Examiner")[0]).toBeVisible();
+    expect(screen.getAllByText("Student")[0]).toBeVisible();
+    const studentTurn = screen.getByRole("button", {
+      name: /A group is a set with an operation/,
+    });
+    const audio = rendered.container.querySelector("audio");
+    expect(audio).not.toBeNull();
+    await userEvent.click(studentTurn);
+    expect(audio?.currentTime).toBe(2);
+    if (audio === null) expect.fail("Expected an audio player.");
+    audio.currentTime = 2.5;
+    fireEvent.timeUpdate(audio);
+    expect(studentTurn).toHaveAttribute("aria-current", "true");
   });
 
   it("shows the completed post-conversation state", async () => {
