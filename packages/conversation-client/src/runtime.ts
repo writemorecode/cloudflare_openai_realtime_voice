@@ -15,6 +15,7 @@ import {
 import { Result } from "better-result";
 
 import { ConversationClientError, conversationClientError } from "./errors";
+import { addRecordingDurationMetadata } from "./recording";
 import type { ConversationApi, ConversationRuntime, RuntimeEvents, RuntimeFactory } from "./types";
 
 /** Maximum time to wait for the server to enter a shutdown state. */
@@ -36,6 +37,7 @@ class RealtimeConversationRuntime implements ConversationRuntime {
   private microphone: MediaStream | null = null;
   private audioContext: AudioContext | null = null;
   private recorder: MediaRecorder | null = null;
+  private recordingStartedAt: number | null = null;
   private readonly recordingChunks: Blob[] = [];
   private recordingUpload: RecordingUpload | null = null;
   private recordingFinalized = false;
@@ -108,6 +110,7 @@ class RealtimeConversationRuntime implements ConversationRuntime {
           if (event.data.size > 0) this.recordingChunks.push(event.data);
         });
         recorder.start(1_000);
+        this.recordingStartedAt = performance.now();
 
         const upload = await this.api.beginRecording(
           this.conversationId,
@@ -181,8 +184,9 @@ class RealtimeConversationRuntime implements ConversationRuntime {
 
     this.finalization = Result.tryPromise({
       try: async () => {
-        const recording = await this.stopRecorder();
+        const stopped = await this.stopRecorder();
         this.closeMedia();
+        const recording = await addRecordingDurationMetadata(stopped.blob, stopped.durationMs);
         const started = await this.api.beginRecordingUpload(this.conversationId, upload);
         if (!started.isOk()) throw started.error;
 
@@ -285,16 +289,27 @@ class RealtimeConversationRuntime implements ConversationRuntime {
     return ending;
   }
 
-  /** Stops the recorder and returns all accumulated mixed-audio data. */
-  private stopRecorder(): Promise<Blob> {
+  /** Stops the recorder and returns its data with the measured recording duration. */
+  private stopRecorder(): Promise<{ readonly blob: Blob; readonly durationMs: number }> {
     const recorder = this.recorder;
+    const durationMs =
+      this.recordingStartedAt === null
+        ? 0
+        : Math.max(0, performance.now() - this.recordingStartedAt);
     if (recorder === null || recorder.state === "inactive") {
-      return Promise.resolve(new Blob(this.recordingChunks, { type: recorder?.mimeType ?? "" }));
+      return Promise.resolve({
+        blob: new Blob(this.recordingChunks, { type: recorder?.mimeType ?? "" }),
+        durationMs,
+      });
     }
     return new Promise((resolve) => {
       recorder.addEventListener(
         "stop",
-        () => resolve(new Blob(this.recordingChunks, { type: recorder.mimeType })),
+        () =>
+          resolve({
+            blob: new Blob(this.recordingChunks, { type: recorder.mimeType }),
+            durationMs,
+          }),
         { once: true },
       );
       recorder.stop();
