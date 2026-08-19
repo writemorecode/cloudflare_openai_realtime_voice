@@ -7,6 +7,7 @@ import {
   getExaminations,
   getExaminationSession,
   getExaminationSessionRecording,
+  getExaminationSessionTranscript,
   getExaminationSessions,
 } from "../../examinations/examination-api";
 import {
@@ -179,6 +180,36 @@ export function createExaminationSessionRoutes() {
   app.all(
     "/:examinationSessionId/recording",
     namedRoute("examination_recording"),
+    examinationSessionIdParam,
+    ...methodNotAllowed(["GET"]),
+  );
+
+  app.options(
+    "/:examinationSessionId/transcript",
+    namedRoute("examination_transcript"),
+    ...preflight(["GET"]),
+  );
+  app.get(
+    "/:examinationSessionId/transcript",
+    namedRoute("examination_transcript"),
+    examinationSessionIdParam,
+    requireBrowserSession,
+    requireEmptyBody,
+    async (context) => {
+      const examinationSessionId = getResourceId(context);
+      if (!examinationSessionId.isOk())
+        return respond(context, Result.err(examinationSessionId.error));
+      const user = currentUser(context);
+      if (!user.isOk()) return respond(context, Result.err(user.error));
+      return respond(
+        context,
+        await getExaminationSessionTranscript(examinationSessionId.value, user.value, context.env),
+      );
+    },
+  );
+  app.all(
+    "/:examinationSessionId/transcript",
+    namedRoute("examination_transcript"),
     examinationSessionIdParam,
     ...methodNotAllowed(["GET"]),
   );

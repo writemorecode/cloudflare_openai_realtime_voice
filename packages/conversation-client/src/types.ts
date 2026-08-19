@@ -7,6 +7,7 @@ import type {
   ExaminationList,
   ExaminationSession,
   ExaminationSessionList,
+  Transcript,
   RecordingUpload,
   UploadedRecordingPart,
 } from "@ai-oral-exam/conversation-contract";
@@ -41,6 +42,10 @@ export interface ConversationApi {
   ): Promise<Result<ExaminationSession, ConversationClientError>>;
   /** Returns the absolute URL for an examination session's recording. */
   recordingUrl(examinationSessionId: string): string;
+  /** Retrieves the validated transcript for an examination session. */
+  getExaminationSessionTranscript(
+    examinationSessionId: string,
+  ): Promise<Result<Transcript, ConversationClientError>>;
   /** Creates a conversation. */
   createConversation(): Promise<Result<ConversationStateDto, ConversationClientError>>;
   /** Starts a conversation. */

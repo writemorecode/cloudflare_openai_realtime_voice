@@ -13,6 +13,7 @@ export {
   type ExaminationQuestion,
   type ExaminationSession,
   type ExaminationSessionList,
+  type Transcript,
   type ExaminationSummary,
   FailureStage,
   StopReason,

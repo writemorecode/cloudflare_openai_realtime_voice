@@ -6,6 +6,7 @@ import {
   examinationSchema,
   examinationSessionListSchema,
   examinationSessionSchema,
+  transcriptSchema,
   conversationStateSchema,
   recordingUploadSchema,
   uploadedRecordingPartSchema,
@@ -14,6 +15,7 @@ import {
   type ExaminationList,
   type ExaminationSession,
   type ExaminationSessionList,
+  type Transcript,
   type AuthSession,
   type ConversationStateDto,
   type RecordingUpload,
@@ -123,6 +125,16 @@ export class HttpConversationApi implements ConversationApi {
       this.config.baseUrl,
     );
     return url.href;
+  }
+
+  /** Retrieves one examination session transcript. */
+  getExaminationSessionTranscript(
+    examinationSessionId: string,
+  ): Promise<Result<Transcript, ConversationClientError>> {
+    return this.request(
+      `/v1/examination-sessions/${encodeURIComponent(examinationSessionId)}/transcript`,
+      transcriptSchema,
+    );
   }
 
   /** Creates a conversation and returns its initial state. */

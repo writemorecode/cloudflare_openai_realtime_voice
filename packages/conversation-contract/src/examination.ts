@@ -58,6 +58,7 @@ export const examinationSessionSchema = z.object({
     .enum(["created", "starting", "live", "ending", "completed", "cancelled", "failed"])
     .nullable(),
   recordingAvailable: z.boolean(),
+  transcriptionStatus: z.enum(["queued", "running", "complete", "failed"]).nullable(),
 });
 
 /** Validates the response returned when examination sessions are listed. */

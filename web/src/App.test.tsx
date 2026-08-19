@@ -53,6 +53,7 @@ function api(overrides: Partial<ConversationApi> = {}): ConversationApi {
     listExaminationSessions: okResolved({ sessions: [] }),
     getExaminationSession: vi.fn(),
     recordingUrl: vi.fn(),
+    getExaminationSessionTranscript: vi.fn(),
     createConversation: okResolved(state(ConversationStateTag.Created)),
     startConversation: vi.fn(),
     getState: okResolved(state(ConversationStateTag.Completed)),
@@ -94,6 +95,7 @@ describe("conversation pages", () => {
         questionsCompletedAt: null,
         conversationState: "created",
         recordingAvailable: false,
+        transcriptionStatus: null,
       }),
     });
     render(<DashboardPage api={conversationApi} navigate={navigate} onLogout={vi.fn()} />);
