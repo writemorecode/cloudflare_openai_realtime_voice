@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { AwsClient } from "aws4fetch";
 import { Result } from "better-result";
+import { z } from "zod";
 
 import { executeD1, firstStatementRows, quoteSql } from "./auth-user-utils.mjs";
 
@@ -83,14 +84,14 @@ export async function createTranscriptionJob({
   const execution = await executeD1({ database, location, sql, json: true });
   if (!execution.isOk()) return execution;
   const rows = firstStatementRows(execution.value);
-  const row = rows?.[0];
-  if (row === undefined || typeof row.id !== "string") {
+  const row = z.object({ id: z.string() }).safeParse(rows?.[0]);
+  if (!row.success) {
     return Result.err(
       new Error(`No completed examination session exists for conversation ${conversationId}.`),
     );
   }
   return Result.ok({
-    jobId: row.id,
+    jobId: row.data.id,
     objectKey: recording.objectKey,
     etag: recording.etag,
   });

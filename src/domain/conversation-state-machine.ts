@@ -11,6 +11,7 @@ const opaqueBrand: unique symbol = Symbol("opaqueBrand");
 type Opaque<Name extends string, Value> = Value & { readonly [opaqueBrand]: Name };
 
 function opaque<Name extends string, Value>(input: Value): Opaque<Name, Value> {
+  // SAFETY: opaque values preserve their runtime representation and are branded only here.
   return input as Opaque<Name, Value>;
 }
 
@@ -373,6 +374,7 @@ export function transition<S extends TransitionableState, E extends AllowedEvent
   state: RequireSingleState<S>,
   event: Extract<ConversationEvent, { type: E }>,
 ): Result<NextState<S["tag"], E>, TransitionError> {
+  // SAFETY: the public generic constraints mirror transitionRuntime's state/event dispatch table.
   return transitionRuntime(state, event) as Result<NextState<S["tag"], E>, TransitionError>;
 }
 
@@ -771,6 +773,7 @@ function beginFailedEnding(
     deadlineAt: event.endingDeadlineAt,
     artifact: artifact.value,
   });
+  // SAFETY: a failing target can only remain Ending or finalize to Failed.
   return Result.ok(finalizeIfReady(ending, event.at) as EndingState | FailedState);
 }
 
@@ -1002,8 +1005,9 @@ function enter<K extends ConversationStateTag, S extends ConversationState>(
   state: S,
   tag: K,
   at: UnixMillis,
-  changes: object,
+  changes: Partial<ConversationStateByTag[K]["data"]>,
 ): ConversationStateByTag[K] {
+  // SAFETY: each caller supplies the target tag's required state-specific data fields.
   return {
     tag,
     revision: state.revision + 1,
@@ -1017,8 +1021,9 @@ function finalize<K extends ConversationStateTag>(
   state: EndingState,
   tag: K,
   at: UnixMillis,
-  changes: object,
+  changes: Partial<ConversationStateByTag[K]["data"]>,
 ): ConversationStateByTag[K] {
+  // SAFETY: each caller supplies the terminal tag's required state-specific data fields.
   return {
     tag,
     revision: state.revision,

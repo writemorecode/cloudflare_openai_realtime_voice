@@ -18,7 +18,7 @@ describe("OpenAI transcription request", () => {
   });
 
   it("uploads recording bytes through the authenticated Gateway using BYOK", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ task: "transcribe", duration: 0, text: "", segments: [] }), {
         headers: { "content-type": "application/json" },
       }),
@@ -35,20 +35,24 @@ describe("OpenAI transcription request", () => {
     );
     expect(result.isOk()).toBe(true);
 
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe(
       "https://gateway.ai.cloudflare.com/v1/account/gateway/openai/audio/transcriptions",
     );
-    expect(init.headers).toEqual({
+    expect(init?.headers).toEqual({
       "cf-aig-authorization": "Bearer gateway-token",
       "cf-aig-collect-log": "true",
       "cf-aig-skip-cache": "true",
     });
-    const body = init.body as FormData;
+    const body = init?.body;
+    expect(body).toBeInstanceOf(FormData);
+    if (!(body instanceof FormData)) expect.fail("expected transcription form data");
     expect(body.get("model")).toBe("gpt-4o-transcribe-diarize");
     expect(body.get("response_format")).toBe("diarized_json");
     expect(body.get("chunking_strategy")).toBe("auto");
-    const file = body.get("file") as File;
+    const file = body.get("file");
+    expect(file).toBeInstanceOf(File);
+    if (!(file instanceof File)) expect.fail("expected a recording File");
     expect(file.name).toBe("recording.webm");
     expect(file.type).toBe("audio/webm");
     expect([...new Uint8Array(await file.arrayBuffer())]).toEqual([1, 2, 3]);

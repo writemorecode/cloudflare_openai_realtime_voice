@@ -19,7 +19,7 @@ function resolved<T>(value: T) {
   return vi.fn(async () => value);
 }
 
-function rejected(error: unknown) {
+function rejected<Failure>(error: Failure) {
   return vi.fn(async () => Promise.reject(error));
 }
 

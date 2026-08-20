@@ -13,6 +13,7 @@ import {
   type UploadedRecordingPart,
 } from "@ai-oral-exam/conversation-contract";
 import { Result } from "better-result";
+import { z } from "zod";
 
 import { ConversationClientError, conversationClientError } from "./errors";
 import { addRecordingDurationMetadata } from "./recording";
@@ -24,6 +25,20 @@ const END_WAIT_MS = 8_000;
 const MULTIPART_SIZE = 10 * 1024 * 1024;
 /** 20 minutes at 128 kbps is about 19.2 MB, leaving headroom below the 25 MB API limit. */
 const RECORDING_AUDIO_BITS_PER_SECOND = 128_000;
+
+const responseDoneSchema = z.object({
+  type: z.literal("response.done"),
+  response: z.object({
+    output: z.array(
+      z.object({
+        type: z.string(),
+        name: z.string(),
+        call_id: z.string(),
+        arguments: z.string(),
+      }),
+    ),
+  }),
+});
 
 /** Creates the browser runtime that manages one Realtime conversation. */
 export const createConversationRuntime: RuntimeFactory = (api, conversationId, events) =>
@@ -344,16 +359,12 @@ class RealtimeConversationRuntime implements ConversationRuntime {
 
   /** Handles completed Realtime tool calls and returns their outputs over the data channel. */
   private async handleRealtimeEvent(message: MessageEvent<string>): Promise<void> {
-    if (typeof message.data !== "string") return;
-    let event: unknown;
-    try {
-      event = JSON.parse(message.data);
-    } catch {
-      // Ignore malformed control messages; the event guard below rejects the sentinel.
-      event = null;
-    }
-    if (!isResponseDone(event)) return;
-    for (const item of event.response.output) {
+    const event = Result.try({
+      try: () => responseDoneSchema.safeParse(JSON.parse(message.data)),
+      catch: () => null,
+    });
+    if (!event.isOk() || !event.value?.success) return;
+    for (const item of event.value.data.response.output) {
       if (item.type !== "function_call" || this.completedToolCalls.has(item.call_id)) continue;
       this.completedToolCalls.add(item.call_id);
       // oxlint-disable-next-line no-await-in-loop -- tool calls preserve model output order.
@@ -497,29 +508,6 @@ function supportedRecordingType(): string {
     if (MediaRecorder.isTypeSupported(type)) return type;
   }
   return "";
-}
-
-/** Subset of a Realtime output item needed to execute a client-side tool call. */
-interface FunctionCallItem {
-  readonly type: "function_call";
-  readonly name: string;
-  readonly call_id: string;
-  readonly arguments: string;
-}
-
-/** Narrows an unknown Realtime event to a completed response containing output items. */
-function isResponseDone(value: unknown): value is { response: { output: FunctionCallItem[] } } {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "type" in value &&
-    value.type === "response.done" &&
-    "response" in value &&
-    typeof value.response === "object" &&
-    value.response !== null &&
-    "output" in value.response &&
-    Array.isArray(value.response.output)
-  );
 }
 
 /** Determines whether a conversation lifecycle state is terminal. */

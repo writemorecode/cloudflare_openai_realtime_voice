@@ -1,6 +1,7 @@
 /** Coordinates browser-recorded mixed audio with Cloudflare R2 multipart uploads. */
 import { deserializeResult } from "@ai-oral-exam/conversation-contract";
 import { Result } from "better-result";
+import { z } from "zod";
 
 import { MAXIMUM_LIVE_DURATION_MS } from "../../domain/conversation-deadlines";
 import {
@@ -26,6 +27,22 @@ const ALLOWED_RECORDING_TYPES = new Set([
   "audio/ogg;codecs=opus",
   "audio/mp4",
 ]);
+
+const contentTypeRequestSchema = z.object({
+  contentType: z.string().refine((contentType) => ALLOWED_RECORDING_TYPES.has(contentType)),
+});
+const uploadDetailsRequestSchema = z.object({
+  uploadId: z.string().min(1).max(1024),
+  objectKey: z.string(),
+});
+const completionRequestSchema = z.object({
+  uploadId: z.string().min(1),
+  objectKey: z.string(),
+  parts: z
+    .array(z.object({ partNumber: z.number().int().positive(), etag: z.string().min(1) }))
+    .min(1),
+});
+const jsonObjectSchema = z.looseObject({});
 
 export interface RecordingOperationResult {
   readonly response: Response;
@@ -349,9 +366,9 @@ async function readState(
 async function readContentType(request: Request): Promise<Result<string, ApiError>> {
   const json = await readJson(request);
   if (!json.isOk()) return json;
-  const contentType = json.value.contentType;
-  return typeof contentType === "string" && ALLOWED_RECORDING_TYPES.has(contentType)
-    ? Result.ok(contentType)
+  const contentType = contentTypeRequestSchema.safeParse(json.value);
+  return contentType.success
+    ? Result.ok(contentType.data.contentType)
     : Result.err(
         new ApiError(400, "invalid_recording_type", "The recording type is not supported."),
       );
@@ -362,14 +379,9 @@ async function readUploadDetails(
   conversationId: string,
 ): Promise<Result<{ uploadId: string; objectKey: string }, ApiError>> {
   const json = await readJson(request);
-  const uploadId = json.isOk() ? json.value.uploadId : undefined;
-  const objectKey = json.isOk() ? json.value.objectKey : undefined;
-  return typeof uploadId === "string" &&
-    uploadId.length > 0 &&
-    uploadId.length <= 1024 &&
-    typeof objectKey === "string" &&
-    isRecordingKey(conversationId, objectKey)
-    ? Result.ok({ uploadId, objectKey })
+  const details = json.isOk() ? uploadDetailsRequestSchema.safeParse(json.value) : null;
+  return details?.success === true && isRecordingKey(conversationId, details.data.objectKey)
+    ? Result.ok(details.data)
     : Result.err(new ApiError(400, "invalid_upload_id", "The upload identifier is invalid."));
 }
 
@@ -378,47 +390,30 @@ async function readCompletion(
 ): Promise<Result<{ uploadId: string; objectKey: string; parts: R2UploadedPart[] }, ApiError>> {
   const json = await readJson(request);
   if (!json.isOk()) return json;
-  const uploadId = json.value.uploadId;
-  const objectKey = json.value.objectKey;
-  const parts = json.value.parts;
-  if (
-    typeof uploadId !== "string" ||
-    uploadId.length === 0 ||
-    typeof objectKey !== "string" ||
-    !Array.isArray(parts) ||
-    parts.length === 0 ||
-    !parts.every(
-      (part) =>
-        typeof part === "object" &&
-        part !== null &&
-        "partNumber" in part &&
-        Number.isInteger(part.partNumber) &&
-        part.partNumber > 0 &&
-        "etag" in part &&
-        typeof part.etag === "string" &&
-        part.etag.length > 0,
-    )
-  ) {
-    return Result.err(
-      new ApiError(400, "invalid_recording_completion", "The recording completion is invalid."),
-    );
-  }
-  return Result.ok({ uploadId, objectKey, parts: parts as R2UploadedPart[] });
+  const completion = completionRequestSchema.safeParse(json.value);
+  return completion.success
+    ? Result.ok(completion.data)
+    : Result.err(
+        new ApiError(400, "invalid_recording_completion", "The recording completion is invalid."),
+      );
 }
 
-async function readJson(request: Request): Promise<Result<Record<string, unknown>, ApiError>> {
+async function readJson(
+  request: Request,
+): Promise<Result<z.output<typeof jsonObjectSchema>, ApiError>> {
   if (request.headers.get("Content-Type")?.split(";", 1)[0]?.trim() !== "application/json") {
     return Result.err(
       new ApiError(415, "unsupported_media_type", "Content-Type must be application/json."),
     );
   }
   const parsed = await Result.tryPromise({
-    try: () => request.json() as Promise<unknown>,
+    try: () => request.json(),
     catch: () => new ApiError(400, "invalid_json", "The request body is invalid."),
   });
   if (!parsed.isOk()) return parsed;
-  return typeof parsed.value === "object" && parsed.value !== null && !Array.isArray(parsed.value)
-    ? Result.ok(parsed.value as Record<string, unknown>)
+  const validated = jsonObjectSchema.safeParse(parsed.value);
+  return validated.success
+    ? Result.ok(validated.data)
     : Result.err(new ApiError(400, "invalid_json", "The request body is invalid."));
 }
 

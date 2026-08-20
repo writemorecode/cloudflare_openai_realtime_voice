@@ -199,6 +199,7 @@ describe("ConversationSession transition telemetry", () => {
       },
     });
 
+    // SAFETY: every captured call on this spy is emitted from JSON.stringify(record).
     const records = log.mock.calls
       .map(([message]) => JSON.parse(String(message)) as TransitionTelemetryRecord)
       .filter((record) => record.kind === "conversation_transition");

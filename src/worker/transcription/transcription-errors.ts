@@ -55,7 +55,7 @@ export class TranscriptionStageError extends Error {
   }
 }
 
-export function transcriptionFailure(cause: unknown): TranscriptionFailure {
+export function transcriptionFailure<Cause>(cause: Cause): TranscriptionFailure {
   if (cause instanceof TranscriptionStageError) return cause;
   const message = errorMessage(cause);
   const match = ERROR_MARKER_PATTERN.exec(message);
@@ -76,10 +76,10 @@ export function transcriptionFailure(cause: unknown): TranscriptionFailure {
   };
 }
 
-function errorMessage(cause: unknown): string {
+function errorMessage<Cause>(cause: Cause): string {
   if (cause instanceof Error) return cause.message;
-  if (typeof cause !== "object" || cause === null || !("message" in cause)) return "";
-  return typeof cause.message === "string" ? cause.message : "";
+  const parsed = z.object({ message: z.string() }).safeParse(cause);
+  return parsed.success ? parsed.data.message : "";
 }
 
 function isMember<const Values extends readonly string[]>(
@@ -88,3 +88,4 @@ function isMember<const Values extends readonly string[]>(
 ): candidate is Values[number] {
   return candidate !== undefined && values.includes(candidate);
 }
+import { z } from "zod";

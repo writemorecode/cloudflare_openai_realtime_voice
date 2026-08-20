@@ -284,7 +284,12 @@ function createLoggedStageFailure(
   return new TranscriptionStageError(stage, errorCode, category);
 }
 
-function recordingSizeDetails(recordingSizeBytes: number): Readonly<Record<string, number>> {
+interface RecordingSizeDetails extends Readonly<Record<string, number>> {
+  readonly recordingSizeBytes: number;
+  readonly maximumRecordingSizeBytes: number;
+}
+
+function recordingSizeDetails(recordingSizeBytes: number): RecordingSizeDetails {
   return {
     recordingSizeBytes,
     maximumRecordingSizeBytes: MAXIMUM_TRANSCRIPTION_FILE_BYTES,

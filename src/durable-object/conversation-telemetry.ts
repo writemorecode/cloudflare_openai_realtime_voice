@@ -74,11 +74,11 @@ export function emitTransitionTelemetry(
   console.log(JSON.stringify(record));
 }
 
-export function emitAlarmTelemetry(
+export function emitAlarmTelemetry<Failure>(
   execution: Omit<AlarmExecution, "outcome"> & { outcome: AlarmOutcome },
   alarmInfo: AlarmInvocationInfo | undefined,
   observedAt: number,
-  error: unknown,
+  error: Failure,
   fallbackSessionId: string | null,
 ): void {
   const record: AlarmTelemetryRecord = {

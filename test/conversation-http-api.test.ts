@@ -30,7 +30,7 @@ async function createConversation(key: string) {
     method: "POST",
     headers: { "Idempotency-Key": key },
   });
-  return { response, state: await response.json<Record<string, unknown>>() };
+  return { response, state: await response.json<StartConversationResponse>() };
 }
 
 describe("Worker HTTP boundary", () => {
@@ -155,7 +155,7 @@ describe("Worker HTTP boundary", () => {
     const second = await api(`/v1/conversations/${id}/start`, { method: "POST" });
     const repeated = await second.json<StartConversationResponse>();
     const read = await api(`/v1/conversations/${id}/state`);
-    const persisted = await read.json<Record<string, unknown>>();
+    const persisted = await read.json<StartConversationResponse>();
 
     expect(first.status).toBe(202);
     expect(second.status).toBe(202);

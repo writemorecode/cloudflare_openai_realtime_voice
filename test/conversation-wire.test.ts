@@ -14,7 +14,7 @@ import {
 } from "@ai-oral-exam/conversation-contract";
 
 function buffer(bytes: Uint8Array): ArrayBuffer {
-  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  return Uint8Array.from(bytes).buffer;
 }
 
 describe("conversation.v1 generic wire protocol", () => {

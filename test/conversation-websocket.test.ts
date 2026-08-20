@@ -94,10 +94,9 @@ async function receive(socket: WebSocket): Promise<ServerWireMessage> {
     return decoded.value;
   }
   if (ArrayBuffer.isView(data)) {
-    const view = data as ArrayBufferView;
-    const decoded = decodeServerMessage(
-      view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength) as ArrayBuffer,
-    );
+    const view = data;
+    const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+    const decoded = decodeServerMessage(Uint8Array.from(bytes).buffer);
     if (!decoded.isOk())
       expect.fail(`server message decoding failed unexpectedly: ${decoded.error}`);
     return decoded.value;

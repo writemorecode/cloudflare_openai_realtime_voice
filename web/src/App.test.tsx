@@ -24,7 +24,7 @@ import {
 const ID = "12345678-1234-8234-9234-123456789abc";
 
 function state(tag: ConversationStateTag): ConversationStateDto {
-  return {
+  const snapshot = {
     conversationId: ID,
     state: tag,
     revision: 1,
@@ -33,10 +33,14 @@ function state(tag: ConversationStateTag): ConversationStateDto {
     activeDeadlineAt: null,
     transport: { status: "closed", epoch: 1 },
     artifact: { status: "ready" },
-    ...(tag === ConversationStateTag.Completed
-      ? { completed: { completedAt: 1, terminationReason: "user_requested" } }
-      : {}),
-  } as ConversationStateDto;
+  };
+  if (tag === ConversationStateTag.Completed) {
+    Object.assign(snapshot, {
+      completed: { completedAt: 1, terminationReason: "user_requested" },
+    });
+  }
+  // SAFETY: the test factory adds the only state-specific field consumed by these page tests.
+  return snapshot as ConversationStateDto;
 }
 
 function resolved<T>(value: T) {
@@ -272,6 +276,7 @@ describe("conversation pages", () => {
       artifact: { status: "pending" as const },
       starting: { startDeadlineAt: 10_000 },
     };
+    // SAFETY: this fixture supplies the Ending discriminator and its required ending payload.
     const ending = {
       ...starting,
       state: ConversationStateTag.Ending,
@@ -307,6 +312,7 @@ describe("conversation pages", () => {
   });
 
   it("labels connecting, connected, live, reconnecting, and ending snapshots", async () => {
+    // SAFETY: this fixture supplies the Starting discriminator and its required starting payload.
     const starting = {
       ...state(ConversationStateTag.Starting),
       transport: { status: "connecting" as const, epoch: 1 },
@@ -348,6 +354,7 @@ describe("conversation pages", () => {
     );
     expect(screen.getByText("Connected · Starting recording")).toBeVisible();
 
+    // SAFETY: this fixture supplies the Live discriminator and its required live payload.
     const live = {
       ...starting,
       state: ConversationStateTag.Live,
@@ -359,6 +366,7 @@ describe("conversation pages", () => {
     act(() => events!.onState(live));
     expect(screen.getByText("Live · Recording")).toBeVisible();
 
+    // SAFETY: this fixture supplies the Ending discriminator and its required ending payload.
     act(() =>
       events!.onState({
         ...live,
@@ -373,6 +381,7 @@ describe("conversation pages", () => {
     );
     expect(screen.getByText("Reconnecting")).toBeVisible();
 
+    // SAFETY: this fixture supplies the Ending discriminator and its required ending payload.
     act(() =>
       events!.onState({
         ...live,
