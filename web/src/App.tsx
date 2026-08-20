@@ -128,11 +128,7 @@ export function LoginPage({
     <PageFrame>
       <main className="card home-card">
         <p className="eyebrow">Oral exam</p>
-        <h1>Examinations that listen closely.</h1>
-        <p className="lead">
-          Create and take structured oral examinations with an AI examiner. Every grade remains a
-          human decision.
-        </p>
+        <h1>Oral examinations</h1>
         <form
           className="start-form"
           onSubmit={(event) => {
@@ -565,11 +561,6 @@ export function ConversationPage({
         </div>
         <div className="conversation-copy">
           <h1>{ending ? "Finishing up" : "Conversation in progress"}</h1>
-          <p>
-            {ending
-              ? "Please wait while the recording is secured."
-              : "Speak naturally. The examiner is listening."}
-          </p>
         </div>
         {state?.transport.status === TransportStatus.Reconnecting && (
           <p className="inline-status">Connection interrupted. Reconnecting…</p>
@@ -709,7 +700,7 @@ export function ReviewSessionPage({
               <div className="review-player-heading">
                 <div>
                   <p className="eyebrow">Session recording</p>
-                  <h2 id="recording-heading">Listen back</h2>
+                  <h2 id="recording-heading">Recording</h2>
                 </div>
                 <span className="complete-badge">Complete</span>
               </div>
@@ -908,7 +899,7 @@ function PageFrame({
         Oral<span>·</span>Exam
       </div>
       {children}
-      <footer>Private · Secure · Recorded with consent</footer>
+      <footer />
     </div>
   );
 }
