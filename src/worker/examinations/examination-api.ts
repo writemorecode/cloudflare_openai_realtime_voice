@@ -10,6 +10,7 @@ import {
   type ExaminationSession,
 } from "@ai-oral-exam/conversation-contract";
 import { Result } from "better-result";
+import { z } from "zod";
 
 import { value, type ConversationState } from "../../domain/conversation-state-machine";
 import type {
@@ -554,12 +555,7 @@ function questionResult(
   };
 }
 
-async function readJson<T>(
-  request: Request,
-  schema: {
-    safeParse(value: unknown): { success: true; data: T } | { success: false };
-  },
-): Promise<ApiResult<T>> {
+async function readJson<T>(request: Request, schema: z.ZodType<T>): Promise<ApiResult<T>> {
   const contentType = request.headers.get("Content-Type")?.split(";", 1)[0]?.trim().toLowerCase();
   if (contentType !== "application/json") {
     return Result.err(
@@ -583,7 +579,7 @@ async function readJson<T>(
     );
   }
   const decoded = Result.try({
-    try: () => JSON.parse(new TextDecoder().decode(body.value)) as unknown,
+    try: () => JSON.parse(new TextDecoder().decode(body.value)),
     catch: () => new ApiError(400, "invalid_examination_request", "The request body is invalid."),
   });
   if (!decoded.isOk()) return decoded;
@@ -593,11 +589,11 @@ async function readJson<T>(
     : Result.err(new ApiError(400, "invalid_examination_request", "The request body is invalid."));
 }
 
-function examinationOperationFailed(operation: string): (cause: unknown) => ApiError {
-  return (cause) => examinationFailure(operation, cause);
+function examinationOperationFailed(operation: string) {
+  return <Cause>(cause: Cause) => examinationFailure(operation, cause);
 }
 
-function examinationFailure(operation: string, cause: unknown): ApiError {
+function examinationFailure<Cause>(operation: string, cause: Cause): ApiError {
   return new ApiError(
     500,
     "examination_operation_failed",

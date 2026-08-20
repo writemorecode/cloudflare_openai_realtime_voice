@@ -22,17 +22,23 @@ import {
   type UploadedRecordingPart,
 } from "@ai-oral-exam/conversation-contract";
 import { Result } from "better-result";
-import type { z } from "zod";
+import { z } from "zod";
 import { ConversationClientError, conversationClientError } from "./errors";
 import type { ConversationApi } from "./types";
 
 /** Relevant fields extracted from an RFC 7807-style HTTP problem response. */
 interface ProblemDetails {
   /** Human-readable explanation of the specific request failure. */
-  readonly detail?: string;
+  detail?: string;
   /** Short summary of the request failure. */
-  readonly title?: string;
+  title?: string;
 }
+
+const optionalApiBaseUrlSchema = z.string().optional();
+const problemDetailsSchema = z.object({
+  detail: z.string().optional(),
+  title: z.string().optional(),
+});
 
 /** Configuration required to reach the conversation HTTP API from a browser. */
 export interface BrowserApiConfig {
@@ -42,8 +48,11 @@ export interface BrowserApiConfig {
 
 /** Creates browser API configuration from the build-time API URL or current origin. */
 export function browserApiConfig(): BrowserApiConfig {
+  const configuredBaseUrl = optionalApiBaseUrlSchema.safeParse(import.meta.env.VITE_API_BASE_URL);
   return {
-    baseUrl: (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? window.location.origin,
+    baseUrl: configuredBaseUrl.success
+      ? (configuredBaseUrl.data ?? window.location.origin)
+      : window.location.origin,
   };
 }
 
@@ -344,7 +353,7 @@ export class HttpConversationApi implements ConversationApi {
     const response = responseResult.value;
     if (!response.ok) {
       const details = await Result.tryPromise({
-        try: () => response.json() as Promise<unknown>,
+        try: () => response.json(),
         catch: () => null,
       });
       const problem = details.isOk() ? problemDetails(details.value) : {};
@@ -359,13 +368,12 @@ export class HttpConversationApi implements ConversationApi {
   }
 }
 
-/** Extracts displayable title and detail fields from an unknown problem response. */
-function problemDetails(value: unknown): ProblemDetails {
-  if (typeof value !== "object" || value === null) return {};
-  const detail = "detail" in value && typeof value.detail === "string" ? value.detail : undefined;
-  const title = "title" in value && typeof value.title === "string" ? value.title : undefined;
-  return {
-    ...(detail === undefined ? {} : { detail }),
-    ...(title === undefined ? {} : { title }),
-  };
+/** Extracts displayable title and detail fields from an untrusted problem response. */
+function problemDetails<T>(value: T): ProblemDetails {
+  const parsed = problemDetailsSchema.safeParse(value);
+  if (!parsed.success) return {};
+  const problem: ProblemDetails = {};
+  if (parsed.data.detail !== undefined) problem.detail = parsed.data.detail;
+  if (parsed.data.title !== undefined) problem.title = parsed.data.title;
+  return problem;
 }

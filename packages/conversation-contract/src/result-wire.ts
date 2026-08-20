@@ -6,6 +6,22 @@ export type ResultWire<T, E> =
   | Readonly<{ status: "ok"; value: T }>
   | Readonly<{ status: "error"; error: E }>;
 
+interface WireObject {
+  [key: string]: WireValue;
+}
+
+type WireValue = string | number | boolean | bigint | null | undefined | WireValue[] | WireObject;
+
+const wirePrimitiveSchema = z.union([
+  z.string(),
+  z.number(),
+  z.boolean(),
+  z.bigint(),
+  z.null(),
+  z.undefined(),
+]);
+const wireObjectInputSchema = z.record(z.string(), z.unknown());
+
 /** Serializes result values while recursively converting errors into clone-safe data. */
 const resultCodec = Result.codec({
   serialize: {
@@ -20,33 +36,36 @@ const resultCodec = Result.codec({
 
 /** Converts a result to the structured-clone-safe representation used at the RPC boundary. */
 export function serializeResult<T, E>(result: ResultValue<T, E>): ResultWire<T, E> {
+  // SAFETY: the codec preserves the Result discriminant and only transforms the error payload.
   return resultCodec.serializeUnsafe(result) as ResultWire<T, E>;
 }
 
 /** Reconstructs a result from a value received across the RPC boundary. */
-export function deserializeResult<T, E>(value: unknown): ResultValue<T, E> {
+export function deserializeResult<T, E>(value: ResultWire<T, E>): ResultValue<T, E> {
+  // SAFETY: callers supply the typed RPC envelope and the codec validates its discriminant.
   return resultCodec.deserializeUnsafe(value) as ResultValue<T, E>;
 }
 
 /** Recursively replaces Error instances with their enumerable, clone-safe data. */
-function toWireValue(value: unknown): unknown {
+function toWireValue<T>(value: T): WireValue {
   if (value instanceof Error) {
-    return {
+    const serialized: WireObject = {
       name: value.name,
       message: value.message,
-      ...(value.cause === undefined ? {} : { cause: toWireValue(value.cause) }),
-      ...Object.fromEntries(
-        Object.entries(value)
-          .filter(([key]) => key !== "cause")
-          .map(([key, entry]) => [key, toWireValue(entry)]),
-      ),
     };
+    if (value.cause !== undefined) serialized.cause = toWireValue(value.cause);
+    for (const [key, entry] of Object.entries(value)) {
+      if (key !== "cause") serialized[key] = toWireValue(entry);
+    }
+    return serialized;
   }
   if (Array.isArray(value)) return value.map(toWireValue);
-  if (typeof value === "object" && value !== null) {
+  const objectInput = wireObjectInputSchema.safeParse(value);
+  if (objectInput.success) {
     return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => [key, toWireValue(entry)]),
+      Object.entries(objectInput.data).map(([key, entry]) => [key, toWireValue(entry)]),
     );
   }
-  return value;
+  const primitive = wirePrimitiveSchema.safeParse(value);
+  return primitive.success ? primitive.data : String(value);
 }

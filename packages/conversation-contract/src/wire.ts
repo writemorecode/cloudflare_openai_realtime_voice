@@ -77,6 +77,13 @@ export enum ProtocolErrorCode {
 const finiteInt = z.number().int().nonnegative().finite();
 /** Validates positive epoch values. */
 const positiveEpoch = z.number().int().positive().finite();
+const messageIdSchema = z.string().min(1).max(128);
+const envelopeSchema = z.tuple([
+  z.literal(WIRE_PROTOCOL_VERSION),
+  z.number().int(),
+  messageIdSchema,
+  z.unknown(),
+]);
 /** Validates protocol message IDs. */
 const messageId = z.string().min(1).max(128);
 /** Validates bounded machine-readable error codes. */
@@ -321,50 +328,56 @@ function decodeEnvelope(
   if (!Array.isArray(decoded) || decoded.length !== 4) {
     return Result.err(new WireProtocolError(ProtocolErrorCode.MalformedEnvelope));
   }
-  const [version, type, id, body] = decoded;
+  const [version, , id] = decoded;
+  const acknowledgedId = messageIdSchema.safeParse(id);
   if (version !== WIRE_PROTOCOL_VERSION) {
     return Result.err(
       new WireProtocolError(
         ProtocolErrorCode.UnsupportedVersion,
-        typeof id === "string" ? id : null,
+        acknowledgedId.success ? acknowledgedId.data : null,
       ),
     );
   }
-  if (!Number.isInteger(type) || typeof id !== "string" || id.length === 0 || id.length > 128) {
+  const envelope = envelopeSchema.safeParse(decoded);
+  if (!envelope.success) {
     return Result.err(
       new WireProtocolError(
         ProtocolErrorCode.MalformedEnvelope,
-        typeof id === "string" ? id : null,
+        acknowledgedId.success ? acknowledgedId.data : null,
       ),
     );
   }
-  return Result.ok([version, type as number, id, body]);
+  return Result.ok(envelope.data);
 }
 
 /** Parses a server message body and returns a typed server envelope. */
-function serverMessage<T extends ServerWireMessage[1], B>(
+function serverMessage<T extends ServerWireMessage[1], B, BodyInput>(
   version: typeof WIRE_PROTOCOL_VERSION,
   type: T,
   id: string,
-  body: unknown,
+  body: BodyInput,
   schema: z.ZodType<B>,
 ): Result<ServerWireMessage, WireProtocolError> {
   const parsed = schema.safeParse(body);
-  return parsed.success
-    ? Result.ok([version, type, id, parsed.data] as ServerWireMessage)
-    : Result.err(new WireProtocolError(ProtocolErrorCode.InvalidBody, id, parsed.error));
+  if (!parsed.success) {
+    return Result.err(new WireProtocolError(ProtocolErrorCode.InvalidBody, id, parsed.error));
+  }
+  // SAFETY: the message type selects the matching schema at every call site in the decoder.
+  return Result.ok([version, type, id, parsed.data] as ServerWireMessage);
 }
 
 /** Parses a browser message body and returns a typed browser envelope. */
-function browserMessage<T extends BrowserWireMessage[1], B>(
+function browserMessage<T extends BrowserWireMessage[1], B, BodyInput>(
   version: typeof WIRE_PROTOCOL_VERSION,
   type: T,
   id: string,
-  body: unknown,
+  body: BodyInput,
   schema: z.ZodType<B>,
 ): Result<BrowserWireMessage, WireProtocolError> {
   const parsed = schema.safeParse(body);
-  return parsed.success
-    ? Result.ok([version, type, id, parsed.data] as BrowserWireMessage)
-    : Result.err(new WireProtocolError(ProtocolErrorCode.InvalidBody, id, parsed.error));
+  if (!parsed.success) {
+    return Result.err(new WireProtocolError(ProtocolErrorCode.InvalidBody, id, parsed.error));
+  }
+  // SAFETY: the message type selects the matching schema at every call site in the decoder.
+  return Result.ok([version, type, id, parsed.data] as BrowserWireMessage);
 }

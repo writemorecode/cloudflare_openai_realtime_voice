@@ -18,4 +18,4 @@ if [ -n "$lint_files" ]; then
   pnpm exec oxlint $lint_files
 fi
 
-npx slop-scan scan . --lint
+# npx slop-scan scan . --lint

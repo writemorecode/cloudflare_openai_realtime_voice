@@ -1,6 +1,7 @@
 import { applyD1Migrations, env } from "cloudflare:test";
 import type { D1Migration } from "@cloudflare/vitest-pool-workers";
 
+// SAFETY: the Vitest pool injects this binding from its migrations configuration.
 const testEnv = env as Env & {
   TEST_EXAM_D1_MIGRATIONS: D1Migration[];
 };

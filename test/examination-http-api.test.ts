@@ -286,9 +286,10 @@ describe("examination HTTP API", () => {
     };
     const conversations: ConversationSessions = {
       get: () =>
-        ({
+        // SAFETY: the recording endpoint calls only getState on this focused Durable Object stub.
+        Object.assign(Object.create(null), {
           getState: async () => Result.ok(state),
-        }) as unknown as DurableObjectStub<ConversationSession>,
+        }) as DurableObjectStub<ConversationSession>,
     };
     const response = await handleConversationRequest(
       new Request(`${API_ORIGIN}/v1/examination-sessions/${session.id}/recording`, {

@@ -1,3 +1,6 @@
+import { Result } from "better-result";
+import { z } from "zod";
+
 const MAX_ERROR_DEPTH = 5;
 const MAX_MESSAGE_LENGTH = 4_000;
 const MAX_STACK_LENGTH = 12_000;
@@ -13,6 +16,40 @@ const DIAGNOSTIC_FIELDS = [
 ] as const;
 
 type DiagnosticValue = string | number | boolean | null;
+type DiagnosticField = (typeof DIAGNOSTIC_FIELDS)[number];
+
+interface ErrorSource {
+  readonly name?: unknown;
+  readonly message?: unknown;
+  readonly cause?: unknown;
+  readonly code?: unknown;
+  readonly kind?: unknown;
+  readonly status?: unknown;
+  readonly operation?: unknown;
+  readonly reason?: unknown;
+  readonly retryable?: unknown;
+  readonly schemaVersion?: unknown;
+}
+
+interface ParsedErrorSource {
+  readonly identity: object;
+  readonly fields: ErrorSource;
+}
+
+const errorSourceSchema = z.object({
+  name: z.unknown().optional(),
+  message: z.unknown().optional(),
+  cause: z.unknown().optional(),
+  code: z.unknown().optional(),
+  kind: z.unknown().optional(),
+  status: z.unknown().optional(),
+  operation: z.unknown().optional(),
+  reason: z.unknown().optional(),
+  retryable: z.unknown().optional(),
+  schemaVersion: z.unknown().optional(),
+});
+const diagnosticValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+const objectIdentitySchema = z.custom<object>((candidate) => Object(candidate) === candidate);
 
 export interface ObservableError {
   readonly name: string;
@@ -31,14 +68,15 @@ export interface ObservableError {
   readonly schemaVersion?: DiagnosticValue;
 }
 
-/** Converts an unknown failure into bounded, searchable, non-secret diagnostic data. */
-export function observableError(value: unknown): ObservableError {
+/** Converts a failure into bounded, searchable, non-secret diagnostic data. */
+export function observableError<T>(value: T): ObservableError {
   return observe(value, 0, new WeakSet<object>());
 }
 
-function observe(value: unknown, depth: number, ancestors: WeakSet<object>): ObservableError {
-  if (!isObject(value)) return primitiveError(value);
-  if (ancestors.has(value)) {
+function observe<T>(value: T, depth: number, ancestors: WeakSet<object>): ObservableError {
+  const source = parseErrorSource(value);
+  if (source === null) return primitiveError(value);
+  if (ancestors.has(source.identity)) {
     return {
       name: "CircularErrorCause",
       message: "The error cause chain contains a circular reference.",
@@ -55,83 +93,85 @@ function observe(value: unknown, depth: number, ancestors: WeakSet<object>): Obs
     };
   }
 
-  ancestors.add(value);
+  ancestors.add(source.identity);
   const observed: ObservableError = {
-    name: errorName(value),
-    message: errorMessage(value),
+    name: errorName(source.fields),
+    message: errorMessage(source.fields),
     stack: value instanceof Error ? truncate(value.stack ?? "", MAX_STACK_LENGTH) || null : null,
-    ...diagnosticFields(value),
+    ...diagnosticFields(source.fields),
   };
-  const cause = readProperty(value, "cause");
+  const cause = source.fields.cause;
   const result =
     cause === undefined ? observed : { ...observed, cause: observe(cause, depth + 1, ancestors) };
-  ancestors.delete(value);
+  ancestors.delete(source.identity);
   return result;
 }
 
-function primitiveError(value: unknown): ObservableError {
+function primitiveError<T>(value: T): ObservableError {
+  const stringValue = z.string().safeParse(value);
   return {
     name: "NonErrorThrown",
-    message:
-      typeof value === "string"
-        ? truncate(value, MAX_MESSAGE_LENGTH)
-        : "A non-Error value was thrown.",
+    message: stringValue.success
+      ? truncate(stringValue.data, MAX_MESSAGE_LENGTH)
+      : "A non-Error value was thrown.",
     stack: null,
-    valueType: value === null ? "null" : typeof value,
+    valueType: valueType(value),
   };
 }
 
-function errorName(value: object): string {
-  const name = readString(value, "name");
+function errorName(value: ErrorSource): string {
+  const name = parseString(value.name);
   if (name !== null) return truncate(name, MAX_MESSAGE_LENGTH);
-  const kind = readString(value, "kind");
+  const kind = parseString(value.kind);
   if (kind !== null) return "StructuredError";
-  const code = readString(value, "code");
+  const code = parseString(value.code);
   return code === null ? "UnknownError" : "StructuredError";
 }
 
-function errorMessage(value: object): string {
-  const message = readString(value, "message");
+function errorMessage(value: ErrorSource): string {
+  const message = parseString(value.message);
   return message === null
     ? "An error object without a message was returned."
     : truncate(message, MAX_MESSAGE_LENGTH);
 }
 
-function diagnosticFields(value: object): Partial<ObservableError> {
-  const fields: Record<string, DiagnosticValue> = {};
+function diagnosticFields(value: ErrorSource): Partial<ObservableError> {
+  const fields: Partial<Record<DiagnosticField, DiagnosticValue>> = {};
   for (const field of DIAGNOSTIC_FIELDS) {
-    const candidate = readProperty(value, field);
-    if (
-      candidate === null ||
-      typeof candidate === "number" ||
-      typeof candidate === "boolean" ||
-      typeof candidate === "string"
-    ) {
-      fields[field] =
-        typeof candidate === "string" ? truncate(candidate, MAX_MESSAGE_LENGTH) : candidate;
-    }
+    const candidate = diagnosticValueSchema.safeParse(value[field]);
+    if (!candidate.success) continue;
+    const stringCandidate = z.string().safeParse(candidate.data);
+    fields[field] = stringCandidate.success
+      ? truncate(stringCandidate.data, MAX_MESSAGE_LENGTH)
+      : candidate.data;
   }
   return fields;
 }
 
-function readString(value: object, property: string): string | null {
-  const candidate = readProperty(value, property);
-  return typeof candidate === "string" && candidate.length > 0 ? candidate : null;
+function parseString<T>(value: T): string | null {
+  const parsed = z.string().min(1).safeParse(value);
+  return parsed.success ? parsed.data : null;
 }
 
-function readProperty(value: object, property: string): unknown {
-  const read = Result.try({
-    try: () => Reflect.get(value, property) as unknown,
+function parseErrorSource<T>(value: T): ParsedErrorSource | null {
+  const parsed = Result.try({
+    try: () => ({
+      identity: objectIdentitySchema.safeParse(value),
+      fields: errorSourceSchema.safeParse(value),
+    }),
     catch: () => undefined,
   });
-  return read.isOk() ? read.value : undefined;
+  if (!parsed.isOk() || parsed.value === undefined) return null;
+  return parsed.value.identity.success && parsed.value.fields.success
+    ? { identity: parsed.value.identity.data, fields: parsed.value.fields.data }
+    : null;
 }
 
-function isObject(value: unknown): value is object {
-  return (typeof value === "object" && value !== null) || typeof value === "function";
+function valueType<T>(value: T): string {
+  if (value === null) return "null";
+  return Object.prototype.toString.call(value).slice(8, -1).toLowerCase();
 }
 
 function truncate(value: string, maximumLength: number): string {
   return value.length <= maximumLength ? value : `${value.slice(0, maximumLength - 1)}…`;
 }
-import { Result } from "better-result";

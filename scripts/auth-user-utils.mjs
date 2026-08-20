@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { pbkdf2, randomBytes } from "node:crypto";
 import { promisify } from "node:util";
 import { Result } from "better-result";
+import { z } from "zod";
 
 const derive = promisify(pbkdf2);
 
@@ -114,10 +115,8 @@ export async function executeD1({ database, location, sql, json = false }) {
 
 export function firstStatementRows(output) {
   if (!Array.isArray(output)) return null;
-  const first = output[0];
-  if (typeof first !== "object" || first === null) return null;
-  const results = first.results;
-  return Array.isArray(results) ? results : null;
+  const first = z.object({ results: z.array(z.unknown()) }).safeParse(output[0]);
+  return first.success ? first.data.results : null;
 }
 
 function base64Url(value) {

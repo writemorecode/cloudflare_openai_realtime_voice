@@ -25,6 +25,7 @@ import { observableError } from "../shared/observable-error";
 import type { AggregateStoreResult } from "./conversation-aggregate-store";
 import type { ApplyEventCommand, ApplyEventResult } from "./conversation-session-contract";
 import { Result } from "better-result";
+import { z } from "zod";
 
 const INTERNAL_CONVERSATION_HEADER = "X-Conversation-Id";
 const CLIENT_WEBSOCKET_TAG = "conversation-client";
@@ -36,6 +37,14 @@ interface ClientSocketAttachment {
   readonly transportEpoch: number | null;
   readonly connectedAt: number;
 }
+
+const clientSocketAttachmentSchema = z.object({
+  protocolVersion: z.literal(WIRE_PROTOCOL_VERSION),
+  phase: z.enum(["awaiting_hello", "active"]),
+  connectionId: z.string().nullable(),
+  transportEpoch: z.number().nullable(),
+  connectedAt: z.number(),
+});
 
 export interface ConversationSocketCommands {
   getState(): AggregateStoreResult<ConversationState | null>;
@@ -86,7 +95,7 @@ export class ConversationSocketGateway {
   }
 
   async handleMessage(ws: WebSocket, rawMessage: string | ArrayBuffer): Promise<void> {
-    if (typeof rawMessage === "string") {
+    if (!(rawMessage instanceof ArrayBuffer)) {
       this.sendProtocolError(ws, null, ProtocolErrorCode.MalformedEnvelope, null);
       ws.close(1002, "Binary messages required");
       return;
@@ -153,7 +162,7 @@ export class ConversationSocketGateway {
     );
   }
 
-  handleError(error: unknown): void {
+  handleError<Failure>(error: Failure): void {
     console.error(
       JSON.stringify({
         kind: "conversation_websocket_error",
@@ -419,10 +428,8 @@ export class ConversationSocketGateway {
 }
 
 function socketAttachment(ws: WebSocket): ClientSocketAttachment {
-  const attachment = ws.deserializeAttachment();
-  if (typeof attachment === "object" && attachment !== null) {
-    return attachment as ClientSocketAttachment;
-  }
+  const attachment = clientSocketAttachmentSchema.safeParse(ws.deserializeAttachment());
+  if (attachment.success) return attachment.data;
   return {
     protocolVersion: WIRE_PROTOCOL_VERSION,
     phase: "awaiting_hello",

@@ -2,6 +2,7 @@ import { Result } from "better-result";
 import { cors } from "hono/cors";
 import { createFactory } from "hono/factory";
 import type { RequestIdVariables } from "hono/request-id";
+import { z } from "zod";
 
 import type { FoundationDependencies } from "../ports/foundation";
 import { observableError } from "../../shared/observable-error";
@@ -343,9 +344,15 @@ function isUuid(value: string | undefined): value is string {
 
 type RequiredApiBindingName = "OPENAI_API_KEY" | "CONVERSATION_ID_SECRET" | "ALLOWED_ORIGIN";
 
-export function missingRequiredApiBindings(
-  env: Partial<Record<RequiredApiBindingName, unknown>>,
-): readonly string[] {
+interface RequiredApiBindings {
+  readonly OPENAI_API_KEY?: unknown;
+  readonly CONVERSATION_ID_SECRET?: unknown;
+  readonly ALLOWED_ORIGIN?: unknown;
+}
+
+const requiredApiBindingSchema = z.string().min(1);
+
+export function missingRequiredApiBindings(env: RequiredApiBindings): readonly string[] {
   return [
     requiredStringBinding("OPENAI_API_KEY", env.OPENAI_API_KEY),
     requiredStringBinding("CONVERSATION_ID_SECRET", env.CONVERSATION_ID_SECRET),
@@ -353,8 +360,8 @@ export function missingRequiredApiBindings(
   ].filter((binding): binding is string => binding !== null);
 }
 
-function requiredStringBinding(name: string, value: unknown): string | null {
-  return typeof value !== "string" || value.length === 0 ? name : null;
+function requiredStringBinding<T>(name: RequiredApiBindingName, value: T): string | null {
+  return requiredApiBindingSchema.safeParse(value).success ? null : name;
 }
 
 function parseOrigin(value: string): URL | null {

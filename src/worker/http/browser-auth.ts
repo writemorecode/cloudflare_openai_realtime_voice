@@ -1,8 +1,9 @@
 /** Implements credential verification and signed browser-session handling at the HTTP boundary. */
 import { pbkdf2Sync } from "node:crypto";
 
-import { ApiError } from "./api-errors";
+import { ApiError, type ApiErrorTelemetry } from "./api-errors";
 import { Result } from "better-result";
+import { z } from "zod";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -30,6 +31,11 @@ interface LoginCredentials {
   readonly username: string;
   readonly password: string;
 }
+
+const loginCredentialsSchema = z.object({
+  username: z.string().min(1).max(MAX_USERNAME_LENGTH),
+  password: z.string().min(1).max(MAX_PASSWORD_LENGTH),
+});
 
 export interface AuthenticatedUser {
   readonly id: number;
@@ -244,7 +250,7 @@ async function readCredentials(request: Request): Promise<Result<LoginCredential
   if (bytes.byteLength > MAX_LOGIN_BODY_BYTES) return Result.err(loginBodyTooLarge());
 
   const parsed = Result.try({
-    try: () => JSON.parse(decoder.decode(bytes)) as unknown,
+    try: () => JSON.parse(decoder.decode(bytes)),
     catch: (cause) =>
       new ApiError(
         400,
@@ -256,20 +262,8 @@ async function readCredentials(request: Request): Promise<Result<LoginCredential
       ),
   });
   if (!parsed.isOk()) return parsed;
-  const value = parsed.value;
-  if (typeof value !== "object" || value === null) return Result.err(invalidLoginRequest());
-  const record = value as Record<string, unknown>;
-  if (
-    typeof record.username !== "string" ||
-    record.username.length === 0 ||
-    record.username.length > MAX_USERNAME_LENGTH ||
-    typeof record.password !== "string" ||
-    record.password.length === 0 ||
-    record.password.length > MAX_PASSWORD_LENGTH
-  ) {
-    return Result.err(invalidLoginRequest());
-  }
-  return Result.ok({ username: record.username, password: record.password });
+  const credentials = loginCredentialsSchema.safeParse(parsed.value);
+  return credentials.success ? Result.ok(credentials.data) : Result.err(invalidLoginRequest());
 }
 
 async function derivePassword(
@@ -411,8 +405,11 @@ function sessionUnauthorized(): ApiError {
   );
 }
 
-function authenticationTelemetry(
-  operation: AuthenticationOperation,
-): Readonly<Record<string, string>> {
+interface AuthenticationTelemetry extends ApiErrorTelemetry {
+  readonly component: "browser_auth";
+  readonly operation: AuthenticationOperation;
+}
+
+function authenticationTelemetry(operation: AuthenticationOperation): AuthenticationTelemetry {
   return { component: "browser_auth", operation };
 }

@@ -58,7 +58,11 @@ describe("observableError", () => {
   });
 
   it("bounds circular cause chains", () => {
-    const failure: { kind: string; cause?: unknown } = { kind: "runtime_failure" };
+    interface CircularFailure {
+      kind: string;
+      cause?: CircularFailure;
+    }
+    const failure: CircularFailure = { kind: "runtime_failure" };
     failure.cause = failure;
 
     expect(observableError(failure).cause).toMatchObject({

@@ -37,10 +37,11 @@ async function insertQueuedJob(id: string): Promise<void> {
 }
 
 function dispatchEnv(createBatch: ReturnType<typeof vi.fn>): Env {
-  return {
-    EXAM_DB: env.EXAM_DB,
-    TRANSCRIPTION_WORKFLOW: { createBatch },
-  } as unknown as Env;
+  // SAFETY: this test exercises only the two bindings supplied by this focused environment.
+  return Object.assign(Object.create(null), {
+    ...env,
+    TRANSCRIPTION_WORKFLOW: Object.assign(Object.create(null), { createBatch }),
+  }) as Env;
 }
 
 describe("transcription Workflow dispatch", () => {

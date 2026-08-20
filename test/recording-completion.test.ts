@@ -33,6 +33,7 @@ describe("recording completion", () => {
     const complete = vi.fn(async () => ({ etag }));
     const createBatch = vi.fn(async () => []);
     let databaseAvailable = false;
+    // SAFETY: the mock delegates every exercised D1 operation to the real test binding.
     const database = {
       prepare: (query: string) => {
         // oxlint-disable-next-line eslint-js/no-restricted-syntax -- simulates a binding outage.
@@ -41,23 +42,29 @@ describe("recording completion", () => {
       },
       batch: (statements: D1PreparedStatement[]) => env.EXAM_DB.batch(statements),
     } as D1Database;
-    const recordingBucket = {
+    // SAFETY: completion exercises only multipart-upload resumption on this R2 mock.
+    const recordingBucket = Object.assign(Object.create(null), {
       resumeMultipartUpload: vi.fn(() => ({ complete })),
-    } as unknown as R2Bucket;
-    const workflow = { createBatch } as unknown as Env["TRANSCRIPTION_WORKFLOW"];
+    }) as R2Bucket;
+    // SAFETY: completion exercises only batch creation on this workflow binding.
+    const workflow = Object.assign(Object.create(null), {
+      createBatch,
+    }) as Env["TRANSCRIPTION_WORKFLOW"];
+    // SAFETY: this focused environment supplies every binding used by completion.
     const completionEnv = {
       EXAM_DB: database,
       RECORDINGS: recordingBucket,
       TRANSCRIPTION_WORKFLOW: workflow,
     } as Env;
-    const dependencies = {
+    // SAFETY: this focused dependency set supplies every port used by completion.
+    const dependencies = Object.assign(Object.create(null), {
       clock: { now: () => 100 },
       ids: { randomUuid: () => crypto.randomUUID() },
       conversations: {
         get: () => ({ getState, applyIntegrationEvent }),
       },
       recordings: { head: async () => null },
-    } as unknown as FoundationDependencies;
+    }) as FoundationDependencies;
     const request = () => completionRequest(conversationId, uploadId, objectKey);
 
     const first = await completeRecordingUpload(

@@ -1,14 +1,10 @@
 import { expect } from "vitest";
+import { z } from "zod";
 
-export function aggregateValue<T>(result: unknown): T {
-  if (typeof result !== "object" || result === null || !("status" in result)) {
-    expect.fail("expected aggregate Result");
-  }
-  if (result.status !== "ok") {
-    expect.fail("aggregate operation failed");
-  }
-  if (!("value" in result)) {
-    expect.fail("aggregate Result omitted its value");
-  }
-  return result.value as T;
+const aggregateInputSchema = z.unknown();
+
+export function aggregateValue<T>(result: z.input<typeof aggregateInputSchema>): T {
+  const parsed = z.object({ status: z.literal("ok"), value: z.custom<T>() }).safeParse(result);
+  if (!parsed.success) expect.fail("expected successful aggregate Result");
+  return parsed.data.value;
 }

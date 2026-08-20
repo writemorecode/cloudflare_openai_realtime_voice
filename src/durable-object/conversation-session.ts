@@ -65,7 +65,7 @@ export class ConversationSession extends DurableObject<Env> {
     this.sockets.handleClose(code, wasClean);
   }
 
-  override async webSocketError(_ws: WebSocket, error: unknown): Promise<void> {
+  override async webSocketError<Failure>(_ws: WebSocket, error: Failure): Promise<void> {
     this.sockets.handleError(error);
   }
 
