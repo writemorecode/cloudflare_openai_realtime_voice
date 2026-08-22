@@ -6,8 +6,10 @@ import {
   HttpConversationApi,
   TransportStatus,
   createConversationRuntime,
+  type CreateCourseRequest,
   type CreateExaminationRequest,
   type ConversationApi,
+  type CourseSummary,
   type ConversationRuntime,
   type ConversationStateDto,
   type ExaminationSession,
@@ -180,6 +182,7 @@ export function DashboardPage({
   readonly api: ConversationApi;
   readonly onLogout: () => void;
 }) {
+  const [courses, setCourses] = useState<CourseSummary[]>([]);
   const [examinations, setExaminations] = useState<ExaminationSummary[]>([]);
   const [sessions, setSessions] = useState<ExaminationSession[]>([]);
   const [loading, setLoading] = useState(true);
@@ -188,10 +191,16 @@ export function DashboardPage({
   const [error, setError] = useState<string | null>(null);
 
   const load = async () => {
-    const [examResult, sessionResult] = await Promise.all([
+    const [courseResult, examResult, sessionResult] = await Promise.all([
+      api.listCourses(),
       api.listExaminations(),
       api.listExaminationSessions(),
     ]);
+    if (!courseResult.isOk()) {
+      setError(messageFor(courseResult.error));
+      setLoading(false);
+      return;
+    }
     if (!examResult.isOk()) {
       setError(messageFor(examResult.error));
       setLoading(false);
@@ -202,6 +211,7 @@ export function DashboardPage({
       setLoading(false);
       return;
     }
+    setCourses(courseResult.value.courses);
     setExaminations(examResult.value.examinations);
     setSessions(sessionResult.value.sessions);
     setLoading(false);
@@ -211,10 +221,23 @@ export function DashboardPage({
     void load();
   }, [api]);
 
-  const create = async (request: CreateExaminationRequest) => {
+  const createCourse = async (request: CreateCourseRequest) => {
     setCreating(true);
     setError(null);
-    const result = await api.createExamination(request);
+    const result = await api.createCourse(request);
+    setCreating(false);
+    if (!result.isOk()) {
+      setError(messageFor(result.error));
+      return false;
+    }
+    setCourses((current) => [result.value, ...current]);
+    return true;
+  };
+
+  const create = async (courseId: string, request: CreateExaminationRequest) => {
+    setCreating(true);
+    setError(null);
+    const result = await api.createExamination(courseId, request);
     if (!result.isOk()) {
       setError(messageFor(result.error));
       setCreating(false);
@@ -260,7 +283,8 @@ export function DashboardPage({
       {error && <ErrorMessage>{error}</ErrorMessage>}
       <main className="dashboard-grid">
         <section className="dashboard-main" aria-labelledby="available-heading">
-          <CreateExaminationForm creating={creating} onCreate={create} />
+          <CreateCourseForm creating={creating} onCreate={createCourse} />
+          <CreateExaminationForm courses={courses} creating={creating} onCreate={create} />
           <div className="section-heading">
             <div>
               <p className="eyebrow">Available now</p>
@@ -277,7 +301,10 @@ export function DashboardPage({
               {examinations.map((examination) => (
                 <article className="exam-card" key={examination.id}>
                   <div>
-                    <p className="subject-label">{examination.subject}</p>
+                    <p className="subject-label">
+                      {courses.find((course) => course.id === examination.courseId)?.name ??
+                        examination.subject}
+                    </p>
                     <h3>{examination.name}</h3>
                     <p>
                       {examination.questionCount} question
@@ -339,33 +366,79 @@ export function DashboardPage({
   );
 }
 
-function CreateExaminationForm({
+function CreateCourseForm({
   creating,
   onCreate,
 }: {
   readonly creating: boolean;
-  readonly onCreate: (request: CreateExaminationRequest) => Promise<boolean>;
+  readonly onCreate: (request: CreateCourseRequest) => Promise<boolean>;
 }) {
   const [name, setName] = useState("");
-  const [subject, setSubject] = useState("");
+  return (
+    <details className="create-panel">
+      <summary>Create a course</summary>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void onCreate({ name: name.trim() }).then((created) => {
+            if (created) setName("");
+          });
+        }}
+      >
+        <label className="standalone-field">
+          Course name
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            maxLength={160}
+            required
+            disabled={creating}
+          />
+        </label>
+        <div className="form-actions">
+          <button
+            className="primary-button compact-button"
+            type="submit"
+            disabled={creating || name.trim() === ""}
+          >
+            Create course
+          </button>
+        </div>
+      </form>
+    </details>
+  );
+}
+
+function CreateExaminationForm({
+  courses,
+  creating,
+  onCreate,
+}: {
+  readonly courses: readonly CourseSummary[];
+  readonly creating: boolean;
+  readonly onCreate: (courseId: string, request: CreateExaminationRequest) => Promise<boolean>;
+}) {
+  const [courseId, setCourseId] = useState("");
+  const [name, setName] = useState("");
   const [questions, setQuestions] = useState([""]);
   const [error, setError] = useState<string | null>(null);
 
   const submit = async () => {
     const normalizedQuestions = questions.map((question) => question.trim());
-    if (name.trim() === "" || subject.trim() === "" || normalizedQuestions.some((q) => q === "")) {
-      setError("Add a name, subject, and text for every question.");
+    const course = courses.find((candidate) => candidate.id === courseId);
+    if (course === undefined || name.trim() === "" || normalizedQuestions.some((q) => q === "")) {
+      setError("Choose a course and add a name and text for every question.");
       return;
     }
     setError(null);
-    const created = await onCreate({
+    const created = await onCreate(courseId, {
       name: name.trim(),
-      subject: subject.trim(),
+      // Keep populating the legacy database field until it is migrated away.
+      subject: course.name,
       questions: normalizedQuestions,
     });
     if (created) {
       setName("");
-      setSubject("");
       setQuestions([""]);
     }
   };
@@ -381,19 +454,27 @@ function CreateExaminationForm({
       >
         <div className="field-row">
           <label>
+            Course
+            <select
+              className="course-select"
+              value={courseId}
+              onChange={(event) => setCourseId(event.target.value)}
+              disabled={creating}
+              required
+            >
+              <option value="">Select a course</option>
+              {courses.map((course) => (
+                <option key={course.id} value={course.id}>
+                  {course.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
             Examination name
             <input
               value={name}
               onChange={(event) => setName(event.target.value)}
-              maxLength={160}
-              disabled={creating}
-            />
-          </label>
-          <label>
-            Subject
-            <input
-              value={subject}
-              onChange={(event) => setSubject(event.target.value)}
               maxLength={160}
               disabled={creating}
             />

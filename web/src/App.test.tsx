@@ -56,6 +56,8 @@ function api(overrides: Partial<ConversationApi> = {}): ConversationApi {
     login: okResolved({ username: "examiner" }),
     getSession: okResolved({ username: "examiner" }),
     logout: okResolved(undefined),
+    createCourse: vi.fn(),
+    listCourses: okResolved({ courses: [] }),
     createExamination: vi.fn(),
     listExaminations: okResolved({ examinations: [] }),
     getExamination: vi.fn(),
@@ -85,6 +87,7 @@ describe("conversation pages", () => {
     const navigate = vi.fn();
     const examination = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      courseId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
       name: "Distributed systems oral",
       subject: "Computer science",
       questionCount: 2,
@@ -135,9 +138,20 @@ describe("conversation pages", () => {
   });
 
   it("creates an examination with ordered questions from the dashboard", async () => {
+    const course = {
+      id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      name: "Computer science",
+      code: null,
+      description: null,
+      examinationCount: 0,
+      createdAt: 1,
+      updatedAt: 1,
+    };
     const conversationApi = api({
+      listCourses: okResolved({ courses: [course] }),
       createExamination: okResolved({
         id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        courseId: course.id,
         name: "Operating systems oral",
         subject: "Computer science",
         questionCount: 2,
@@ -162,14 +176,15 @@ describe("conversation pages", () => {
     const view = within(rendered.container);
 
     await userEvent.click(view.getByText("Create an examination"));
+    await userEvent.selectOptions(view.getByLabelText("Course"), course.id);
     await userEvent.type(view.getByLabelText("Examination name"), "Operating systems oral");
-    await userEvent.type(view.getByLabelText("Subject"), "Computer science");
+    expect(view.queryByLabelText("Subject")).not.toBeInTheDocument();
     await userEvent.type(view.getByLabelText("Question 1"), "Explain virtual memory.");
     await userEvent.click(view.getByRole("button", { name: "+ Add question" }));
     await userEvent.type(view.getByLabelText("Question 2"), "What causes deadlock?");
     await userEvent.click(view.getByRole("button", { name: "Create examination" }));
 
-    expect(conversationApi.createExamination).toHaveBeenCalledWith({
+    expect(conversationApi.createExamination).toHaveBeenCalledWith(course.id, {
       name: "Operating systems oral",
       subject: "Computer science",
       questions: ["Explain virtual memory.", "What causes deadlock?"],

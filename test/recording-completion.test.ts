@@ -176,11 +176,17 @@ async function insertCompletedExaminationSession(conversationId: string): Promis
   }>();
   expect(user).not.toBeNull();
   if (user === null) return;
+  const now = Date.now();
+  const courseId = `course-${conversationId}`;
   await env.EXAM_DB.batch([
     env.EXAM_DB.prepare(
-      `INSERT INTO examinations (id, created_by_user_id, name, subject, created_at)
-       VALUES (?, ?, 'Recording completion', 'Distributed systems', ?)`,
-    ).bind(`exam-${conversationId}`, user.id, Date.now()),
+      `INSERT INTO courses (id, created_by_user_id, name, created_at, updated_at)
+       VALUES (?, ?, 'Recording course', ?, ?)`,
+    ).bind(courseId, user.id, now, now),
+    env.EXAM_DB.prepare(
+      `INSERT INTO examinations (id, course_id, created_by_user_id, name, subject, created_at)
+       VALUES (?, ?, ?, 'Recording completion', 'Distributed systems', ?)`,
+    ).bind(`exam-${conversationId}`, courseId, user.id, now),
     env.EXAM_DB.prepare(
       `INSERT INTO examination_sessions (
          id, examination_id, user_id, conversation_id, question_state, created_at

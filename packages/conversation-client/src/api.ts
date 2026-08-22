@@ -2,6 +2,8 @@
 import {
   WIRE_SUBPROTOCOL,
   authSessionSchema,
+  courseListSchema,
+  courseSummarySchema,
   examinationListSchema,
   examinationSchema,
   examinationSessionListSchema,
@@ -10,7 +12,10 @@ import {
   conversationStateSchema,
   recordingUploadSchema,
   uploadedRecordingPartSchema,
+  type CreateCourseRequest,
   type CreateExaminationRequest,
+  type CourseList,
+  type CourseSummary,
   type Examination,
   type ExaminationList,
   type ExaminationSession,
@@ -80,11 +85,28 @@ export class HttpConversationApi implements ConversationApi {
     return this.requestWithoutResponse("/v1/auth/logout", { method: "POST" });
   }
 
-  /** Creates an examination from the supplied name, subject, and questions. */
+  /** Creates a course. */
+  createCourse(
+    course: CreateCourseRequest,
+  ): Promise<Result<CourseSummary, ConversationClientError>> {
+    return this.request("/v1/courses", courseSummarySchema, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(course),
+    });
+  }
+
+  /** Lists courses. */
+  listCourses(): Promise<Result<CourseList, ConversationClientError>> {
+    return this.request("/v1/courses", courseListSchema);
+  }
+
+  /** Creates an examination in a course. */
   createExamination(
+    courseId: string,
     examination: CreateExaminationRequest,
   ): Promise<Result<Examination, ConversationClientError>> {
-    return this.request("/v1/examinations", examinationSchema, {
+    return this.request(`/v1/courses/${courseId}/examinations`, examinationSchema, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(examination),

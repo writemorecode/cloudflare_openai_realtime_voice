@@ -1,7 +1,6 @@
 import { Result } from "better-result";
 
 import {
-  createExamination,
   createExaminationSession,
   getExamination,
   getExaminations,
@@ -40,7 +39,7 @@ export function createExaminationRoutes() {
   const app = apiFactory.createApp();
   app.use("*", validateSmallHeaders);
 
-  app.options("/", namedRoute("examinations"), ...preflight(["GET", "POST"]));
+  app.options("/", namedRoute("examinations"), ...preflight(["GET"]));
   app.get(
     "/",
     namedRoute("examinations"),
@@ -48,26 +47,7 @@ export function createExaminationRoutes() {
     requireEmptyBody,
     async (context) => respond(context, await getExaminations(context.env)),
   );
-  app.post(
-    "/",
-    namedRoute("examinations"),
-    requireBrowserOrigin,
-    requireBrowserSession,
-    async (context) => {
-      const user = currentUser(context);
-      if (!user.isOk()) return respond(context, Result.err(user.error));
-      return respond(
-        context,
-        await createExamination(
-          context.req.raw,
-          user.value,
-          context.env,
-          context.get("dependencies"),
-        ),
-      );
-    },
-  );
-  app.all("/", namedRoute("examinations"), ...methodNotAllowed(["GET", "POST"]));
+  app.all("/", namedRoute("examinations"), ...methodNotAllowed(["GET"]));
 
   app.options(
     "/:examinationId/sessions",

@@ -21,6 +21,9 @@ export type ApiRouteName =
   | "login"
   | "logout"
   | "auth_session"
+  | "courses"
+  | "course"
+  | "course_examinations"
   | "examinations"
   | "examination"
   | "create_examination_session"
@@ -205,7 +208,7 @@ export const conversationIdParam = apiFactory.createMiddleware(async (context, n
 
 export function resourceIdParam(
   parameter: string,
-  code: "invalid_examination_id" | "invalid_examination_session_id",
+  code: "invalid_course_id" | "invalid_examination_id" | "invalid_examination_session_id",
   title: string,
 ) {
   return apiFactory.createMiddleware(async (context, next) => {

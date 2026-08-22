@@ -7,6 +7,9 @@ export type { Result as ResultType } from "better-result";
 export {
   ArtifactStatus,
   ConversationStateTag,
+  type CreateCourseRequest,
+  type CourseSummary,
+  type CourseList,
   type CreateExaminationRequest,
   type Examination,
   type ExaminationList,

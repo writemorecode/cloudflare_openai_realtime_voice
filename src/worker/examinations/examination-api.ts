@@ -13,6 +13,7 @@ import { Result } from "better-result";
 import { z } from "zod";
 
 import { value, type ConversationState } from "../../domain/conversation-state-machine";
+import { findCourse } from "../courses/course-repository";
 import type {
   AggregateStoreError,
   AggregateStoreResult,
@@ -59,18 +60,28 @@ export async function authorizeExaminationConversation(
 
 export async function createExamination(
   request: Request,
+  courseId: string,
   user: AuthenticatedUser,
   env: Env,
   dependencies: Pick<FoundationDependencies, "clock" | "ids">,
 ): Promise<ApiResult<ExaminationApiResult>> {
   const parsed = await readJson(request, createExaminationRequestSchema);
   if (!parsed.isOk()) return parsed;
+  const course = await Result.tryPromise({
+    try: () => findCourse(env.EXAM_DB, courseId),
+    catch: examinationOperationFailed("find_course_for_examination"),
+  });
+  if (!course.isOk()) return course;
+  if (course.value === null) {
+    return Result.err(new ApiError(404, "course_not_found", "Course not found."));
+  }
   const examinationId = dependencies.ids.randomUuid();
   const questionIds = parsed.value.questions.map(() => dependencies.ids.randomUuid());
   const inserted = await Result.tryPromise({
     try: () =>
       insertExamination(env.EXAM_DB, {
         id: examinationId,
+        courseId,
         userId: user.id,
         request: parsed.value,
         questionIds,

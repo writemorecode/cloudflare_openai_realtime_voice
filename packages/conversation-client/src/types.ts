@@ -1,7 +1,10 @@
 /** Defines the browser application's API, media-runtime, and event contracts. */
 import type {
   AuthSession,
+  CreateCourseRequest,
   CreateExaminationRequest,
+  CourseList,
+  CourseSummary,
   ConversationStateDto,
   Examination,
   ExaminationList,
@@ -22,8 +25,15 @@ export interface ConversationApi {
   getSession(): Promise<Result<AuthSession, ConversationClientError>>;
   /** Ends the current authenticated session. */
   logout(): Promise<Result<void, ConversationClientError>>;
+  /** Creates a course. */
+  createCourse(
+    course: CreateCourseRequest,
+  ): Promise<Result<CourseSummary, ConversationClientError>>;
+  /** Lists courses. */
+  listCourses(): Promise<Result<CourseList, ConversationClientError>>;
   /** Creates an examination. */
   createExamination(
+    courseId: string,
     examination: CreateExaminationRequest,
   ): Promise<Result<Examination, ConversationClientError>>;
   /** Lists available examinations. */

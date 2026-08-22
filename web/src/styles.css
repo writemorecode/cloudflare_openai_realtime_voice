@@ -25,7 +25,8 @@ button {
   font: inherit;
 }
 input,
-textarea {
+textarea,
+select {
   font: inherit;
 }
 
@@ -459,24 +460,52 @@ footer {
   gap: 16px;
 }
 .field-row label,
-.create-panel legend {
+.create-panel legend,
+.standalone-field {
   color: #40544f;
   font-size: 0.82rem;
   font-weight: 750;
 }
+.standalone-field {
+  display: grid;
+  gap: 8px;
+}
 .field-row input,
+.field-row select,
+.standalone-field input,
 .question-row textarea {
   width: 100%;
-  margin-top: 8px;
   border: 1px solid #bdc9c4;
   border-radius: 11px;
   outline: none;
   background: rgba(255, 255, 255, 0.9);
   color: #233c37;
 }
-.field-row input {
+.field-row input,
+.field-row select,
+.standalone-field input {
   min-height: 46px;
   padding: 0 13px;
+}
+.field-row input,
+.field-row select,
+.question-row textarea {
+  margin-top: 8px;
+}
+.field-row select {
+  appearance: none;
+  cursor: pointer;
+  padding-right: 40px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #52776d 50%),
+    linear-gradient(135deg, #52776d 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) 20px,
+    calc(100% - 13px) 20px;
+  background-repeat: no-repeat;
+  background-size:
+    5px 5px,
+    5px 5px;
 }
 .question-row textarea {
   min-height: 66px;
@@ -484,6 +513,8 @@ footer {
   resize: vertical;
 }
 .field-row input:focus,
+.field-row select:focus,
+.standalone-field input:focus,
 .question-row textarea:focus {
   border-color: #52776d;
   box-shadow: 0 0 0 3px rgba(82, 119, 109, 0.12);

@@ -16,6 +16,7 @@ export const examinationQuestionSchema = z.object({
 /** Validates the list-facing metadata for an examination. */
 export const examinationSummarySchema = z.object({
   id: uuidSchema,
+  courseId: uuidSchema,
   name: z.string().min(1).max(160),
   subject: z.string().min(1).max(160),
   questionCount: z.number().int().positive(),

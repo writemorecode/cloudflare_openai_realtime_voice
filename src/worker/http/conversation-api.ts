@@ -13,6 +13,7 @@ import {
 } from "./hono-api";
 import { createAuthRoutes } from "./routes/auth-routes";
 import { createConversationRoutes } from "./routes/conversation-routes";
+import { createCourseRoutes } from "./routes/course-routes";
 import { createRealtimeToolRoutes } from "./routes/realtime-tool-routes";
 import {
   createExaminationRoutes,
@@ -36,6 +37,7 @@ export function createConversationApi(dependencies: FoundationDependencies) {
   app.use("*", originPolicy);
 
   app.route("/v1/auth", createAuthRoutes());
+  app.route("/v1/courses", createCourseRoutes());
   app.route("/v1/examinations", createExaminationRoutes());
   app.route("/v1/examination-sessions", createExaminationSessionRoutes());
   app.route("/v1/conversations", createConversationRoutes());

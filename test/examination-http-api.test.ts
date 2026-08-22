@@ -32,8 +32,18 @@ async function browserApi(path: string, init: RequestInit = {}): Promise<Respons
   return exports.default.fetch(new Request(`${API_ORIGIN}${path}`, { ...init, headers }));
 }
 
+async function createCourse() {
+  const response = await browserApi("/v1/courses", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: `Computer science ${crypto.randomUUID()}` }),
+  });
+  return response.json<{ id: string }>();
+}
+
 async function createExamination(questions = ["First question?", "Second question?"]) {
-  const response = await browserApi("/v1/examinations", {
+  const course = await createCourse();
+  const response = await browserApi(`/v1/courses/${course.id}/examinations`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -67,6 +77,7 @@ describe("examination HTTP API", () => {
     const body = await listed.json<ExaminationList>();
     expect(body.examinations).toContainEqual({
       id: created.examination.id,
+      courseId: created.examination.courseId,
       name: created.examination.name,
       subject: created.examination.subject,
       questionCount: 2,
@@ -75,7 +86,8 @@ describe("examination HTTP API", () => {
   });
 
   it("rejects an examination without a valid question", async () => {
-    const response = await browserApi("/v1/examinations", {
+    const course = await createCourse();
+    const response = await browserApi(`/v1/courses/${course.id}/examinations`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: "Empty exam", subject: "Nothing", questions: ["  "] }),

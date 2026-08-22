@@ -11,6 +11,7 @@ import { Result } from "better-result";
 
 interface ExaminationRow {
   readonly id: string;
+  readonly course_id: string;
   readonly name: string;
   readonly subject: string;
   readonly question_count: number;
@@ -86,6 +87,7 @@ export interface StoredExaminationSession {
 
 export interface CreateExaminationInput {
   readonly id: string;
+  readonly courseId: string;
   readonly userId: number;
   readonly request: CreateExaminationRequest;
   readonly questionIds: readonly string[];
@@ -111,10 +113,17 @@ export async function insertExamination(
   const statements = [
     database
       .prepare(
-        `INSERT INTO examinations (id, created_by_user_id, name, subject, created_at)
-         VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO examinations (id, course_id, created_by_user_id, name, subject, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
       )
-      .bind(input.id, input.userId, input.request.name, input.request.subject, input.createdAt),
+      .bind(
+        input.id,
+        input.courseId,
+        input.userId,
+        input.request.name,
+        input.request.subject,
+        input.createdAt,
+      ),
     ...questions.map((question) =>
       database
         .prepare(
@@ -127,6 +136,7 @@ export async function insertExamination(
   await database.batch(statements);
   return Result.ok({
     id: input.id,
+    courseId: input.courseId,
     name: input.request.name,
     subject: input.request.subject,
     questionCount: input.request.questions.length,
@@ -138,7 +148,7 @@ export async function insertExamination(
 export async function listExaminations(database: D1Database): Promise<ExaminationSummary[]> {
   const rows = await database
     .prepare(
-      `SELECT e.id, e.name, e.subject, e.created_at, COUNT(q.id) AS question_count
+      `SELECT e.id, e.course_id, e.name, e.subject, e.created_at, COUNT(q.id) AS question_count
        FROM examinations e
        JOIN examination_questions q ON q.examination_id = e.id
        GROUP BY e.id
@@ -154,7 +164,7 @@ export async function findExamination(
 ): Promise<Examination | null> {
   const row = await database
     .prepare(
-      `SELECT e.id, e.name, e.subject, e.created_at, COUNT(q.id) AS question_count
+      `SELECT e.id, e.course_id, e.name, e.subject, e.created_at, COUNT(q.id) AS question_count
        FROM examinations e
        JOIN examination_questions q ON q.examination_id = e.id
        WHERE e.id = ?
@@ -411,6 +421,7 @@ function sessionSelect(where: string, suffix = ""): string {
 function examinationSummary(row: ExaminationRow): ExaminationSummary {
   return {
     id: row.id,
+    courseId: row.course_id,
     name: row.name,
     subject: row.subject,
     questionCount: row.question_count,

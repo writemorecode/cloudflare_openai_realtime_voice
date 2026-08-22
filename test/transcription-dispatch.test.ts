@@ -9,14 +9,20 @@ async function insertQueuedJob(id: string): Promise<void> {
   }>();
   expect(user, "The test examiner is missing.").not.toBeNull();
   if (user === null) return;
+  const courseId = `course-${id}`;
   const examinationId = `examination-${id}`;
   const sessionId = `session-${id}`;
   const conversationId = crypto.randomUUID();
+  const now = Date.now();
   await env.EXAM_DB.batch([
     env.EXAM_DB.prepare(
-      `INSERT INTO examinations (id, created_by_user_id, name, subject, created_at)
-       VALUES (?, ?, 'Dispatch test', 'Distributed systems', ?)`,
-    ).bind(examinationId, user.id, Date.now()),
+      `INSERT INTO courses (id, created_by_user_id, name, created_at, updated_at)
+       VALUES (?, ?, 'Dispatch course', ?, ?)`,
+    ).bind(courseId, user.id, now, now),
+    env.EXAM_DB.prepare(
+      `INSERT INTO examinations (id, course_id, created_by_user_id, name, subject, created_at)
+       VALUES (?, ?, ?, 'Dispatch test', 'Distributed systems', ?)`,
+    ).bind(examinationId, courseId, user.id, now),
     env.EXAM_DB.prepare(
       `INSERT INTO examination_sessions (
          id, examination_id, user_id, conversation_id, question_state, created_at
