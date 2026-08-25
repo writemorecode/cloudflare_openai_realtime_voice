@@ -398,17 +398,62 @@ footer {
 .wide-shell > footer {
   margin-top: 48px;
 }
-.dashboard-header {
-  max-width: 1380px;
+.dashboard-header,
+.workspace-header {
+  max-width: 1100px;
   margin: 0 auto 26px;
-  display: flex;
+}
+.workspace-header {
+  display: grid;
+  grid-template-columns: 1fr auto;
   align-items: end;
-  justify-content: space-between;
   gap: 24px;
 }
-.dashboard-header h1 {
+.dashboard-header h1,
+.workspace-title h1 {
   margin: 5px 0 0;
   font-size: clamp(2.1rem, 5vw, 3.6rem);
+}
+.workspace-nav {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 1px;
+  border-bottom: 1px solid rgba(39, 61, 56, 0.14);
+}
+.workspace-nav button {
+  flex: 0 0 auto;
+  padding: 11px 14px;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  background: transparent;
+  color: #667671;
+  cursor: pointer;
+  font-weight: 700;
+}
+.workspace-nav button.active {
+  border-bottom-color: #a25443;
+  color: #254c44;
+}
+.workspace-content {
+  width: min(100%, 1100px);
+  margin-inline: auto;
+}
+.workspace-content > .error-message {
+  margin-bottom: 18px;
+}
+.section-description {
+  margin: 7px 0 0;
+  color: #71807b;
+  font-size: 0.9rem;
+}
+.session-page-list {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+}
+.session-page-list .session-card {
+  border: 1px solid rgba(39, 61, 56, 0.09);
+  background: rgba(255, 255, 255, 0.72);
 }
 .text-button {
   border: 0;
@@ -928,6 +973,17 @@ footer {
   }
   .field-row {
     grid-template-columns: 1fr;
+  }
+  .workspace-header {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+  .workspace-header > .text-button {
+    justify-self: start;
+  }
+  .workspace-nav {
+    grid-column: 1;
+    width: 100%;
   }
   .exam-card,
   .form-actions {

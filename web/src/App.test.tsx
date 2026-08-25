@@ -15,6 +15,7 @@ import {
 } from "@ai-oral-exam/conversation-client";
 import {
   ConversationPage,
+  CreateExaminationPage,
   DashboardPage,
   LoginPage,
   PostConversationPage,
@@ -112,7 +113,7 @@ describe("conversation pages", () => {
       }),
     });
     render(<DashboardPage api={conversationApi} navigate={navigate} onLogout={vi.fn()} />);
-    await userEvent.click(await screen.findByRole("button", { name: "Start exam" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Begin exam" }));
     expect(navigate).toHaveBeenCalledWith(`/conversation/${ID}`);
   });
 
@@ -171,11 +172,11 @@ describe("conversation pages", () => {
       }),
     });
     const rendered = render(
-      <DashboardPage api={conversationApi} navigate={vi.fn()} onLogout={vi.fn()} />,
+      <CreateExaminationPage api={conversationApi} navigate={vi.fn()} onLogout={vi.fn()} />,
     );
     const view = within(rendered.container);
 
-    await userEvent.click(view.getByText("Create an examination"));
+    await view.findByLabelText("Course");
     await userEvent.selectOptions(view.getByLabelText("Course"), course.id);
     await userEvent.type(view.getByLabelText("Examination name"), "Operating systems oral");
     expect(view.queryByLabelText("Subject")).not.toBeInTheDocument();
@@ -189,7 +190,7 @@ describe("conversation pages", () => {
       subject: "Computer science",
       questions: ["Explain virtual memory.", "What causes deadlock?"],
     });
-    expect(await view.findByText("Operating systems oral")).toBeVisible();
+    expect(conversationApi.createExamination).toHaveBeenCalledOnce();
   });
 
   it("shows a seekable, playback-aware transcript once transcription is complete", async () => {

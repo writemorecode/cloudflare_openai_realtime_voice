@@ -93,9 +93,15 @@ export function App({ services }: { readonly services?: Services }) {
       />
     );
   }
-  return (
-    <DashboardPage api={api} navigate={navigate} onLogout={() => setAuthState("unauthenticated")} />
-  );
+  const workspaceProps = {
+    api,
+    navigate,
+    onLogout: () => setAuthState("unauthenticated" as const),
+  };
+  if (path === "/sessions") return <PreviousSessionsPage {...workspaceProps} />;
+  if (path === "/courses/new") return <CreateCoursePage {...workspaceProps} />;
+  if (path === "/examinations/new") return <CreateExaminationPage {...workspaceProps} />;
+  return <DashboardPage {...workspaceProps} />;
 }
 
 export function LoginPage({
@@ -184,69 +190,26 @@ export function DashboardPage({
 }) {
   const [courses, setCourses] = useState<CourseSummary[]>([]);
   const [examinations, setExaminations] = useState<ExaminationSummary[]>([]);
-  const [sessions, setSessions] = useState<ExaminationSession[]>([]);
   const [loading, setLoading] = useState(true);
-  const [creating, setCreating] = useState(false);
   const [startingId, setStartingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const load = async () => {
-    const [courseResult, examResult, sessionResult] = await Promise.all([
-      api.listCourses(),
-      api.listExaminations(),
-      api.listExaminationSessions(),
-    ]);
-    if (!courseResult.isOk()) {
-      setError(messageFor(courseResult.error));
-      setLoading(false);
-      return;
-    }
-    if (!examResult.isOk()) {
-      setError(messageFor(examResult.error));
-      setLoading(false);
-      return;
-    }
-    if (!sessionResult.isOk()) {
-      setError(messageFor(sessionResult.error));
-      setLoading(false);
-      return;
-    }
-    setCourses(courseResult.value.courses);
-    setExaminations(examResult.value.examinations);
-    setSessions(sessionResult.value.sessions);
-    setLoading(false);
-  };
-
   useEffect(() => {
-    void load();
+    let disposed = false;
+    void Promise.all([api.listCourses(), api.listExaminations()]).then(
+      ([courseResult, examResult]) => {
+        if (disposed) return;
+        setLoading(false);
+        if (!courseResult.isOk()) return setError(messageFor(courseResult.error));
+        if (!examResult.isOk()) return setError(messageFor(examResult.error));
+        setCourses(courseResult.value.courses);
+        setExaminations(examResult.value.examinations);
+      },
+    );
+    return () => {
+      disposed = true;
+    };
   }, [api]);
-
-  const createCourse = async (request: CreateCourseRequest) => {
-    setCreating(true);
-    setError(null);
-    const result = await api.createCourse(request);
-    setCreating(false);
-    if (!result.isOk()) {
-      setError(messageFor(result.error));
-      return false;
-    }
-    setCourses((current) => [result.value, ...current]);
-    return true;
-  };
-
-  const create = async (courseId: string, request: CreateExaminationRequest) => {
-    setCreating(true);
-    setError(null);
-    const result = await api.createExamination(courseId, request);
-    if (!result.isOk()) {
-      setError(messageFor(result.error));
-      setCreating(false);
-      return false;
-    }
-    setExaminations((current) => [result.value, ...current]);
-    setCreating(false);
-    return true;
-  };
 
   const start = async (examinationId: string) => {
     setStartingId(examinationId);
@@ -260,107 +223,277 @@ export function DashboardPage({
     navigate(`/conversation/${result.value.conversationId}`);
   };
 
-  const logout = async () => {
-    const result = await api.logout();
-    if (!result.isOk()) {
-      setError(messageFor(result.error));
-      return;
-    }
-    onLogout();
-  };
+  return (
+    <WorkspacePage
+      activePath="/"
+      title="Available examinations"
+      api={api}
+      navigate={navigate}
+      onLogout={onLogout}
+    >
+      {error && <ErrorMessage>{error}</ErrorMessage>}
+      <section aria-labelledby="available-heading">
+        <div className="section-heading">
+          <div>
+            <h2 id="available-heading">Choose an examination</h2>
+            <p className="section-description">
+              Select an examination when you are ready to begin.
+            </p>
+          </div>
+          <span>{examinations.length}</span>
+        </div>
+        {loading ? (
+          <p className="empty-state">Loading examinations…</p>
+        ) : examinations.length === 0 ? (
+          <p className="empty-state">There are no examinations available to begin.</p>
+        ) : (
+          <div className="exam-list">
+            {examinations.map((examination) => (
+              <article className="exam-card" key={examination.id}>
+                <div>
+                  <p className="subject-label">
+                    {courses.find((course) => course.id === examination.courseId)?.name ??
+                      examination.subject}
+                  </p>
+                  <h3>{examination.name}</h3>
+                  <p>
+                    {examination.questionCount} question{examination.questionCount === 1 ? "" : "s"}
+                  </p>
+                </div>
+                <button
+                  className="primary-button compact-button"
+                  type="button"
+                  disabled={startingId !== null}
+                  onClick={() => void start(examination.id)}
+                >
+                  {startingId === examination.id ? "Preparing…" : "Begin exam"}
+                </button>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+    </WorkspacePage>
+  );
+}
+
+export function PreviousSessionsPage({
+  api,
+  navigate,
+  onLogout,
+}: PageProps & { readonly api: ConversationApi; readonly onLogout: () => void }) {
+  const [sessions, setSessions] = useState<ExaminationSession[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let disposed = false;
+    void api.listExaminationSessions().then((result) => {
+      if (disposed) return;
+      setLoading(false);
+      if (result.isOk()) setSessions(result.value.sessions);
+      else setError(messageFor(result.error));
+    });
+    return () => {
+      disposed = true;
+    };
+  }, [api]);
 
   return (
+    <WorkspacePage
+      activePath="/sessions"
+      title="Previous sessions"
+      eyebrow="Your exam history"
+      api={api}
+      navigate={navigate}
+      onLogout={onLogout}
+    >
+      {error && <ErrorMessage>{error}</ErrorMessage>}
+      {loading ? (
+        <p className="empty-state">Loading sessions…</p>
+      ) : sessions.length === 0 ? (
+        <p className="empty-state">Your completed and active sessions will appear here.</p>
+      ) : (
+        <div className="session-list session-page-list">
+          {sessions.map((session) => (
+            <article className="session-card" key={session.id}>
+              <div className="session-card-heading">
+                <div>
+                  <h3>{session.examinationName}</h3>
+                  <p>{new Date(session.createdAt).toLocaleString()}</p>
+                </div>
+                <span>{session.conversationState ?? "unknown"}</span>
+              </div>
+              <p className="session-progress">
+                Questions: {session.currentQuestionOrdinal}/{session.questionCount}
+              </p>
+              {session.recordingAvailable ? (
+                <button
+                  className="review-link"
+                  type="button"
+                  onClick={() => navigate(`/examination-sessions/${session.id}/review`)}
+                >
+                  Review recording <span aria-hidden="true">→</span>
+                </button>
+              ) : (
+                <p className="recording-pending">Recording not yet available</p>
+              )}
+            </article>
+          ))}
+        </div>
+      )}
+    </WorkspacePage>
+  );
+}
+
+export function CreateCoursePage({
+  api,
+  navigate,
+  onLogout,
+}: PageProps & { readonly api: ConversationApi; readonly onLogout: () => void }) {
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const create = async (request: CreateCourseRequest) => {
+    setCreating(true);
+    setError(null);
+    const result = await api.createCourse(request);
+    setCreating(false);
+    if (!result.isOk()) {
+      setError(messageFor(result.error));
+      return false;
+    }
+    navigate("/examinations/new");
+    return true;
+  };
+  return (
+    <WorkspacePage
+      activePath="/courses/new"
+      title="Create a course"
+      eyebrow="Course setup"
+      api={api}
+      navigate={navigate}
+      onLogout={onLogout}
+    >
+      {error && <ErrorMessage>{error}</ErrorMessage>}
+      <CreateCourseForm creating={creating} onCreate={create} />
+    </WorkspacePage>
+  );
+}
+
+export function CreateExaminationPage({
+  api,
+  navigate,
+  onLogout,
+}: PageProps & { readonly api: ConversationApi; readonly onLogout: () => void }) {
+  const [courses, setCourses] = useState<CourseSummary[]>([]);
+  const [creating, setCreating] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let disposed = false;
+    void api.listCourses().then((result) => {
+      if (disposed) return;
+      setLoading(false);
+      if (result.isOk()) setCourses(result.value.courses);
+      else setError(messageFor(result.error));
+    });
+    return () => {
+      disposed = true;
+    };
+  }, [api]);
+  const create = async (courseId: string, request: CreateExaminationRequest) => {
+    setCreating(true);
+    setError(null);
+    const result = await api.createExamination(courseId, request);
+    setCreating(false);
+    if (!result.isOk()) {
+      setError(messageFor(result.error));
+      return false;
+    }
+    navigate("/");
+    return true;
+  };
+  return (
+    <WorkspacePage
+      activePath="/examinations/new"
+      title="Create an examination"
+      eyebrow="Exam setup"
+      api={api}
+      navigate={navigate}
+      onLogout={onLogout}
+    >
+      {error && <ErrorMessage>{error}</ErrorMessage>}
+      {loading ? (
+        <p className="empty-state">Loading courses…</p>
+      ) : courses.length === 0 ? (
+        <div className="empty-state">
+          <p>Create a course before creating an examination.</p>
+          <button className="text-button" type="button" onClick={() => navigate("/courses/new")}>
+            Create a course
+          </button>
+        </div>
+      ) : (
+        <CreateExaminationForm courses={courses} creating={creating} onCreate={create} />
+      )}
+    </WorkspacePage>
+  );
+}
+
+function WorkspacePage({
+  activePath,
+  title,
+  eyebrow,
+  api,
+  navigate,
+  onLogout,
+  children,
+}: PageProps & {
+  readonly activePath: string;
+  readonly title: string;
+  readonly eyebrow: string;
+  readonly api: ConversationApi;
+  readonly onLogout: () => void;
+  readonly children: React.ReactNode;
+}) {
+  const [logoutError, setLogoutError] = useState<string | null>(null);
+  const logout = async () => {
+    const result = await api.logout();
+    if (!result.isOk()) return setLogoutError(messageFor(result.error));
+    onLogout();
+  };
+  const items = [
+    ["/", "Available exams"],
+    ["/sessions", "Previous sessions"],
+    ["/courses/new", "Create course"],
+    ["/examinations/new", "Create exam"],
+  ] as const;
+  return (
     <PageFrame wide>
-      <header className="dashboard-header">
-        <div>
-          <p className="eyebrow">Examiner workspace</p>
-          <h1>Oral examinations</h1>
+      <header className="workspace-header">
+        <div className="workspace-title">
+          <p className="eyebrow">{eyebrow}</p>
+          <h1>{title}</h1>
         </div>
         <button className="text-button" type="button" onClick={() => void logout()}>
           Sign out
         </button>
+        <nav className="workspace-nav" aria-label="Main navigation">
+          {items.map(([path, label]) => (
+            <button
+              key={path}
+              type="button"
+              className={activePath === path ? "active" : ""}
+              aria-current={activePath === path ? "page" : undefined}
+              onClick={() => navigate(path)}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
       </header>
-      {error && <ErrorMessage>{error}</ErrorMessage>}
-      <main className="dashboard-grid">
-        <section className="dashboard-main" aria-labelledby="available-heading">
-          <CreateCourseForm creating={creating} onCreate={createCourse} />
-          <CreateExaminationForm courses={courses} creating={creating} onCreate={create} />
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">Available now</p>
-              <h2 id="available-heading">Examinations</h2>
-            </div>
-            <span>{examinations.length}</span>
-          </div>
-          {loading ? (
-            <p className="empty-state">Loading examinations…</p>
-          ) : examinations.length === 0 ? (
-            <p className="empty-state">Create the first examination to get started.</p>
-          ) : (
-            <div className="exam-list">
-              {examinations.map((examination) => (
-                <article className="exam-card" key={examination.id}>
-                  <div>
-                    <p className="subject-label">
-                      {courses.find((course) => course.id === examination.courseId)?.name ??
-                        examination.subject}
-                    </p>
-                    <h3>{examination.name}</h3>
-                    <p>
-                      {examination.questionCount} question
-                      {examination.questionCount === 1 ? "" : "s"}
-                    </p>
-                  </div>
-                  <button
-                    className="primary-button compact-button"
-                    type="button"
-                    disabled={startingId !== null}
-                    onClick={() => void start(examination.id)}
-                  >
-                    {startingId === examination.id ? "Preparing…" : "Start exam"}
-                  </button>
-                </article>
-              ))}
-            </div>
-          )}
-        </section>
-        <aside className="history-panel" aria-labelledby="history-heading">
-          <p className="eyebrow">Assessment record</p>
-          <h2 id="history-heading">Previous sessions</h2>
-          {loading ? (
-            <p className="empty-state">Loading history…</p>
-          ) : sessions.length === 0 ? (
-            <p className="empty-state">Completed and active sessions will appear here.</p>
-          ) : (
-            <div className="session-list">
-              {sessions.map((session) => (
-                <article className="session-card" key={session.id}>
-                  <div className="session-card-heading">
-                    <div>
-                      <h3>{session.examinationName}</h3>
-                      <p>{new Date(session.createdAt).toLocaleString()}</p>
-                    </div>
-                    <span>{session.conversationState ?? "unknown"}</span>
-                  </div>
-                  <p className="session-progress">
-                    Questions: {session.currentQuestionOrdinal}/{session.questionCount}
-                  </p>
-                  {session.recordingAvailable ? (
-                    <button
-                      className="review-link"
-                      type="button"
-                      onClick={() => navigate(`/examination-sessions/${session.id}/review`)}
-                    >
-                      Review recording <span aria-hidden="true">→</span>
-                    </button>
-                  ) : (
-                    <p className="recording-pending">Recording not yet available</p>
-                  )}
-                </article>
-              ))}
-            </div>
-          )}
-        </aside>
+      <main className="workspace-content">
+        {logoutError && <ErrorMessage>{logoutError}</ErrorMessage>}
+        {children}
       </main>
     </PageFrame>
   );
@@ -375,7 +508,7 @@ function CreateCourseForm({
 }) {
   const [name, setName] = useState("");
   return (
-    <details className="create-panel">
+    <details className="create-panel" open>
       <summary>Create a course</summary>
       <form
         onSubmit={(event) => {
@@ -444,7 +577,7 @@ function CreateExaminationForm({
   };
 
   return (
-    <details className="create-panel">
+    <details className="create-panel" open>
       <summary>Create an examination</summary>
       <form
         onSubmit={(event) => {
@@ -752,8 +885,12 @@ export function ReviewSessionPage({
   return (
     <PageFrame wide>
       <header className="review-header">
-        <button className="text-button back-button" type="button" onClick={() => navigate("/")}>
-          ← Back to examinations
+        <button
+          className="text-button back-button"
+          type="button"
+          onClick={() => navigate("/sessions")}
+        >
+          ← Back to previous sessions
         </button>
       </header>
       <main className="review-page">
