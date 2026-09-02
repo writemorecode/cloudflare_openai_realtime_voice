@@ -9,6 +9,7 @@ export const courseSummarySchema = z.object({
   name: z.string().min(1).max(160),
   code: z.string().min(1).max(40).nullable(),
   description: z.string().max(4000).nullable(),
+  learningGoals: z.string().max(4000).nullable(),
   examinationCount: z.number().int().nonnegative(),
   createdAt: unixMillisSchema,
   updatedAt: unixMillisSchema,
@@ -20,6 +21,7 @@ export const createCourseRequestSchema = z.object({
   name: z.string().trim().min(1).max(160),
   code: z.string().trim().min(1).max(40).nullable().optional(),
   description: z.string().trim().max(4000).nullable().optional(),
+  learningGoals: z.string().trim().max(4000).nullable().optional(),
 });
 
 export type CourseSummary = z.infer<typeof courseSummarySchema>;

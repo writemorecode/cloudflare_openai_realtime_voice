@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import { Result } from "better-result";
 import type {
   CurrentExaminationQuestion,
+  CourseList,
+  CourseSummary,
   Examination,
   ExaminationList,
   ExaminationSession,
@@ -56,6 +58,27 @@ async function createExamination(questions = ["First question?", "Second questio
 }
 
 describe("examination HTTP API", () => {
+  it("creates and retrieves a course with learning goals", async () => {
+    const response = await browserApi("/v1/courses", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: `Computer science ${crypto.randomUUID()}`,
+        learningGoals: "Explain virtual memory and analyze scheduling tradeoffs.",
+      }),
+    });
+    const created = await response.json<CourseSummary>();
+
+    expect(response.status).toBe(201);
+    expect(created.learningGoals).toBe("Explain virtual memory and analyze scheduling tradeoffs.");
+
+    const detail = await browserApi(`/v1/courses/${created.id}`);
+    expect(await detail.json<CourseSummary>()).toEqual(created);
+
+    const listed = await browserApi("/v1/courses");
+    expect((await listed.json<CourseList>()).courses).toContainEqual(created);
+  });
+
   it("creates an immutable examination and returns its ordered questions", async () => {
     const created = await createExamination(["Explain consensus.", "Describe leader election."]);
     expect(created.response.status).toBe(201);

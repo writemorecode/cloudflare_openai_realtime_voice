@@ -227,6 +227,7 @@ export function DashboardPage({
     <WorkspacePage
       activePath="/"
       title="Available examinations"
+      eyebrow="Exam workspace"
       api={api}
       navigate={navigate}
       onLogout={onLogout}
@@ -507,14 +508,19 @@ function CreateCourseForm({
   readonly onCreate: (request: CreateCourseRequest) => Promise<boolean>;
 }) {
   const [name, setName] = useState("");
+  const [learningGoals, setLearningGoals] = useState("");
   return (
     <details className="create-panel" open>
       <summary>Create a course</summary>
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          void onCreate({ name: name.trim() }).then((created) => {
-            if (created) setName("");
+          const goals = learningGoals.trim();
+          void onCreate({ name: name.trim(), learningGoals: goals || null }).then((created) => {
+            if (created) {
+              setName("");
+              setLearningGoals("");
+            }
           });
         }}
       >
@@ -525,6 +531,17 @@ function CreateCourseForm({
             onChange={(event) => setName(event.target.value)}
             maxLength={160}
             required
+            disabled={creating}
+          />
+        </label>
+        <label className="standalone-field">
+          Learning goals
+          <textarea
+            value={learningGoals}
+            onChange={(event) => setLearningGoals(event.target.value)}
+            placeholder="Describe what students should learn"
+            maxLength={4000}
+            rows={5}
             disabled={creating}
           />
         </label>
