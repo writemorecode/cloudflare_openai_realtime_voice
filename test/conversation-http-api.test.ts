@@ -75,6 +75,12 @@ describe("Worker HTTP boundary", () => {
       method: "OPTIONS",
       headers: { Origin: ALLOWED_ORIGIN },
     });
+    const sameOrigin = await exports.default.fetch(
+      new Request(`${API_ORIGIN}/v1/conversations`, {
+        method: "POST",
+        headers: { Origin: API_ORIGIN, "Idempotency-Key": "same-origin" },
+      }),
+    );
     const denied = await api("/v1/conversations", {
       method: "POST",
       headers: { Origin: "https://attacker.example", "Idempotency-Key": "origin-denied" },
@@ -89,6 +95,7 @@ describe("Worker HTTP boundary", () => {
     });
     expect(missing.status).toBe(401);
     expect(preflight.status).toBe(204);
+    expect(sameOrigin.status).toBe(401);
     expect(preflight.headers.get("Access-Control-Allow-Origin")).toBe(ALLOWED_ORIGIN);
     expect(denied.status).toBe(403);
     expect(malformed.status).toBe(403);

@@ -135,7 +135,13 @@ export const originPolicy = apiFactory.createMiddleware(async (context, next) =>
       );
     }
     const candidate = parseOrigin(origin);
-    if (candidate === null || candidate.origin !== configured.origin) {
+    const requestOrigin = new URL(context.req.url).origin;
+    // Requests served by this Worker are same-origin and need no CORS allowlist entry.
+    // This also lets `wrangler dev` serve the built app directly on its local origin.
+    if (
+      candidate === null ||
+      (candidate.origin !== requestOrigin && candidate.origin !== configured.origin)
+    ) {
       return apiError(
         context,
         new ApiError(403, "origin_not_allowed", "The request origin is not allowed."),
