@@ -518,6 +518,7 @@ footer {
 .field-row input,
 .field-row select,
 .standalone-field input,
+.standalone-field textarea,
 .question-row textarea {
   width: 100%;
   border: 1px solid #bdc9c4;
@@ -552,6 +553,7 @@ footer {
     5px 5px,
     5px 5px;
 }
+.standalone-field textarea,
 .question-row textarea {
   min-height: 66px;
   padding: 11px 13px;
@@ -560,6 +562,7 @@ footer {
 .field-row input:focus,
 .field-row select:focus,
 .standalone-field input:focus,
+.standalone-field textarea:focus,
 .question-row textarea:focus {
   border-color: #52776d;
   box-shadow: 0 0 0 3px rgba(82, 119, 109, 0.12);

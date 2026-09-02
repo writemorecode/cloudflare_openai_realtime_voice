@@ -1,10 +1,15 @@
-import type { CourseSummary, CreateCourseRequest } from "@ai-oral-exam/conversation-contract";
+import {
+  courseSummarySchema,
+  type CourseSummary,
+  type CreateCourseRequest,
+} from "@ai-oral-exam/conversation-contract";
 
 interface CourseRow {
   readonly id: string;
   readonly name: string;
   readonly code: string | null;
   readonly description: string | null;
+  readonly learning_goals: string | null;
   readonly examination_count: number;
   readonly created_at: number;
   readonly updated_at: number;
@@ -21,18 +26,30 @@ export async function insertCourse(
 ): Promise<CourseSummary> {
   const code = input.request.code ?? null;
   const description = input.request.description ?? null;
+  const learningGoals = input.request.learningGoals ?? null;
   await database
     .prepare(
-      `INSERT INTO courses (id, created_by_user_id, name, code, description, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO courses
+         (id, created_by_user_id, name, code, description, learning_goals, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .bind(input.id, input.userId, input.request.name, code, description, input.now, input.now)
+    .bind(
+      input.id,
+      input.userId,
+      input.request.name,
+      code,
+      description,
+      learningGoals,
+      input.now,
+      input.now,
+    )
     .run();
   return {
     id: input.id,
     name: input.request.name,
     code,
     description,
+    learningGoals,
     examinationCount: 0,
     createdAt: input.now,
     updatedAt: input.now,
@@ -42,7 +59,7 @@ export async function insertCourse(
 export async function listCourses(database: D1Database): Promise<CourseSummary[]> {
   const rows = await database
     .prepare(
-      `SELECT c.id, c.name, c.code, c.description, c.created_at, c.updated_at,
+      `SELECT c.id, c.name, c.code, c.description, c.learning_goals, c.created_at, c.updated_at,
             COUNT(e.id) AS examination_count
      FROM courses c LEFT JOIN examinations e ON e.course_id = c.id
      GROUP BY c.id ORDER BY c.created_at DESC, c.id ASC`,
@@ -54,7 +71,7 @@ export async function listCourses(database: D1Database): Promise<CourseSummary[]
 export async function findCourse(database: D1Database, id: string): Promise<CourseSummary | null> {
   const row = await database
     .prepare(
-      `SELECT c.id, c.name, c.code, c.description, c.created_at, c.updated_at,
+      `SELECT c.id, c.name, c.code, c.description, c.learning_goals, c.created_at, c.updated_at,
             COUNT(e.id) AS examination_count
      FROM courses c LEFT JOIN examinations e ON e.course_id = c.id
      WHERE c.id = ? GROUP BY c.id`,
@@ -65,13 +82,14 @@ export async function findCourse(database: D1Database, id: string): Promise<Cour
 }
 
 function toCourse(row: CourseRow): CourseSummary {
-  return {
+  return courseSummarySchema.parse({
     id: row.id,
     name: row.name,
     code: row.code,
     description: row.description,
+    learningGoals: row.learning_goals,
     examinationCount: row.examination_count,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-  };
+  });
 }

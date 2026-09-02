@@ -15,6 +15,7 @@ import {
 } from "@ai-oral-exam/conversation-client";
 import {
   ConversationPage,
+  CreateCoursePage,
   CreateExaminationPage,
   DashboardPage,
   LoginPage,
@@ -84,6 +85,39 @@ function api(overrides: Partial<ConversationApi> = {}): ConversationApi {
 }
 
 describe("conversation pages", () => {
+  it("creates a course with learning goals", async () => {
+    const navigate = vi.fn();
+    const conversationApi = api({
+      createCourse: okResolved({
+        id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        name: "Computer science",
+        code: null,
+        description: null,
+        learningGoals: "Explain virtual memory and analyze scheduling tradeoffs.",
+        examinationCount: 0,
+        createdAt: 1,
+        updatedAt: 1,
+      }),
+    });
+    render(<CreateCoursePage api={conversationApi} navigate={navigate} onLogout={vi.fn()} />);
+
+    await userEvent.type(screen.getByLabelText("Course name"), "Computer science");
+    await userEvent.type(
+      screen.getByLabelText("Learning goals"),
+      "Explain virtual memory and analyze scheduling tradeoffs.",
+    );
+    const courseForm = screen.getByLabelText("Learning goals").closest("form");
+    expect(courseForm).not.toBeNull();
+    if (courseForm === null) return;
+    await userEvent.click(within(courseForm).getByRole("button", { name: "Create course" }));
+
+    expect(conversationApi.createCourse).toHaveBeenCalledWith({
+      name: "Computer science",
+      learningGoals: "Explain virtual memory and analyze scheduling tradeoffs.",
+    });
+    expect(navigate).toHaveBeenCalledWith("/examinations/new");
+  });
+
   it("starts an available examination and navigates to its conversation", async () => {
     const navigate = vi.fn();
     const examination = {
@@ -144,6 +178,7 @@ describe("conversation pages", () => {
       name: "Computer science",
       code: null,
       description: null,
+      learningGoals: null,
       examinationCount: 0,
       createdAt: 1,
       updatedAt: 1,
